@@ -8,14 +8,9 @@ samba_dc_packages:
   - bind9-dnsutils
   - acl
   - attr
-  - ntpsec
 samba_dc_service: samba-ad-dc
 samba_dc_mask_services:
   - smbd
   - nmbd
   - winbind
-samba_ntp_service: ntpsec
-samba_ntp_conf: /etc/ntpsec/ntp.conf
-samba_ntp_driftfile: /var/lib/ntpsec/ntp.drift
-samba_ntp_group: ntpsec
 samba_statedir: /var/lib/samba

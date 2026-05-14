@@ -11,24 +11,24 @@
     group: root
   notify: restart samba
 
-- name: Configure NTP
+- name: Configure time synchronization
   block:
-    - name: Create ntp_signd directory
-      ansible.builtin.file:
-        path: /var/lib/samba/ntp_signd
-        state: directory
-        owner: root
-        group: "{{ samba_ntp_group | default('ntp') }}"
-        mode: "0750"
-
-    - name: Deploy ntp.conf
-      ansible.builtin.template:
-        src: ntp.conf.j2
-        dest: "{{ samba_ntp_conf }}"
+    - name: Deploy systemd-timesyncd configuration
+      ansible.builtin.copy:
+        content: |
+          [Time]
+          NTP={{ samba_ntp_servers | join(' ') }}
+        dest: /etc/systemd/timesyncd.conf
         mode: "0644"
         owner: root
         group: root
-      notify: restart ntp
+      notify: restart systemd-timesyncd
+
+    - name: Enable and start systemd-timesyncd
+      ansible.builtin.systemd:
+        name: systemd-timesyncd
+        enabled: true
+        state: started
   when: ansible_facts['distribution'] in ['Ubuntu', 'Debian']
 
 - name: Configure DNS resolver

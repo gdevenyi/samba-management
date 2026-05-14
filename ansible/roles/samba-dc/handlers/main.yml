@@ -6,11 +6,11 @@
     state: restarted
   listen: restart samba
 
-- name: Reload ntp
+- name: Restart systemd-timesyncd
   ansible.builtin.systemd:
-    name: "{{ samba_ntp_service | default('ntp') }}"
+    name: systemd-timesyncd
     state: restarted
-  listen: restart ntp
+  listen: restart systemd-timesyncd
 
 - name: Reload resolv
   ansible.builtin.shell: resolvconf -u || true

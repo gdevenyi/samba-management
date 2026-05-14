@@ -75,10 +75,13 @@ printf "  DC Host:   %s\n" "${DC_HOST:-<not detected>}"
 echo ""
 
 echo "--- DNS ---"
-check "DNS SRV _ldap._tcp" test "$(host -t SRV "_ldap._tcp.$(echo "${REALM}" | tr '[:upper:]' '[:lower:]')" 2>/dev/null | grep -c 'has SRV record')" -gt 0
-check "DNS SRV _kerberos._tcp" test "$(host -t SRV "_kerberos._tcp.$(echo "${REALM}" | tr '[:upper:]' '[:lower:]')" 2>/dev/null | grep -c 'has SRV record')" -gt 0
+_ldap_count=$(host -t SRV "_ldap._tcp.$(echo "${REALM}" | tr '[:upper:]' '[:lower:]')" 2>/dev/null | grep -c 'has SRV record' || true)
+check "DNS SRV _ldap._tcp" test "$_ldap_count" -gt 0
+_krb_count=$(host -t SRV "_kerberos._tcp.$(echo "${REALM}" | tr '[:upper:]' '[:lower:]')" 2>/dev/null | grep -c 'has SRV record' || true)
+check "DNS SRV _kerberos._tcp" test "$_krb_count" -gt 0
 if [[ -n "$DC_HOST" ]]; then
-    check "DNS A record for DC" test "$(host -t A "$DC_HOST" 2>/dev/null | grep -c 'has address')" -gt 0
+    _a_count=$(host -t A "$DC_HOST" 2>/dev/null | grep -c 'has address' || true)
+    check "DNS A record for DC" test "$_a_count" -gt 0
 fi
 
 echo ""

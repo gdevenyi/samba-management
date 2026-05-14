@@ -313,15 +313,15 @@ cmd_password_policy_set() {
         esac
     done
 
-    local cmd="samba-tool domain passwordsettings set"
-    [[ -n "$complexity" ]] && cmd+=" --complexity=${complexity}"
-    [[ -n "$min_length" ]] && cmd+=" --min-pwd-length=${min_length}"
-    [[ -n "$max_age" ]] && cmd+=" --max-pwd-age=${max_age}"
-    [[ -n "$min_age" ]] && cmd+=" --min-pwd-age=${min_age}"
-    [[ -n "$history" ]] && cmd+=" --history-length=${history}"
+    local -a cmd=(samba-tool domain passwordsettings set)
+    [[ -n "$complexity" ]] && cmd+=(--complexity="$complexity")
+    [[ -n "$min_length" ]] && cmd+=(--min-pwd-length="$min_length")
+    [[ -n "$max_age" ]] && cmd+=(--max-pwd-age="$max_age")
+    [[ -n "$min_age" ]] && cmd+=(--min-pwd-age="$min_age")
+    [[ -n "$history" ]] && cmd+=(--history-length="$history")
 
     dry_run "Would set password policy" && return
-    eval "$cmd"
+    "${cmd[@]}"
     log_info "Password policy updated"
 }
 

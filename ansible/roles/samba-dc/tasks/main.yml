@@ -68,19 +68,33 @@
     path: /var/lib/samba/private/sam.ldb
   register: sam_ldb
 
+- name: Write admin password to temp file
+  ansible.builtin.copy:
+    content: "{{ samba_admin_password }}"
+    dest: /tmp/.samba-admin-pass
+    mode: "0600"
+  when: not sam_ldb.stat.exists
+  no_log: true
+
 - name: Provision Samba AD DC
-  ansible.builtin.shell: >
+  ansible.builtin.command: >
     samba-tool domain provision
     --server-role={{ samba_server_role }}
     --use-rfc2307
     --dns-backend={{ samba_dns_backend }}
     --realm={{ samba_realm }}
     --domain={{ samba_domain }}
-    --adminpass='{{ samba_admin_password }}'
-    --option="interfaces=lo {{ ansible_default_ipv4.interface }}"
+    --adminpass={{ samba_admin_password | quote }}
+    --option=interfaces=lo {{ ansible_default_ipv4.interface }}
     --option="bind interfaces only=yes"
   when: not sam_ldb.stat.exists
   no_log: true
+
+- name: Remove admin password temp file
+  ansible.builtin.file:
+    path: /tmp/.samba-admin-pass
+    state: absent
+  when: not sam_ldb.stat.exists
 
 - name: Deploy krb5.conf from provision output
   ansible.builtin.copy:
@@ -150,20 +164,20 @@
     state: started
 
 - name: Create reverse DNS zone
-  ansible.builtin.shell: >
+  ansible.builtin.command: >
     samba-tool dns zonecreate {{ ansible_hostname }}.{{ samba_realm | lower }}
     {{ ansible_default_ipv4.address.split('.')[2] }}.{{ ansible_default_ipv4.address.split('.')[1] }}.{{ ansible_default_ipv4.address.split('.')[0] }}.in-addr.arpa
-    -U Administrator --password='{{ samba_admin_password }}'
+    -U Administrator --password={{ samba_admin_password | quote }}
   when: not sam_ldb.stat.exists
   ignore_errors: true
   no_log: true
 
 - name: Add PTR record for DC
-  ansible.builtin.shell: >
+  ansible.builtin.command: >
     samba-tool dns add {{ ansible_hostname }}.{{ samba_realm | lower }}
     {{ ansible_default_ipv4.address.split('.')[2] }}.{{ ansible_default_ipv4.address.split('.')[1] }}.{{ ansible_default_ipv4.address.split('.')[0] }}.in-addr.arpa
     {{ ansible_default_ipv4.address.split('.')[3] }} PTR {{ ansible_fqdn }}
-    -U Administrator --password='{{ samba_admin_password }}'
+    -U Administrator --password={{ samba_admin_password | quote }}
   when: not sam_ldb.stat.exists
   ignore_errors: true
   no_log: true

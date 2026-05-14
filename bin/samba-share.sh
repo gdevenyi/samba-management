@@ -275,6 +275,15 @@ cmd_modify() {
         echo "$line"
     done < "$conf" > "$tmp"
 
+    if [[ "$in_stanza" -eq 1 ]]; then
+        [[ -n "$comment" ]] && echo "    comment = ${comment}" >> "$tmp"
+        [[ -n "$valid_users" ]] && echo "    valid users = ${valid_users}" >> "$tmp"
+        [[ -n "$write_list" ]] && echo "    write list = ${write_list}" >> "$tmp"
+        [[ -n "$read_list" ]] && echo "    read list = ${read_list}" >> "$tmp"
+        [[ -n "$writable" ]] && echo "    writable = ${writable}" >> "$tmp"
+        [[ -n "$browseable" ]] && echo "    browseable = ${browseable}" >> "$tmp"
+    fi
+
     mv "$tmp" "$conf"
     reload_samba
     log_info "Share '${name}' modified"
@@ -434,7 +443,11 @@ cmd_revoke_access() {
     local escaped_principal
     escaped_principal=$(printf '%s' "${principal}" | sed 's/[[\.*^$()+?{|]/\\&/g')
 
-    sed -i "/^\[${name}\]/,/^\[/{ /${escaped_principal}/d; }" "$SAMBA_CONF"
+    sed -i "/^\[${name}\]/,/^\[{
+        /[[:space:]]*valid users =.*${escaped_principal}/d
+        /[[:space:]]*write list =.*${escaped_principal}/d
+        /[[:space:]]*read list =.*${escaped_principal}/d
+    }" "$SAMBA_CONF"
 
     reload_samba
     log_info "Access revoked from '${principal}' on share '${name}'"

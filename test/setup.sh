@@ -243,6 +243,8 @@ samba_netbios: "SAMBA"
 samba_admin_password: "${SMB_TEST_ADMIN_PASSWORD}"
 samba_dns_forwarder: "8.8.8.8"
 samba_tls_enabled: false
+healthcheck_realm: "${TEST_REALM}"
+healthcheck_dc_hostname: "dc01"
 samba_shares:
   - name: public
     path: /srv/samba/shares/public
@@ -257,6 +259,8 @@ sssd_domain: "${TEST_DOMAIN}"
 sssd_domain_short: "SAMBA"
 sssd_admin_password: "${SMB_TEST_ADMIN_PASSWORD}"
 sssd_dc_hostname: "dc01"
+healthcheck_realm: "${TEST_REALM}"
+healthcheck_dc_hostname: "dc01"
 sssd_shares:
   - public
 EOF

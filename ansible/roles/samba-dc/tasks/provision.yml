@@ -22,16 +22,19 @@
   when: not _samba_provisioned.stat.exists
 
 - name: Provision Samba AD DC
-  ansible.builtin.command: >
-    samba-tool domain provision
-    --server-role={{ samba_server_role }}
-    --use-rfc2307
-    --dns-backend={{ samba_dns_backend }}
-    --realm={{ samba_realm }}
-    --domain={{ samba_domain }}
-    --adminpass={{ samba_admin_password | quote }}
-    --option=interfaces=lo {{ ansible_default_ipv4.interface }}
-    --option="bind interfaces only=yes"
+  ansible.builtin.command:
+    argv:
+      - samba-tool
+      - domain
+      - provision
+      - "--server-role={{ samba_server_role }}"
+      - --use-rfc2307
+      - "--dns-backend={{ samba_dns_backend }}"
+      - "--realm={{ samba_realm }}"
+      - "--domain={{ samba_domain }}"
+      - "--adminpass={{ samba_admin_password }}"
+      - "--option=interfaces=lo {{ ansible_facts['default_ipv4']['interface'] }}"
+      - "--option=bind interfaces only=yes"
   when: not _samba_provisioned.stat.exists
   no_log: true
 

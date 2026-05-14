@@ -18,7 +18,8 @@
 
 - name: Clean Samba runtime files
   ansible.builtin.shell: |
-    set -o pipefail
     rm -f /var/run/samba/*.pid /var/run/samba/*.tdb 2>/dev/null || true
     rm -f /var/cache/samba/*.tdb 2>/dev/null || true
+  args:
+    executable: /bin/bash
   listen: Clean Samba runtime files

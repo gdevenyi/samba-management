@@ -38,6 +38,13 @@
   environment:
     DEBIAN_FRONTEND: noninteractive
 
+# --- Configure DNS to point to the DC ---
+- name: Set DNS server to DC for domain resolution
+  ansible.builtin.shell: >
+    resolvectl dns {{ ansible_facts['default_ipv4']['interface'] }} {{ sssd_dc_ip | default(groups['dc'][0]) }}
+    && resolvectl domain {{ ansible_facts['default_ipv4']['interface'] }} {{ sssd_domain }}
+  changed_when: true
+
 # --- Domain discovery and join ---
 - name: Discover AD domain
   ansible.builtin.command: "realm discover {{ sssd_domain }}"
@@ -53,10 +60,10 @@
 # The expect module provides the password non-interactively.
 # no_log: true prevents the password from appearing in Ansible output.
 - name: Join the AD domain
-  ansible.builtin.expect:
-    command: "realm join -v -U {{ sssd_admin_user }} {{ sssd_domain }}"
-    responses:
-      "Password for.*": "{{ sssd_admin_password }}"
+  ansible.builtin.shell: >
+    echo '{{ sssd_admin_password }}' | realm join -v -U {{ sssd_admin_user }} {{ sssd_domain }}
+  args:
+    executable: /bin/bash
   when: sssd_domain not in realm_list.stdout
   no_log: true
 

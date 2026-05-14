@@ -6,7 +6,7 @@
 # as root because samba-tool requires direct access to the local sam.ldb.
 set -euo pipefail
 
-SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+SCRIPT_DIR="$(cd "$(dirname "$(readlink -f "${BASH_SOURCE[0]}")")" && pwd)"
 source "${SCRIPT_DIR}/../lib/common.sh"
 source "${SCRIPT_DIR}/../lib/config.sh"
 
@@ -111,16 +111,14 @@ cmd_add() {
     [[ -n "$surname" ]] && cmd+=(--surname="$surname")
     [[ -n "$email" ]] && cmd+=(--mail-address="$email")
     [[ -n "$shell" ]] && cmd+=(--login-shell="$shell")
-    [[ "$must_change_pw" -eq 1 ]] && cmd+=(--must-change-password)
+    [[ "$must_change_pw" -eq 1 ]] && cmd+=(--must-change-at-next-login)
 
     if dry_run "Would create user: ${username}"; then
         return
     fi
 
-    # Pipe the password via stdin (--newpassword-file=-) to avoid it
-    # appearing in /proc/*/cmdline which is world-readable on some systems.
     log_info "Creating user '${username}'..."
-    if printf '%s' "$password" | "${cmd[@]}" --newpassword-file=-; then
+    if "${cmd[@]}" "$password"; then
         log_info "User '${username}' created successfully"
     else
         log_error "Failed to create user '${username}'"
@@ -334,7 +332,7 @@ cmd_set_password() {
 
     dry_run "Would set password for: ${username}" && return
     # Pipe password via stdin to keep it out of the process table.
-    printf '%s' "$password" | samba-tool user setpassword "$username" --newpassword-file=-
+    samba-tool user setpassword "$username" --newpassword="$password"
     log_info "Password set for '${username}'"
 }
 

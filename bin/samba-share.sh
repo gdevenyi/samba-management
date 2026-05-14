@@ -7,7 +7,7 @@
 # to ensure AD-compatible ACLs and a safety recycle bin.
 set -euo pipefail
 
-SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+SCRIPT_DIR="$(cd "$(dirname "$(readlink -f "${BASH_SOURCE[0]}")")" && pwd)"
 source "${SCRIPT_DIR}/../lib/common.sh"
 source "${SCRIPT_DIR}/../lib/config.sh"
 
@@ -518,7 +518,7 @@ cmd_revoke_access() {
 
     # Delete any valid users / write list / read list lines containing this
     # principal within the share's section only.
-    sed -i "/^\[${name}\]/,/^\[{
+    sed -i "/^\[${name}\]/,/^\[/{
         /[[:space:]]*valid users =.*${escaped_principal}/d
         /[[:space:]]*write list =.*${escaped_principal}/d
         /[[:space:]]*read list =.*${escaped_principal}/d

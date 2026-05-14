@@ -1,5 +1,12 @@
 # Install packages and manage services.
 ---
+- name: Stop and disable systemd-timesyncd (conflicts with NTP)
+  ansible.builtin.systemd:
+    name: systemd-timesyncd
+    state: stopped
+    enabled: false
+  ignore_errors: true
+
 - name: Install samba-ad-dc packages
   ansible.builtin.apt:
     name: "{{ samba_dc_packages }}"

@@ -5,7 +5,7 @@
 {# The ntpsigndsocket directive tells NTP to sign responses for AD clients #}
 {# using the Samba signing socket, enabling secure time sync. #}
 
-driftfile /var/lib/ntp/ntp.drift
+driftfile {{ samba_ntp_driftfile | default('/var/lib/ntp/ntp.drift') }}
 leapfile /usr/share/zoneinfo/leap-seconds.list
 
 {# Restrict directives: default is deny-all; explicitly allow localhost #}

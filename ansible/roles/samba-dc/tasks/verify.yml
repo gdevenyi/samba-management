@@ -9,10 +9,10 @@
   until: "'has SRV record' in dns_srv.stdout"
 
 - name: Verify Kerberos authentication
-  ansible.builtin.expect:
-    command: "kinit Administrator"
-    responses:
-      "Password for Administrator@{{ samba_realm }}:": "{{ samba_admin_password }}"
+  ansible.builtin.shell: >
+    echo '{{ samba_admin_password }}' | kinit Administrator
+  args:
+    executable: /bin/bash
   no_log: true
   changed_when: false
   ignore_errors: true

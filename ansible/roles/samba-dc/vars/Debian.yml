@@ -3,6 +3,7 @@
 ---
 samba_dc_packages:
   - samba-ad-dc
+  - samba-common-bin
   - krb5-user
   - bind9-dnsutils
   - acl
@@ -14,4 +15,7 @@ samba_dc_mask_services:
   - nmbd
   - winbind
 samba_ntp_service: ntp
+samba_ntp_conf: /etc/ntp.conf
+samba_ntp_driftfile: /var/lib/ntp/ntp.drift
+samba_ntp_group: ntp
 samba_statedir: /var/lib/samba

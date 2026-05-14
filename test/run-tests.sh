@@ -18,8 +18,8 @@ TESTS_FAIL=0
 
 SSH_OPTS="-o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null -o ConnectTimeout=10 -i ${SMB_TEST_SSH_KEY}"
 
-ssh_dc()    { ssh $SSH_OPTS "${SMB_TEST_SSH_USER}@${SMB_TEST_DC_IP}" "$@"; }
-ssh_client() { ssh $SSH_OPTS "${SMB_TEST_SSH_USER}@${SMB_TEST_CLIENT_IP}" "$@"; }
+ssh_dc()    { ssh $SSH_OPTS "${SMB_TEST_SSH_USER}@${SMB_TEST_DC_IP}" "$*"; }
+ssh_client() { ssh $SSH_OPTS "${SMB_TEST_SSH_USER}@${SMB_TEST_CLIENT_IP}" "$*"; }
 
 run_test() {
     local desc="$1"
@@ -75,7 +75,7 @@ run_test "List users contains testuser2" \
 echo ""
 echo "--- Group Management ---"
 run_test "Create group TestGroup" \
-    ssh_dc sudo samba-group.sh add TestGroup --description="Test group"
+    ssh_dc 'sudo samba-group.sh add TestGroup --description="Test group"'
 
 run_test "Add members to TestGroup" \
     ssh_dc sudo samba-group.sh add-members TestGroup testuser1,testuser2
@@ -99,8 +99,7 @@ run_test "TestGroup members no longer contains testuser2" \
 echo ""
 echo "--- Share Management ---"
 run_test "Create share testshare" \
-    ssh_dc sudo samba-share.sh create testshare /srv/samba/shares/testshare \
-        --comment="Test share"
+    ssh_dc 'sudo samba-share.sh create testshare /srv/samba/shares/testshare --comment="Test share"'
 
 run_test "List shares contains testshare" \
     ssh_dc "sudo samba-share.sh list | grep -q testshare"
@@ -109,7 +108,7 @@ run_test "Show share testshare" \
     ssh_dc sudo samba-share.sh show testshare
 
 run_test "Modify share comment" \
-    ssh_dc sudo samba-share.sh modify testshare --comment="Modified test share"
+    ssh_dc 'sudo samba-share.sh modify testshare --comment="Modified test share"'
 
 run_test "Verify modified comment" \
     ssh_dc "sudo samba-share.sh show testshare | grep -q 'Modified test share'"

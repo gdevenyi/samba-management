@@ -7,7 +7,7 @@
 [global]
     workgroup = {{ samba_domain }}
     realm = {{ samba_realm }}
-    netbios name = {{ samba_netbios }}
+    netbios name = {{ ansible_facts['hostname'] | upper }}
     server role = {{ samba_server_role }}
     dns forwarder = {{ samba_dns_forwarder }}
     {# rfc2307 enables POSIX UID/GID attributes in AD for NFS/CIFS interop #}
@@ -23,6 +23,15 @@
     max log size = 1000
     logging = file
     panic action = /usr/share/samba/panic-action %d
+
+{# --- DC system shares (required for AD operation) --- #}
+[netlogon]
+    path = /var/lib/samba/sysvol/{{ samba_realm | lower }}/scripts
+    read only = No
+
+[sysvol]
+    path = /var/lib/samba/sysvol
+    read only = No
 
 {# --- Home directories share --- #}
 {# The [homes] meta-share auto-exports each user's home directory. #}

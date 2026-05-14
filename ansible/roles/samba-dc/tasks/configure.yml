@@ -18,13 +18,13 @@
         path: /var/lib/samba/ntp_signd
         state: directory
         owner: root
-        group: ntp
+        group: "{{ samba_ntp_group | default('ntp') }}"
         mode: "0750"
 
     - name: Deploy ntp.conf
       ansible.builtin.template:
         src: ntp.conf.j2
-        dest: /etc/ntp.conf
+        dest: "{{ samba_ntp_conf }}"
         mode: "0644"
         owner: root
         group: root

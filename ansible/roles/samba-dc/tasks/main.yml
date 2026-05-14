@@ -1,17 +1,8 @@
 # samba-dc tasks - Orchestrator that includes split task files in order.
 ---
 - name: Load distribution-specific vars
-  ansible.builtin.include_vars: '{{ lookup("first_found", params) }}'
-  vars:
-    params:
-      files:
-        - '{{ ansible_distribution | lower }}-{{ ansible_distribution_major_version }}.yml'
-        - '{{ ansible_distribution | lower }}-{{ ansible_distribution_version }}.yml'
-        - '{{ ansible_distribution | lower }}.yml'
-        - '{{ ansible_os_family | lower }}.yml'
-      paths:
-        - vars
-      skip: true
+  ansible.builtin.include_vars:
+    file: "vars/{{ ansible_facts['distribution'] }}.yml"
 
 - name: Validate environment and variables
   ansible.builtin.import_tasks: assertions.yml

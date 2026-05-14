@@ -1,0 +1,3 @@
+test/test-config.env
+test/inventory.yml
+test/group_vars/

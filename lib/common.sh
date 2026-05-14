@@ -183,13 +183,13 @@ EOF
 # Must be called before the subcommand dispatch.
 # ---------------------------------------------------------------------------
 parse_global_args() {
+    GLOBAL_REMAINING_ARGS=()
     while [[ $# -gt 0 ]]; do
         case "$1" in
             --force) FORCE=1; shift ;;
             --dry-run) DRY_RUN=1; shift ;;
             --debug) DEBUG=1; shift ;;
-            *) break ;;
+            *) GLOBAL_REMAINING_ARGS+=("$1"); shift ;;
         esac
     done
-    GLOBAL_REMAINING_ARGS=("$@")
 }

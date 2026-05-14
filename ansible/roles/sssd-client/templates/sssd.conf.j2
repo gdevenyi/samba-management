@@ -1,7 +1,6 @@
 [sssd]
 domains = {{ sssd_domain }}
 config_file_version = 2
-services = nss, pam
 
 [domain/{{ sssd_domain }}]
 default_shell = {{ sssd_default_shell }}
@@ -15,3 +14,6 @@ ad_domain = {{ sssd_domain }}
 use_fully_qualified_names = {{ 'True' if sssd_use_fully_qualified_names else 'False' }}
 ldap_id_mapping = {{ 'True' if sssd_ldap_id_mapping else 'False' }}
 access_provider = {{ sssd_access_provider }}
+{% if sssd_access_provider == 'ad' %}
+ad_gpo_access_control = permissive
+{% endif %}

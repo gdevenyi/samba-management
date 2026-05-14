@@ -19,17 +19,20 @@ require_root() {
 
 log_info() {
     local msg="$*"
-    printf "${GREEN}[INFO]${NC} %s\n" "$msg" | tee -a "${LOG_FILE:-/dev/null}" 2>/dev/null || printf "${GREEN}[INFO]${NC} %s\n" "$msg"
+    printf "${GREEN}[INFO]${NC} %s\n" "$msg"
+    [[ -n "${LOG_FILE:-}" && -f "${LOG_FILE:-}" ]] && printf "[INFO] %s\n" "$msg" >> "$LOG_FILE" 2>/dev/null || true
 }
 
 log_warn() {
     local msg="$*"
-    printf "${YELLOW}[WARN]${NC} %s\n" "$msg" | tee -a "${LOG_FILE:-/dev/null}" 2>/dev/null || printf "${YELLOW}[WARN]${NC} %s\n" "$msg"
+    printf "${YELLOW}[WARN]${NC} %s\n" "$msg"
+    [[ -n "${LOG_FILE:-}" && -f "${LOG_FILE:-}" ]] && printf "[WARN] %s\n" "$msg" >> "$LOG_FILE" 2>/dev/null || true
 }
 
 log_error() {
     local msg="$*"
-    printf "${RED}[ERROR]${NC} %s\n" "$msg" | tee -a "${LOG_FILE:-/dev/null}" 2>/dev/null || printf "${RED}[ERROR]${NC} %s\n" "$msg"
+    printf "${RED}[ERROR]${NC} %s\n" "$msg"
+    [[ -n "${LOG_FILE:-}" && -f "${LOG_FILE:-}" ]] && printf "[ERROR] %s\n" "$msg" >> "$LOG_FILE" 2>/dev/null || true
 }
 
 log_debug() {
@@ -106,7 +109,7 @@ group_exists() {
 share_exists() {
     local sharename="$1"
     local conf="${SAMBA_CONF:-/etc/samba/smb.conf}"
-    grep -q "^\[${sharename}\]" "$conf" 2>/dev/null
+    grep -qF "[${sharename}]" "$conf" 2>/dev/null
 }
 
 dry_run() {

@@ -27,8 +27,6 @@ if command -v klist &>/dev/null; then
     fi
 fi
 
-if [[ -d "${AUTOMOUNT_BASE:-/mnt/shares}" ]]; then
-    mkdir -p "${AUTOMOUNT_BASE}" 2>/dev/null || true
-fi
+mkdir -p "${AUTOMOUNT_BASE:-/mnt/shares}" 2>/dev/null || true
 
 exit 0

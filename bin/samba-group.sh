@@ -66,17 +66,17 @@ cmd_add() {
         exit 1
     fi
 
-    local cmd="samba-tool group add '${groupname}'"
-    [[ -n "$description" ]] && cmd+=" --description='${description}'"
-    [[ -n "$gid" ]] && cmd+=" --gid-number=${gid}"
-    [[ -n "$ou" ]] && cmd+=" --groupou='OU=${ou}'"
+    local -a cmd=(samba-tool group add "$groupname")
+    [[ -n "$description" ]] && cmd+=(--description="$description")
+    [[ -n "$gid" ]] && cmd+=(--gid-number="$gid")
+    [[ -n "$ou" ]] && cmd+=(--groupou="OU=${ou}")
 
     if dry_run "Would create group: ${groupname}"; then
         return
     fi
 
     log_info "Creating group '${groupname}'..."
-    if eval "$cmd"; then
+    if "${cmd[@]}"; then
         log_info "Group '${groupname}' created successfully"
     else
         log_error "Failed to create group '${groupname}'"

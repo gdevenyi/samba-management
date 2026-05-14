@@ -18,10 +18,10 @@ check() {
     shift
     if "$@" &>/dev/null; then
         printf "  ${GREEN}PASS${NC} %s\n" "$label"
-        ((PASS++))
+        PASS=$((PASS + 1))
     else
         printf "  ${RED}FAIL${NC} %s\n" "$label"
-        ((FAIL++))
+        FAIL=$((FAIL + 1))
     fi
 }
 
@@ -30,10 +30,10 @@ check_warn() {
     shift
     if "$@" &>/dev/null; then
         printf "  ${GREEN}PASS${NC} %s\n" "$label"
-        ((PASS++))
+        PASS=$((PASS + 1))
     else
         printf "  ${YELLOW}WARN${NC} %s\n" "$label"
-        ((WARN++))
+        WARN=$((WARN + 1))
     fi
 }
 
@@ -106,7 +106,7 @@ fi
 
 echo ""
 echo "--- Time Sync ---"
-check_warn "NTP synchronized" timedatectl show | grep -q 'NTPSynchronized=yes'
+check_warn "NTP synchronized" bash -c "timedatectl show | grep -q 'NTPSynchronized=yes'"
 
 echo ""
 echo "--- Mounts ---"

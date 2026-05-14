@@ -86,7 +86,7 @@ remove_share_stanza() {
     local tmp="${conf}.tmp.$$"
 
     while IFS= read -r line; do
-        if [[ "$line" =~ ^\[${name}\] ]]; then
+        if [[ "$line" == "[${name}]" ]]; then
             in_stanza=1
             continue
         fi
@@ -170,15 +170,17 @@ cmd_delete() {
     fi
 
     backup_smb_conf
+
+    local share_path=""
+    if [[ "$remove_dir" -eq 1 ]]; then
+        share_path=$(grep -A5 "^\[${name}\]" "$SAMBA_CONF" 2>/dev/null | grep "path =" | head -1 | sed 's/.*path = //' | xargs)
+    fi
+
     remove_share_stanza "$name"
 
-    if [[ "$remove_dir" -eq 1 ]]; then
-        local share_path
-        share_path=$(grep -A1 "^\[${name}\]" "$SAMBA_CONF" 2>/dev/null | grep "path" | awk '{print $NF}' || echo "")
-        if [[ -n "$share_path" && -d "$share_path" ]]; then
-            rm -rf "$share_path"
-            log_info "Removed directory: ${share_path}"
-        fi
+    if [[ "$remove_dir" -eq 1 && -n "$share_path" && -d "$share_path" ]]; then
+        rm -rf "$share_path"
+        log_info "Removed directory: ${share_path}"
     fi
 
     reload_samba
@@ -224,12 +226,18 @@ cmd_modify() {
     local in_stanza=0
 
     while IFS= read -r line; do
-        if [[ "$line" =~ ^\[${name}\] ]]; then
+        if [[ "$line" == "[${name}]" ]]; then
             in_stanza=1
             echo "$line"
             continue
         fi
         if [[ "$in_stanza" -eq 1 ]] && [[ "$line" =~ ^\[ ]]; then
+            if [[ -n "$comment" ]]; then echo "    comment = ${comment}"; comment=""; fi
+            if [[ -n "$valid_users" ]]; then echo "    valid users = ${valid_users}"; valid_users=""; fi
+            if [[ -n "$write_list" ]]; then echo "    write list = ${write_list}"; write_list=""; fi
+            if [[ -n "$read_list" ]]; then echo "    read list = ${read_list}"; read_list=""; fi
+            if [[ -n "$writable" ]]; then echo "    writable = ${writable}"; writable=""; fi
+            if [[ -n "$browseable" ]]; then echo "    browseable = ${browseable}"; browseable=""; fi
             in_stanza=0
         fi
         if [[ "$in_stanza" -eq 1 ]]; then
@@ -285,7 +293,7 @@ cmd_show() {
 
     local in_stanza=0
     while IFS= read -r line; do
-        if [[ "$line" =~ ^\[${name}\] ]]; then
+        if [[ "$line" == "[${name}]" ]]; then
             in_stanza=1
             echo "$line"
             continue
@@ -349,7 +357,7 @@ cmd_grant_access() {
             local added=0
             while IFS= read -r line; do
                 echo "$line"
-                if [[ "$line" =~ ^\[${name}\] ]]; then
+                if [[ "$line" == "[${name}]" ]]; then
                     in_stanza=1
                     continue
                 fi

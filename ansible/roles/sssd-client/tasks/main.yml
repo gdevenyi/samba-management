@@ -3,8 +3,9 @@
   ansible.builtin.assert:
     that:
       - sssd_realm | length > 0
+      - sssd_domain | length > 0
       - sssd_admin_password | length > 0
-    fail_msg: "sssd_realm and sssd_admin_password are required"
+    fail_msg: "sssd_realm, sssd_domain, and sssd_admin_password are required"
 
 - name: Install SSSD and dependencies
   ansible.builtin.apt:
@@ -14,10 +15,14 @@
       - realmd
       - adcli
       - krb5-user
+      - libnss-sss
+      - libpam-sss
       - autofs
       - cifs-utils
     state: present
     update_cache: true
+  environment:
+    DEBIAN_FRONTEND: noninteractive
 
 - name: Discover AD domain
   ansible.builtin.command: "realm discover {{ sssd_domain }}"
@@ -31,10 +36,10 @@
 
 - name: Join the AD domain
   ansible.builtin.expect:
-    command: "realm join -v {{ sssd_domain }}"
+    command: "realm join -v -U {{ sssd_admin_user }} {{ sssd_domain }}"
     responses:
       "Password for.*": "{{ sssd_admin_password }}"
-  when: "sssd_domain not in realm_list.stdout"
+  when: "sssd_domain + '\\n' not in realm_list.stdout and sssd_domain not in (realm_list.stdout | default(''))"
   no_log: true
 
 - name: Deploy sssd.conf
@@ -95,10 +100,18 @@
     enabled: true
     state: started
 
-- name: Verify domain user lookup
-  ansible.builtin.command: "getent passwd Administrator@{{ sssd_realm }}"
+- name: Verify domain user lookup (getent)
+  ansible.builtin.command: "getent passwd {{ sssd_admin_user }}@{{ sssd_realm }}"
   register: getent_check
   changed_when: false
   retries: 5
   delay: 3
   until: getent_check.rc == 0
+
+- name: Verify domain group lookup
+  ansible.builtin.command: "getent group 'domain users@{{ sssd_realm }}'"
+  register: getent_group
+  changed_when: false
+  retries: 3
+  delay: 2
+  until: getent_group.rc == 0

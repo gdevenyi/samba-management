@@ -93,19 +93,19 @@ cmd_add() {
         echo
     fi
 
-    local cmd="samba-tool user create ${username} '${password}'"
-    [[ -n "$given_name" ]] && cmd+=" --given-name='${given_name}'"
-    [[ -n "$surname" ]] && cmd+=" --surname='${surname}'"
-    [[ -n "$email" ]] && cmd+=" --mail-address='${email}'"
-    [[ -n "$shell" ]] && cmd+=" --login-shell='${shell}'"
-    [[ "$must_change_pw" -eq 1 ]] && cmd+=" --must-change-password"
+    local -a cmd=(samba-tool user create "$username")
+    [[ -n "$given_name" ]] && cmd+=(--given-name="$given_name")
+    [[ -n "$surname" ]] && cmd+=(--surname="$surname")
+    [[ -n "$email" ]] && cmd+=(--mail-address="$email")
+    [[ -n "$shell" ]] && cmd+=(--login-shell="$shell")
+    [[ "$must_change_pw" -eq 1 ]] && cmd+=(--must-change-password)
 
     if dry_run "Would create user: ${username}"; then
         return
     fi
 
     log_info "Creating user '${username}'..."
-    if eval "$cmd"; then
+    if printf '%s' "$password" | "${cmd[@]}" --newpassword-file=-; then
         log_info "User '${username}' created successfully"
     else
         log_error "Failed to create user '${username}'"
@@ -196,11 +196,17 @@ cmd_modify() {
     dry_run "Would modify user: ${username}" && return
 
     log_info "Modifying user '${username}'..."
-    [[ -n "$given_name" ]] && samba-tool user setpassword "$username" --newpassword="$(samba-tool user show "$username" | grep password | awk '{print $NF}')" 2>/dev/null || true
-    [[ -n "$given_name" ]] && ldbmodify -H /var/lib/samba/private/sam.ldb <<<"dn: CN=${username},CN=Users,DC=${DOMAIN},DC=${REALM%%.*}
+    local realm_dc
+    realm_dc=$(echo "$REALM" | sed 's/\./,DC=/g; s/^/DC=/')
+    local user_dn="CN=${username},CN=Users,${realm_dc}"
+    if [[ -n "$given_name" ]]; then
+        ldbmodify -H /var/lib/samba/private/sam.ldb <<EOF 2>/dev/null || log_warn "Could not set givenName (use ADUC for full attribute management)"
+dn: ${user_dn}
 changetype: modify
 replace: givenName
-givenName: ${given_name}" 2>/dev/null || log_warn "Could not set givenName (use ADUC for full attribute management)"
+givenName: ${given_name}
+EOF
+    fi
     [[ -n "$surname" ]] && log_warn "Surname modification requires ADUC or direct LDAP edit"
     [[ -n "$email" ]] && log_warn "Email modification requires ADUC or direct LDAP edit"
     [[ -n "$shell" ]] && log_warn "Shell modification requires ADUC or direct LDAP edit"
@@ -281,7 +287,7 @@ cmd_set_password() {
     fi
 
     dry_run "Would set password for: ${username}" && return
-    samba-tool user setpassword "$username" --newpassword="$password"
+    printf '%s' "$password" | samba-tool user setpassword "$username" --newpassword-file=-
     log_info "Password set for '${username}'"
 }
 

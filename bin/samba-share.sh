@@ -1,4 +1,10 @@
 #!/usr/bin/env bash
+# samba-share.sh - CLI tool for managing Samba file shares on the DC.
+#
+# Creates, modifies, and deletes share stanzas in smb.conf, provisions the
+# underlying directories, and attempts to set Windows ACLs via smbcacls.
+# The VFS stack (dfs_samba4, acl_xattr, recycle) is applied to every share
+# to ensure AD-compatible ACLs and a safety recycle bin.
 set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
@@ -51,6 +57,13 @@ Note: All shares include vfs objects = dfs_samba4 acl_xattr recycle
 EOF
 }
 
+# ---------------------------------------------------------------------------
+# Low-level smb.conf manipulation helpers
+# ---------------------------------------------------------------------------
+
+# Append a complete share stanza to smb.conf.  The recycle VFS module
+# creates a hidden .recycle directory per share so deleted files can be
+# recovered without needing backups.
 add_share_stanza() {
     local name="$1"
     local path="$2"
@@ -78,6 +91,8 @@ add_share_stanza() {
     echo "$stanza" >> "$SAMBA_CONF"
 }
 
+# Remove a share stanza from smb.conf by rewriting the file and skipping
+# all lines between [name] and the next [ section.
 remove_share_stanza() {
     local name="$1"
     local conf="${SAMBA_CONF}"
@@ -90,6 +105,7 @@ remove_share_stanza() {
             in_stanza=1
             continue
         fi
+        # A new section header ends the target stanza.
         if [[ "$in_stanza" -eq 1 ]] && [[ "$line" =~ ^\[ ]]; then
             in_stanza=0
         fi
@@ -101,6 +117,9 @@ remove_share_stanza() {
     mv "$tmp" "$conf"
 }
 
+# ---------------------------------------------------------------------------
+# Share creation
+# ---------------------------------------------------------------------------
 cmd_create() {
     local name=""
     local path=""
@@ -135,6 +154,7 @@ cmd_create() {
 
     backup_smb_conf
 
+    # Provision the directory: 0770 allows group write for "domain users".
     mkdir -p "$path"
     chmod 0770 "$path"
     chown root:"domain users" "$path"
@@ -145,6 +165,9 @@ cmd_create() {
     log_info "Share '${name}' created at ${path}"
 }
 
+# ---------------------------------------------------------------------------
+# Share deletion
+# ---------------------------------------------------------------------------
 cmd_delete() {
     local name=""
     local remove_dir=0
@@ -171,6 +194,8 @@ cmd_delete() {
 
     backup_smb_conf
 
+    # Extract the share's path from smb.conf before removing the stanza,
+    # so we can optionally delete the directory as well.
     local share_path=""
     if [[ "$remove_dir" -eq 1 ]]; then
         share_path=$(grep -A5 "^\[${name}\]" "$SAMBA_CONF" 2>/dev/null | grep "path =" | head -1 | sed 's/.*path = //' | xargs)
@@ -187,6 +212,12 @@ cmd_delete() {
     log_info "Share '${name}' deleted"
 }
 
+# ---------------------------------------------------------------------------
+# Share modification - rewrites smb.conf in-place, replacing only the
+# parameters that were specified on the CLI.  Parameters not passed are
+# left untouched.  This uses a state-machine (in_stanza) approach to
+# locate the correct share section and replace matching key= lines.
+# ---------------------------------------------------------------------------
 cmd_modify() {
     local name=""
     local comment=""
@@ -231,6 +262,8 @@ cmd_modify() {
             echo "$line"
             continue
         fi
+        # When we hit the next section header, flush any new parameters
+        # that weren't already present inside the stanza.
         if [[ "$in_stanza" -eq 1 ]] && [[ "$line" =~ ^\[ ]]; then
             if [[ -n "$comment" ]]; then echo "    comment = ${comment}"; comment=""; fi
             if [[ -n "$valid_users" ]]; then echo "    valid users = ${valid_users}"; valid_users=""; fi
@@ -241,6 +274,8 @@ cmd_modify() {
             in_stanza=0
         fi
         if [[ "$in_stanza" -eq 1 ]]; then
+            # Replace existing parameter lines that match the ones we want to change.
+            # Each replacement clears its variable so it isn't emitted again at stanza end.
             if [[ -n "$comment" ]] && [[ "$line" =~ ^[[:space:]]*comment= ]]; then
                 echo "    comment = ${comment}"
                 comment=""
@@ -275,6 +310,8 @@ cmd_modify() {
         echo "$line"
     done < "$conf" > "$tmp"
 
+    # If the share stanza is the last one in the file (no trailing section
+    # header to trigger the flush above), append remaining params now.
     if [[ "$in_stanza" -eq 1 ]]; then
         [[ -n "$comment" ]] && echo "    comment = ${comment}" >> "$tmp"
         [[ -n "$valid_users" ]] && echo "    valid users = ${valid_users}" >> "$tmp"
@@ -289,6 +326,11 @@ cmd_modify() {
     log_info "Share '${name}' modified"
 }
 
+# ---------------------------------------------------------------------------
+# Listing / inspection
+# ---------------------------------------------------------------------------
+
+# List only user-defined shares by excluding well-known system shares.
 cmd_list() {
     grep '^\[' "$SAMBA_CONF" | tr -d '[]' | grep -v -E '^(global|homes|printers|netlogon|sysvol)$'
 }
@@ -300,6 +342,7 @@ cmd_show() {
         exit 3
     fi
 
+    # Print lines from [name] up to (but not including) the next section.
     local in_stanza=0
     while IFS= read -r line; do
         if [[ "$line" == "[${name}]" ]]; then
@@ -316,6 +359,14 @@ cmd_show() {
     done < "$SAMBA_CONF"
 }
 
+# ---------------------------------------------------------------------------
+# Access control - manipulates both smb.conf directives (valid users,
+# read/write lists) and Windows ACLs via smbcacls for full NT ACL support.
+# ---------------------------------------------------------------------------
+
+# Windows ACE access mask constants:
+#   0x1200a9 = read-only (READ + READ_ATTRIBUTES + READ_EXTENDED_ATTRIBUTES + ...)
+#   0x1f01ff = full control (FILE_ALL_ACCESS)
 cmd_grant_access() {
     local name=""
     local principal=""
@@ -331,6 +382,7 @@ cmd_grant_access() {
             --principal=*) principal="${1#*=}"; shift ;;
             --read-only) read_only=1; shift ;;
             *)
+                # Positional argument fallback for the principal name.
                 if [[ -z "$principal" ]]; then
                     principal="$1"
                 fi
@@ -360,6 +412,9 @@ cmd_grant_access() {
 
     local smb_principal="${principal}"
     if [[ "$principal_type" == "group" ]]; then
+        # If the share has no valid users/read list line yet, inject one
+        # right after the path/comment lines.  Otherwise append the group
+        # to the existing valid users line via sed.
         if ! grep -q "${name}" "$SAMBA_CONF" || ! grep -q "valid users" <(grep -A20 "^\[${name}\]" "$SAMBA_CONF"); then
             local tmp="${SAMBA_CONF}.tmp.$$"
             local in_stanza=0
@@ -370,6 +425,7 @@ cmd_grant_access() {
                     in_stanza=1
                     continue
                 fi
+                # Insert the new directive after path/comment but before any other key.
                 if [[ "$in_stanza" -eq 1 && "$added" -eq 0 ]] && [[ "$line" =~ ^[[:space:]]*(path|comment) ]]; then
                     :
                 elif [[ "$in_stanza" -eq 1 && "$added" -eq 0 ]]; then
@@ -383,12 +439,17 @@ cmd_grant_access() {
             done < "$SAMBA_CONF" > "$tmp"
             mv "$tmp" "$SAMBA_CONF"
         else
+            # The quadruple backslash is needed: sed sees \\, writes \ to smb.conf,
+            # and Samba interprets DOMAIN\Group as the Windows group format.
             sed -i "/^\[${name}\]/,/^\[/ s/valid users = .*/& @${DOMAIN}\\\\\\\\${principal}/" "$SAMBA_CONF"
         fi
     fi
 
     reload_samba
 
+    # Attempt to set a Windows NT ACL on the share directory via smbcacls.
+    # This requires the Administrator account and may fail if the DC is not
+    # fully provisioned or smbcacls is unavailable.
     if [[ -n "$share_path" && -d "$share_path" ]]; then
         if command -v smbcacls &>/dev/null; then
             log_info "Setting Windows ACL on ${share_path} for ${principal}..."
@@ -408,6 +469,7 @@ cmd_grant_access() {
     log_info "Access granted to ${principal_type} '${principal}' on share '${name}'"
 }
 
+# Remove all references to a principal from the share's smb.conf directives.
 cmd_revoke_access() {
     local name=""
     local principal=""
@@ -440,9 +502,13 @@ cmd_revoke_access() {
 
     backup_smb_conf
 
+    # Escape regex-special characters in the principal name so sed treats
+    # it as a literal string (handles names containing dots, brackets, etc.).
     local escaped_principal
     escaped_principal=$(printf '%s' "${principal}" | sed 's/[[\.*^$()+?{|]/\\&/g')
 
+    # Delete any valid users / write list / read list lines containing this
+    # principal within the share's section only.
     sed -i "/^\[${name}\]/,/^\[{
         /[[:space:]]*valid users =.*${escaped_principal}/d
         /[[:space:]]*write list =.*${escaped_principal}/d
@@ -453,6 +519,9 @@ cmd_revoke_access() {
     log_info "Access revoked from '${principal}' on share '${name}'"
 }
 
+# ---------------------------------------------------------------------------
+# Subcommand dispatch
+# ---------------------------------------------------------------------------
 if [[ $# -eq 0 ]] || [[ "$1" == "help" ]] || [[ "$1" == "--help" ]]; then
     cmd_usage
     exit 0

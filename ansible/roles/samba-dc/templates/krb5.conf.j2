@@ -1,18 +1,33 @@
+{# krb5.conf.j2 - Kerberos configuration for the Samba AD Domain Controller. #}
+{# #}
+{# Note: during provisioning, samba-tool generates its own krb5.conf in #}
+{# /var/lib/samba/private/krb5.conf which is copied to /etc/krb5.conf. #}
+{# This template is provided as a fallback/reference for manual setups. #}
+
 [libdefaults]
     default_realm = {{ samba_realm }}
+    {# dns_lookup_realm=false prevents realm discovery via DNS (we know our realm) #}
     dns_lookup_realm = false
+    {# dns_lookup_kdc=true allows KDC discovery via SRV records for multi-DC sites #}
     dns_lookup_kdc = true
+    {# Ticket lifetimes: 24h is standard; 7d renewal allows long-running processes #}
     ticket_lifetime = 24h
     renew_lifetime = 7d
+    {# forwardable=true allows delegated authentication (e.g., SMB multiuser) #}
     forwardable = true
+    {# rdns=false prevents reverse DNS lookups which can fail with internal domains #}
     rdns = false
 
+{# Explicit KDC/admin server definition for single-DC environments.
+   In multi-DC setups, rely on dns_lookup_kdc=true instead. #}
 [realms]
 {{ samba_realm }} = {
     kdc = {{ inventory_hostname }}
     admin_server = {{ inventory_hostname }}
 }
 
+{# Map hostnames in the domain to the Kerberos realm for service
+   principal resolution (e.g., host/dc01.example.internal@REALM). #}
 [domain_realm]
     .{{ samba_realm | lower }} = {{ samba_realm }}
     {{ samba_realm | lower }} = {{ samba_realm }}

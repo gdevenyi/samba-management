@@ -1,5 +1,14 @@
+# windows_clients.yml - Group variables for Windows client hosts.
+#
+# These values are used by playbooks/provision-windows.yml to join Windows
+# machines to the Samba AD domain via Ansible's win_domain_membership module.
+# Requires WinRM connectivity to the Windows targets.
+# SECURITY: windows_admin_password MUST be changed before running playbooks.
 ---
+# AD DNS domain to join.
 windows_domain: "example.internal"
+# IP of the Samba DC - set as the primary DNS server on the Windows client.
 windows_dc_ip: "10.0.0.1"
+# Domain admin credentials for the join operation.  CHANGE THIS.
 windows_admin_user: "Administrator"
 windows_admin_password: "CHANGE_ME_STRONG_PASSWORD"

@@ -1,3 +1,8 @@
+# healthcheck.yml - Ansible playbook to run domain health checks.
+#
+# Targets both DCs and Linux clients so that DNS, services, Kerberos,
+# and connectivity are verified across the entire domain.  Applies the
+# samba-healthcheck role which performs non-destructive read-only checks.
 ---
 - name: Run domain healthcheck
   hosts: linux_clients:dc

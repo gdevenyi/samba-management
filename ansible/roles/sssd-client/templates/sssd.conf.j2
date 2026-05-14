@@ -1,19 +1,31 @@
+{# sssd.conf.j2 - SSSD configuration for AD authentication on Linux clients. #}
+{# #}
+{# Deployed with mode 0600 because SSSD refuses to start if this file #}
+{# is readable by non-root users (it may contain sensitive parameters). #}
+
 [sssd]
 domains = {{ sssd_domain }}
 config_file_version = 2
 
 [domain/{{ sssd_domain }}]
 default_shell = {{ sssd_default_shell }}
+{# Store credentials for offline authentication when the DC is unreachable #}
 krb5_store_password_if_offline = True
 cache_credentials = {{ 'True' if sssd_cache_credentials else 'False' }}
 krb5_realm = {{ sssd_realm | upper }}
+{# realmd_tags are set by realm join; keeping them prevents realm from #}
+{# overwriting our config on subsequent realm operations #}
 realmd_tags = manages-system joined-with-adcli
 id_provider = ad
 fallback_homedir = {{ sssd_effective_fallback_homedir }}
 ad_domain = {{ sssd_domain }}
 use_fully_qualified_names = {{ 'True' if sssd_use_fully_qualified_names else 'False' }}
+{# ldap_id_mapping=true uses SSSD's algorithmic SID-to-UID mapping #}
+{# instead of requiring rfc2307 uidNumber/gidNumber in AD #}
 ldap_id_mapping = {{ 'True' if sssd_ldap_id_mapping else 'False' }}
 access_provider = {{ sssd_access_provider }}
 {% if sssd_access_provider == 'ad' %}
+{# permissive mode: log GPO denials but don't enforce them, avoiding #}
+{# lockouts from misconfigured or absent GPOs in a Samba AD domain #}
 ad_gpo_access_control = permissive
 {% endif %}

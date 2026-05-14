@@ -1,3 +1,13 @@
+{# auto.shares.j2 - Autofs direct map for CIFS shares with Kerberos auth. #}
+{# #}
+{# Each line format:  <key> <mount options> :<server>/<share> #}
+{# #}
+{# Mount options explained: #}
+{#   -fstype=cifs   Use the CIFS filesystem driver #}
+{#   multiuser       Each accessing user authenticates independently #}
+{#   sec=krb5        Use Kerberos tickets (no stored credentials needed) #}
+{#   cruid=%(UID)    Autofs macro expanded to the accessing user's UID; #}
+{#                   tells the CIFS client which Kerberos ccache to use #}
 {% for share in autofs_shares %}
 {{ share }} -fstype=cifs,multiuser,sec=krb5,cruid=%(UID) ://{{ autofs_dc_hostname }}.{{ autofs_domain }}/{{ share }}
 {% endfor %}

@@ -1,4 +1,8 @@
 #!/usr/bin/env bash
+# samba-group.sh - CLI tool for managing Samba AD groups.
+#
+# Wraps `samba-tool group` subcommands with validation, dry-run, and
+# recursive member listing.  Must run on the DC as root.
 set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
@@ -42,6 +46,9 @@ Global options:
 EOF
 }
 
+# ---------------------------------------------------------------------------
+# Group creation
+# ---------------------------------------------------------------------------
 cmd_add() {
     local groupname=""
     local description=""
@@ -66,6 +73,9 @@ cmd_add() {
         exit 1
     fi
 
+    # Build samba-tool command; --gid-number enables rfc2307 UID/GID
+    # consistency across Linux clients; --groupou places the group in
+    # a specific OU rather than the default CN=Users container.
     local -a cmd=(samba-tool group add "$groupname")
     [[ -n "$description" ]] && cmd+=(--description="$description")
     [[ -n "$gid" ]] && cmd+=(--gid-number="$gid")
@@ -84,6 +94,9 @@ cmd_add() {
     fi
 }
 
+# ---------------------------------------------------------------------------
+# Group deletion
+# ---------------------------------------------------------------------------
 cmd_delete() {
     local groupname="$1"; shift
 
@@ -107,6 +120,9 @@ cmd_delete() {
     fi
 }
 
+# ---------------------------------------------------------------------------
+# Listing / inspection
+# ---------------------------------------------------------------------------
 cmd_list() {
     local pattern=""
     while [[ $# -gt 0 ]]; do
@@ -137,6 +153,10 @@ cmd_show() {
     samba-tool group listmembers "$groupname" 2>/dev/null || echo "(no members or error listing)"
 }
 
+# ---------------------------------------------------------------------------
+# Membership management - members are passed as a comma-separated string
+# to keep CLI ergonomics simple (no repeated --member flags).
+# ---------------------------------------------------------------------------
 cmd_add_members() {
     local groupname=""
     local members=""
@@ -149,6 +169,7 @@ cmd_add_members() {
         exit 3
     fi
 
+    # Split the CSV string into a bash array; xargs trims whitespace.
     IFS=',' read -ra member_array <<< "$members"
     for member in "${member_array[@]}"; do
         member="$(echo "$member" | xargs)"
@@ -195,6 +216,10 @@ cmd_remove_members() {
     done
 }
 
+# ---------------------------------------------------------------------------
+# Member listing - optional --recursive flag walks into nested groups.
+# Note: this is a simple one-level recursion, not a full transitive crawl.
+# ---------------------------------------------------------------------------
 cmd_list_members() {
     local groupname=""
     local recursive=0
@@ -220,6 +245,7 @@ cmd_list_members() {
         echo "=== Recursive member lookup (nested groups) ==="
         local members
         members=$(samba-tool group listmembers "$groupname" 2>/dev/null)
+        # For each member, check if IT is a group and list its members.
         while IFS= read -r member; do
             [[ -z "$member" ]] && continue
             if group_exists "$member"; then
@@ -230,6 +256,9 @@ cmd_list_members() {
     fi
 }
 
+# ---------------------------------------------------------------------------
+# Subcommand dispatch
+# ---------------------------------------------------------------------------
 if [[ $# -eq 0 ]] || [[ "$1" == "help" ]] || [[ "$1" == "--help" ]]; then
     cmd_usage
     exit 0

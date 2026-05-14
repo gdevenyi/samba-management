@@ -1,11 +1,22 @@
 #!/usr/bin/env bash
+# mount-manager.sh - Linux client tool for managing autofs-based CIFS mounts.
+#
+# Sets up autofs master/map files so that Samba shares are mounted on-demand
+# (when accessed) and unmounted after an idle timeout.  Uses Kerberos
+# authentication (sec=krb5) with multiuser mode so each user accesses the
+# share under their own identity without storing passwords locally.
+#
+# Prerequisites: the client must be domain-joined (SSSD/realmd) and the
+# user must have a valid Kerberos ticket (kinit).
 set -euo pipefail
 
+# --- ANSI colors (local copy; this script is standalone on clients) ---
 RED='\033[0;31m'
 GREEN='\033[0;32m'
 YELLOW='\033[1;33m'
 NC='\033[0m'
 
+# --- Autofs file locations ---
 AUTOMOUNT_BASE="${AUTOMOUNT_BASE:-/mnt/shares}"
 AUTO_MASTER="/etc/auto.master.d/shares.autofs"
 AUTO_MAP="/etc/auto.shares"
@@ -14,6 +25,12 @@ log_info() { printf "${GREEN}[INFO]${NC} %s\n" "$*"; }
 log_warn() { printf "${YELLOW}[WARN]${NC} %s\n" "$*"; }
 log_error() { printf "${RED}[ERROR]${NC} %s\n" "$*"; }
 
+# ---------------------------------------------------------------------------
+# DC auto-detection - tries multiple sources to find the AD domain name
+# and DC hostname without requiring manual configuration.
+# ---------------------------------------------------------------------------
+
+# Detect the AD domain name from realm, sssd.conf, or smb.conf.
 detect_dc() {
     if command -v realm &>/dev/null; then
         realm list 2>/dev/null | grep "domain-name" | head -1 | awk '{print $NF}'
@@ -24,6 +41,8 @@ detect_dc() {
     fi
 }
 
+# Find the DC hostname by querying the _ldap._tcp SRV record that Samba AD
+# registers in its DNS zone.  This is the standard AD DC discovery mechanism.
 detect_dc_host() {
     local domain
     domain=$(detect_dc)
@@ -46,6 +65,9 @@ Subcommands:
 EOF
 }
 
+# ---------------------------------------------------------------------------
+# Initial setup - creates the autofs master map and empty shares map.
+# ---------------------------------------------------------------------------
 cmd_setup() {
     local base="${AUTOMOUNT_BASE}"
     local server=""
@@ -66,6 +88,8 @@ cmd_setup() {
     mkdir -p "${base}"
     mkdir -p /etc/auto.master.d
 
+    # The master map entry: mount point, map file, idle timeout in seconds.
+    # --timeout=300 means shares unmount after 5 minutes of inactivity.
     echo "${base} /etc/auto.shares --timeout=300" > "$AUTO_MASTER"
     touch "$AUTO_MAP"
 
@@ -76,6 +100,9 @@ cmd_setup() {
     log_info "Use '$(basename "$0") add <sharename>' to add shares."
 }
 
+# ---------------------------------------------------------------------------
+# Add a share entry to the autofs map.
+# ---------------------------------------------------------------------------
 cmd_add() {
     local name="$1"; shift
     local server=""
@@ -101,16 +128,25 @@ cmd_add() {
         exit 1
     fi
 
+    # CIFS mount options:
+    #   multiuser  - each process authenticates as its own user via Kerberos
+    #   sec=krb5   - use Kerberos tickets for authentication (no stored creds)
+    #   cruid=%(UID) - tells the CIFS client to use the Kerberos ccache of the
+    #                  accessing user (the %(UID) macro is expanded by autofs)
     local domain
     domain=$(detect_dc)
     echo "${name} -fstype=cifs,multiuser,sec=krb5,cruid=%(UID) ://${server}/${name}" >> "$AUTO_MAP"
 
+    # Signal autofs to re-read its maps without a full restart.
     automount -c 2>/dev/null || systemctl restart autofs
 
     log_info "Added share '${name}' -> //${server}/${name}"
     log_info "Access at: ${AUTOMOUNT_BASE}/${name}"
 }
 
+# ---------------------------------------------------------------------------
+# Remove a share entry and reload autofs.
+# ---------------------------------------------------------------------------
 cmd_remove() {
     local name="$1"
 
@@ -125,6 +161,9 @@ cmd_remove() {
     log_info "Removed share '${name}'"
 }
 
+# ---------------------------------------------------------------------------
+# List configured shares with their mount points.
+# ---------------------------------------------------------------------------
 cmd_list() {
     if [[ ! -f "$AUTO_MAP" ]]; then
         log_warn "No autofs shares configured. Run '$(basename "$0") setup' first."
@@ -141,6 +180,9 @@ cmd_list() {
     done < "$AUTO_MAP"
 }
 
+# ---------------------------------------------------------------------------
+# Test mount - triggers an on-demand mount by accessing the directory.
+# ---------------------------------------------------------------------------
 cmd_test() {
     local name="$1"
     local mount_point="${AUTOMOUNT_BASE}/${name}"
@@ -150,6 +192,7 @@ cmd_test() {
         exit 3
     fi
 
+    # Simply listing the directory triggers autofs to mount the share.
     log_info "Attempting to trigger mount of ${mount_point}..."
     if ls "$mount_point" &>/dev/null; then
         log_info "Mount successful. Contents:"
@@ -160,11 +203,17 @@ cmd_test() {
     fi
 }
 
+# ---------------------------------------------------------------------------
+# Force autofs to re-read map files.
+# ---------------------------------------------------------------------------
 cmd_refresh() {
     automount -c 2>/dev/null || systemctl restart autofs
     log_info "Autofs maps reloaded"
 }
 
+# ---------------------------------------------------------------------------
+# Subcommand dispatch
+# ---------------------------------------------------------------------------
 if [[ $# -eq 0 ]] || [[ "$1" == "help" ]] || [[ "$1" == "--help" ]]; then
     cmd_usage
     exit 0

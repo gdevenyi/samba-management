@@ -1,3 +1,9 @@
+# provision-dc.yml - Ansible playbook to provision a Samba AD Domain Controller.
+#
+# Applies the samba-dc role which installs packages, runs `samba-tool domain
+# provision`, deploys smb.conf/krb5.conf/ntp.conf, creates shares, and
+# verifies DNS and Kerberos.  Safe to re-run: provisioning tasks are gated
+# by the presence of sam.ldb.
 ---
 - name: Provision Samba Active Directory Domain Controller
   hosts: dc

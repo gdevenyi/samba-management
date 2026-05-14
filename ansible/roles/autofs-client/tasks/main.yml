@@ -1,3 +1,8 @@
+# autofs-client tasks - Standalone autofs configuration for CIFS share mounting.
+#
+# A lightweight role that only installs autofs/cifs-utils and deploys the
+# map files.  Use when the client is already domain-joined and you just
+# need to add or update share mounts.
 ---
 - name: Install autofs and cifs-utils
   ansible.builtin.apt:
@@ -7,12 +12,16 @@
     state: present
     update_cache: true
 
+# /etc/auto.master.d/ is the standard location for autofs master map
+# snippets on Debian/Ubuntu systems.
 - name: Create autofs master directory
   ansible.builtin.file:
     path: /etc/auto.master.d
     state: directory
     mode: "0755"
 
+# Master map: tells autofs to manage the base mount point using the
+# auto.shares map file with the configured idle timeout.
 - name: Deploy autofs master map
   ansible.builtin.template:
     src: shares.autofs.j2
@@ -20,6 +29,8 @@
     mode: "0644"
   notify: Restart autofs
 
+# The shares map: each line defines a share with CIFS mount options
+# including Kerberos authentication and multiuser mode.
 - name: Deploy autofs shares map
   ansible.builtin.template:
     src: auto.shares.j2

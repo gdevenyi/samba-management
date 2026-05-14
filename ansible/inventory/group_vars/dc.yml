@@ -1,10 +1,23 @@
+# dc.yml - Group variables for the Samba AD Domain Controller hosts.
+#
+# These values override role defaults in roles/samba-dc/defaults/main.yml.
+# SECURITY: samba_admin_password MUST be changed before running playbooks.
+# Consider using Ansible Vault for production deployments.
 ---
+# Kerberos realm (must be uppercase FQDN).
 samba_realm: "EXAMPLE.INTERNAL"
+# NetBIOS domain name (pre-Windows 2000 compatibility).
 samba_domain: "EXAMPLE"
 samba_netbios: "EXAMPLE"
+# Initial Administrator password - CHANGE THIS before provisioning.
 samba_admin_password: "CHANGE_ME_STRONG_PASSWORD"
+# DNS forwarder for queries outside the AD zone (Samba INTERNAL_DNS backend).
 samba_dns_forwarder: "8.8.8.8"
+# TLS is disabled by default; enable only after deploying proper certificates.
 samba_tls_enabled: false
+# List of file shares to provision on the DC.  Each entry creates both
+# the directory on disk and the share stanza in smb.conf.
+# valid_users uses the DOMAIN\Group format with escaped backslash.
 samba_shares:
   - name: public
     path: /srv/samba/shares/public

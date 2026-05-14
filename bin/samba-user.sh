@@ -1,4 +1,9 @@
 #!/usr/bin/env bash
+# samba-user.sh - CLI tool for managing Samba AD users.
+#
+# Wraps `samba-tool user` subcommands with input validation, dry-run support,
+# confirmation prompts, and home-directory provisioning.  Must run on the DC
+# as root because samba-tool requires direct access to the local sam.ldb.
 set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
@@ -7,6 +12,7 @@ source "${SCRIPT_DIR}/../lib/config.sh"
 
 require_root
 
+# Strip global flags (--force, --dry-run, --debug) before subcommand dispatch.
 parse_global_args "$@"
 set -- "${GLOBAL_REMAINING_ARGS[@]}"
 
@@ -56,6 +62,9 @@ Global options:
 EOF
 }
 
+# ---------------------------------------------------------------------------
+# User creation
+# ---------------------------------------------------------------------------
 cmd_add() {
     local username=""
     local given_name=""
@@ -88,11 +97,15 @@ cmd_add() {
         exit 1
     fi
 
+    # Prompt interactively when --password was not supplied on the CLI.
+    # -r prevents backslash interpretation; -s hides the input.
     if [[ -z "$password" ]]; then
         read -rsp "Enter password for ${username}: " password
         echo
     fi
 
+    # Build the samba-tool command dynamically, appending only the flags
+    # the caller actually provided.
     local -a cmd=(samba-tool user create "$username")
     [[ -n "$given_name" ]] && cmd+=(--given-name="$given_name")
     [[ -n "$surname" ]] && cmd+=(--surname="$surname")
@@ -104,6 +117,8 @@ cmd_add() {
         return
     fi
 
+    # Pipe the password via stdin (--newpassword-file=-) to avoid it
+    # appearing in /proc/*/cmdline which is world-readable on some systems.
     log_info "Creating user '${username}'..."
     if printf '%s' "$password" | "${cmd[@]}" --newpassword-file=-; then
         log_info "User '${username}' created successfully"
@@ -112,6 +127,9 @@ cmd_add() {
         exit 1
     fi
 
+    # Provision a local home directory on the DC.  In a setup where home
+    # dirs are served via autofs/CIFS from the DC, this directory IS the
+    # network home and will be exported via the [homes] share.
     local home_dir="${HOME_BASE}/${username}"
     if [[ ! -d "$home_dir" ]]; then
         mkdir -p "$home_dir"
@@ -119,12 +137,16 @@ cmd_add() {
         log_info "Created home directory: ${home_dir}"
     fi
 
+    # Optionally add the user to an AD group immediately after creation.
     if [[ -n "$group" ]]; then
         log_info "Adding '${username}' to group '${group}'..."
         samba-tool group addmembers "$group" "$username" || log_warn "Failed to add to group '${group}'"
     fi
 }
 
+# ---------------------------------------------------------------------------
+# User deletion
+# ---------------------------------------------------------------------------
 cmd_delete() {
     local username=""
     local archive_home=0
@@ -145,6 +167,8 @@ cmd_delete() {
 
     confirm_action "Delete user '${username}'?" || exit 0
 
+    # Archive the home directory before deletion so data can be recovered
+    # if the account was removed by mistake.
     if [[ "$archive_home" -eq 1 ]]; then
         local home_dir="${HOME_BASE}/${username}"
         if [[ -d "$home_dir" ]]; then
@@ -167,6 +191,11 @@ cmd_delete() {
     fi
 }
 
+# ---------------------------------------------------------------------------
+# User modification - limited by what samba-tool exposes directly.
+# Only givenName is set via ldbmodify; other attributes require ADUC/RSAT
+# because samba-tool user edit does not support arbitrary LDAP attributes.
+# ---------------------------------------------------------------------------
 cmd_modify() {
     local username=""
     local given_name=""
@@ -196,9 +225,16 @@ cmd_modify() {
     dry_run "Would modify user: ${username}" && return
 
     log_info "Modifying user '${username}'..."
+
+    # Convert the dotted REALM (e.g. EXAMPLE.INTERNAL) into an LDAP DN suffix
+    # (DC=EXAMPLE,DC=INTERNAL) for use with ldbmodify.
     local realm_dc
     realm_dc=$(echo "$REALM" | sed 's/\./,DC=/g; s/^/DC=/')
     local user_dn="CN=${username},CN=Users,${realm_dc}"
+
+    # Only givenName is applied via ldbmodify; all other attributes are
+    # flagged as requiring ADUC because samba-tool lacks fine-grained
+    # attribute setters and direct LDAP LDIF modification is fragile.
     if [[ -n "$given_name" ]]; then
         ldbmodify -H /var/lib/samba/private/sam.ldb <<EOF 2>/dev/null || log_warn "Could not set givenName (use ADUC for full attribute management)"
 dn: ${user_dn}
@@ -215,6 +251,9 @@ EOF
     log_info "User '${username}' modification processed. For full attribute editing, use ADUC/RSAT."
 }
 
+# ---------------------------------------------------------------------------
+# Listing / inspection
+# ---------------------------------------------------------------------------
 cmd_list() {
     local pattern=""
     while [[ $# -gt 0 ]]; do
@@ -240,6 +279,9 @@ cmd_show() {
     samba-tool user show "$username"
 }
 
+# ---------------------------------------------------------------------------
+# Account enable / disable
+# ---------------------------------------------------------------------------
 cmd_enable() {
     local username="$1"
     if ! user_exists "$username"; then
@@ -263,6 +305,9 @@ cmd_disable() {
     log_info "User '${username}' disabled"
 }
 
+# ---------------------------------------------------------------------------
+# Password management
+# ---------------------------------------------------------------------------
 cmd_set_password() {
     local username=""
     local password=""
@@ -287,10 +332,14 @@ cmd_set_password() {
     fi
 
     dry_run "Would set password for: ${username}" && return
+    # Pipe password via stdin to keep it out of the process table.
     printf '%s' "$password" | samba-tool user setpassword "$username" --newpassword-file=-
     log_info "Password set for '${username}'"
 }
 
+# ---------------------------------------------------------------------------
+# Domain password policy
+# ---------------------------------------------------------------------------
 cmd_password_policy_show() {
     samba-tool domain passwordsettings show
 }
@@ -313,6 +362,7 @@ cmd_password_policy_set() {
         esac
     done
 
+    # Build command incrementally so only explicitly-set flags are included.
     local -a cmd=(samba-tool domain passwordsettings set)
     [[ -n "$complexity" ]] && cmd+=(--complexity="$complexity")
     [[ -n "$min_length" ]] && cmd+=(--min-pwd-length="$min_length")
@@ -325,6 +375,9 @@ cmd_password_policy_set() {
     log_info "Password policy updated"
 }
 
+# ---------------------------------------------------------------------------
+# Subcommand dispatch
+# ---------------------------------------------------------------------------
 if [[ $# -eq 0 ]] || [[ "$1" == "help" ]] || [[ "$1" == "--help" ]]; then
     cmd_usage
     exit 0

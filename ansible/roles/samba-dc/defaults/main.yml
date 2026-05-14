@@ -1,33 +1,61 @@
+# samba-dc defaults - Default variables for the samba-dc Ansible role.
+#
+# All values here can be overridden by group_vars or host_vars.
+# These defaults represent a typical small-office Samba AD DC deployment.
 ---
+# --- Domain identity ---
 samba_realm: "EXAMPLE.INTERNAL"
 samba_domain: "EXAMPLE"
 samba_netbios: "EXAMPLE"
+# Empty by default; MUST be set in group_vars/dc.yml or via vault.
 samba_admin_password: ""
+
+# --- Samba server configuration ---
+# SAMBA_INTERNAL is the simplest DNS backend for small deployments.
+# For larger sites, use BIND9_DLZ instead.
 samba_dns_backend: "SAMBA_INTERNAL"
 samba_dns_forwarder: "8.8.8.8"
 samba_server_role: "dc"
+# rfc2307 enables POSIX UID/GID attributes in AD for NFS/CIFS interop.
 samba_use_rfc2307: true
 samba_tls_enabled: false
+
+# --- File system paths ---
 samba_share_base: "/srv/samba/shares"
 samba_home_base: "/home"
 samba_default_shell: "/bin/bash"
+
+# --- NTP servers (Kerberos requires accurate time sync) ---
 samba_ntp_servers:
   - "0.pool.ntp.org"
   - "1.pool.ntp.org"
   - "2.pool.ntp.org"
   - "3.pool.ntp.org"
+
+# --- Organizational Units to create in AD ---
 samba_ous:
   - "Users"
   - "Groups"
   - "Computers"
   - "Shares"
+
+# --- File shares (empty by default; define in group_vars) ---
 samba_shares: []
+
+# --- Home share settings ---
 samba_enable_homes: true
+
+# --- Recycle bin VFS module (per-share safety net) ---
 samba_enable_recycle: true
 samba_recycle_keep_tree: true
+# 0 means no size limit on recycled files.
 samba_recycle_max_size: 0
+
+# --- Domain password policy (applied at provisioning time) ---
 samba_password_complexity: "on"
 samba_password_min_length: 7
+# Password max age in days; matches Windows Server default.
 samba_password_max_age: 42
 samba_password_min_age: 1
+# Number of remembered passwords to prevent reuse.
 samba_password_history: 24

@@ -1,9 +1,14 @@
+# sssd-client handlers - Service restart handlers triggered by config changes.
 ---
+# SSSD must be restarted whenever sssd.conf changes.  The mode 0600
+# requirement on sssd.conf (set in the template task) is enforced by
+# SSSD itself; it will refuse to start with world-readable config.
 - name: Restart sssd
   ansible.builtin.systemd:
     name: sssd
     state: restarted
 
+# Autofs must be restarted when map files change so it re-reads them.
 - name: Restart autofs
   ansible.builtin.systemd:
     name: autofs

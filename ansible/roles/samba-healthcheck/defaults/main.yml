@@ -1,4 +1,11 @@
+# samba-healthcheck defaults - Default variables for the healthcheck role.
+#
+# These values identify the AD domain and test user for verification.
+# Override in group_vars if they differ from the defaults.
 ---
+# Kerberos realm (uppercase).
 healthcheck_realm: "EXAMPLE.INTERNAL"
+# DC hostname for connectivity checks.
 healthcheck_dc_hostname: "dc01"
+# Test user for getent verification (must exist in AD).
 healthcheck_test_user: "Administrator"

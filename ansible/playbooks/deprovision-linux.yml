@@ -1,3 +1,9 @@
+# deprovision-linux.yml - Ansible playbook to remove a Linux client from the AD domain.
+#
+# Reverses the provisioning done by provision-linux-sssd.yml: leaves the
+# domain, stops/disables SSSD, and removes all SSSD and autofs configuration
+# files.  ignore_errors is used throughout because the client may be in a
+# partially-provisioned state.
 ---
 - name: Deprovision Linux client from domain
   hosts: linux_clients
@@ -9,6 +15,7 @@
           - sssd_domain is defined
         fail_msg: "sssd_domain must be defined"
 
+    # realm leave removes the computer object from AD and cleans up local config.
     - name: Leave the domain
       ansible.builtin.shell: "realm leave {{ sssd_domain }}"
       ignore_errors: true
@@ -20,11 +27,13 @@
         enabled: false
       ignore_errors: true
 
+    # sssd.conf contains cached credentials; always remove it on deprovision.
     - name: Remove sssd.conf
       ansible.builtin.file:
         path: /etc/sssd/sssd.conf
         state: absent
 
+    # Remove all autofs configuration for shares and home directories.
     - name: Remove autofs share configs
       ansible.builtin.file:
         path: "{{ item }}"

@@ -1,4 +1,13 @@
+# samba-healthcheck tasks - Non-destructive verification of domain health.
+#
+# Checks DNS SRV records, Kerberos tickets, SSSD/Winbind/Autofs services,
+# NSS user/group resolution, DC network connectivity, and active CIFS mounts.
+# All checks use ignore_errors: true so the full summary is always printed
+# even when individual checks fail.
 ---
+# --- DNS checks ---
+# SRV records are the primary service discovery mechanism in AD.  Without
+# them, clients cannot locate domain controllers automatically.
 - name: Check DNS SRV _ldap._tcp
   ansible.builtin.command: "host -t SRV _ldap._tcp.{{ healthcheck_realm | lower }}"
   register: dns_ldap
@@ -17,18 +26,21 @@
   changed_when: false
   failed_when: "'has address' not in dns_a.stdout"
 
+# --- Kerberos check ---
 - name: Check Kerberos ticket
   ansible.builtin.command: klist
   register: klist_result
   changed_when: false
   ignore_errors: true
 
+# --- Service checks ---
 - name: Check SSSD service
   ansible.builtin.systemd:
     name: sssd
   register: sssd_status
   ignore_errors: true
 
+# Winbind is optional (SSSD is the preferred AD client on Linux).
 - name: Check winbind service
   ansible.builtin.systemd:
     name: winbind
@@ -41,18 +53,25 @@
   register: autofs_status
   ignore_errors: true
 
+# --- NSS resolution check ---
 - name: Check domain user lookup
   ansible.builtin.command: "getent passwd {{ healthcheck_test_user }}@{{ healthcheck_realm }}"
   register: getent_user
   changed_when: false
   ignore_errors: true
 
+# --- Active CIFS mounts ---
 - name: Check mounted CIFS shares
   ansible.builtin.command: mount -t cifs
   register: cifs_mounts
   changed_when: false
   ignore_errors: true
 
+# --- Network connectivity to DC ---
+# These ports must be open for AD clients to function:
+#   445 - SMB/CIFS file sharing
+#   88  - Kerberos authentication
+#   53  - DNS resolution
 - name: Check connectivity to DC (port 445)
   ansible.builtin.wait_for:
     host: "{{ healthcheck_dc_hostname }}.{{ healthcheck_realm | lower }}"
@@ -77,6 +96,9 @@
   ignore_errors: true
   register: dc_port_53
 
+# --- Summary report ---
+# Uses Jinja2 conditionals on registered results to produce a PASS/FAIL
+# matrix.  The `is not failed` test works with ignore_errors: true tasks.
 - name: Healthcheck summary
   ansible.builtin.debug:
     msg: |

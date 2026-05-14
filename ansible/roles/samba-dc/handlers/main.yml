@@ -14,6 +14,7 @@
 
 - name: Reload resolv
   ansible.builtin.shell: resolvconf -u || true
+  changed_when: true
   listen: reload resolv
 
 - name: Clean Samba runtime files
@@ -22,4 +23,5 @@
     rm -f /var/cache/samba/*.tdb 2>/dev/null || true
   args:
     executable: /bin/bash
+  changed_when: true
   listen: Clean Samba runtime files

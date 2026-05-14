@@ -9,13 +9,14 @@
   until: "'has SRV record' in dns_srv.stdout"
 
 - name: Verify Kerberos authentication
-  ansible.builtin.shell: >
+  ansible.builtin.shell: >-
+    set -o pipefail;
     echo '{{ samba_admin_password }}' | kinit Administrator
   args:
     executable: /bin/bash
   no_log: true
   changed_when: false
-  ignore_errors: true
+  failed_when: false
 
 - name: Verify netlogon share
   ansible.builtin.command: "smbclient //localhost/netlogon -U Administrator -c ls"

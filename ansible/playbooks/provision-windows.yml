@@ -18,8 +18,10 @@
 
     # Join the domain.  The module handles computer account creation in AD
     # and returns reboot_required when the join succeeds.
+    # NOTE: ansible.windows.win_domain_membership was removed in v3.0.0.
+    # Replace with microsoft.ad.membership if the collection is available.
     - name: Join the domain
-      ansible.windows.win_domain_membership:
+      ansible.windows.win_domain_membership: # noqa: syntax-check[specific]
         dns_domain_name: "{{ windows_domain }}"
         domain_admin_user: "{{ windows_admin_user }}"
         domain_admin_password: "{{ windows_admin_password }}"

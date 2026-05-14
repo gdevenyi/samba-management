@@ -43,13 +43,13 @@
       register: _sudo_schema_apply
       changed_when: _sudo_schema_apply.rc == 0
 
-    - name: Start Samba AD DC after sudo schema modification
+    - name: Start Samba AD DC after sudo schema modification # noqa: no-handler
       ansible.builtin.systemd:
         name: "{{ samba_dc_service }}"
         state: started
       when: _samba_stopped_for_sudo_schema is changed
 
-    - name: Wait for Samba to be ready after sudo schema
+    - name: Wait for Samba to be ready after sudo schema # noqa: no-handler
       ansible.builtin.command:
         cmd: samba-tool testparm --suppress-prompt
       register: _samba_ready_sudo
@@ -68,6 +68,7 @@
       args:
         executable: /bin/bash
       register: _sudo_schema_verify_applied
+      changed_when: false
       failed_when: _sudo_schema_verify_applied.rc != 0
 
     - name: Create sudo schema marker file

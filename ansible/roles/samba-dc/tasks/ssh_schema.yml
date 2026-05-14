@@ -47,13 +47,13 @@
       register: _ssh_schema_apply
       changed_when: _ssh_schema_apply.rc == 0
 
-    - name: Start Samba AD DC after SSH schema modification
+    - name: Start Samba AD DC after SSH schema modification # noqa: no-handler
       ansible.builtin.systemd:
         name: "{{ samba_dc_service }}"
         state: started
       when: _samba_stopped_for_ssh_schema is changed
 
-    - name: Wait for Samba to be ready after SSH schema
+    - name: Wait for Samba to be ready after SSH schema # noqa: no-handler
       ansible.builtin.command:
         cmd: samba-tool testparm --suppress-prompt
       register: _samba_ready_ssh
@@ -72,6 +72,7 @@
       args:
         executable: /bin/bash
       register: _ssh_schema_verify_applied
+      changed_when: false
       failed_when: _ssh_schema_verify_applied.rc != 0
 
     - name: Create SSH schema marker file

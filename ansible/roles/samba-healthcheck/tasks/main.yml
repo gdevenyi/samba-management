@@ -31,41 +31,41 @@
   ansible.builtin.command: klist
   register: klist_result
   changed_when: false
-  ignore_errors: true
+  failed_when: false
 
 # --- Service checks ---
 - name: Check SSSD service
   ansible.builtin.systemd:
     name: sssd
   register: sssd_status
-  ignore_errors: true
+  failed_when: false
 
 # Winbind is optional (SSSD is the preferred AD client on Linux).
 - name: Check winbind service
   ansible.builtin.systemd:
     name: winbind
   register: winbind_status
-  ignore_errors: true
+  failed_when: false
 
 - name: Check autofs service
   ansible.builtin.systemd:
     name: autofs
   register: autofs_status
-  ignore_errors: true
+  failed_when: false
 
 # --- NSS resolution check ---
 - name: Check domain user lookup
   ansible.builtin.command: "getent passwd {{ healthcheck_test_user }}@{{ healthcheck_realm }}"
   register: getent_user
   changed_when: false
-  ignore_errors: true
+  failed_when: false
 
 # --- Active CIFS mounts ---
 - name: Check mounted CIFS shares
-  ansible.builtin.command: mount -t cifs
+  ansible.builtin.command: mount -t cifs # noqa: command-instead-of-module
   register: cifs_mounts
   changed_when: false
-  ignore_errors: true
+  failed_when: false
 
 # --- Network connectivity to DC ---
 # These ports must be open for AD clients to function:
@@ -77,7 +77,7 @@
     host: "{{ healthcheck_dc_hostname }}.{{ healthcheck_realm | lower }}"
     port: 445
     timeout: 5
-  ignore_errors: true
+  failed_when: false
   register: dc_port_445
 
 - name: Check connectivity to DC (port 88)
@@ -85,7 +85,7 @@
     host: "{{ healthcheck_dc_hostname }}.{{ healthcheck_realm | lower }}"
     port: 88
     timeout: 5
-  ignore_errors: true
+  failed_when: false
   register: dc_port_88
 
 - name: Check connectivity to DC (port 53)
@@ -93,7 +93,7 @@
     host: "{{ healthcheck_dc_hostname }}.{{ healthcheck_realm | lower }}"
     port: 53
     timeout: 5
-  ignore_errors: true
+  failed_when: false
   register: dc_port_53
 
 # --- Summary report ---

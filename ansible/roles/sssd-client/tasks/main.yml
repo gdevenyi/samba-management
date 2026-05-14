@@ -40,9 +40,11 @@
 
 # --- Configure DNS to point to the DC ---
 - name: Set DNS server to DC for domain resolution
-  ansible.builtin.shell: >
+  ansible.builtin.shell: >-
     resolvectl dns {{ ansible_facts['default_ipv4']['interface'] }} {{ sssd_dc_ip | default(groups['dc'][0]) }}
     && resolvectl domain {{ ansible_facts['default_ipv4']['interface'] }} {{ sssd_domain }}
+  args:
+    executable: /bin/bash
   changed_when: true
 
 # --- Domain discovery and join ---
@@ -60,11 +62,13 @@
 # The expect module provides the password non-interactively.
 # no_log: true prevents the password from appearing in Ansible output.
 - name: Join the AD domain
-  ansible.builtin.shell: >
+  ansible.builtin.shell: >-
+    set -o pipefail;
     echo '{{ sssd_admin_password }}' | realm join -v -U {{ sssd_admin_user }} {{ sssd_domain }}
   args:
     executable: /bin/bash
   when: sssd_domain not in realm_list.stdout
+  changed_when: true
   no_log: true
 
 # --- Home directory mode selection ---
@@ -98,12 +102,12 @@
 # on first login.  Only enable for local mode; in mounted mode the home
 # dir comes from the DC via CIFS.
 - name: Enable pam_mkhomedir (local homedirs only)
-  ansible.builtin.shell: pam-auth-update --enable mkhomedir
+  ansible.builtin.command: pam-auth-update --enable mkhomedir
   when: sssd_homedir_mode == 'local'
   changed_when: false
 
 - name: Disable pam_mkhomedir (mounted homedirs)
-  ansible.builtin.shell: pam-auth-update --disable mkhomedir
+  ansible.builtin.command: pam-auth-update --disable mkhomedir
   when: sssd_homedir_mode == 'mounted'
   changed_when: false
 
@@ -112,6 +116,7 @@
 # home directories.  The autofs timeout determines how long shares stay
 # mounted after last access.
 - name: Configure autofs
+  when: sssd_configure_autofs
   block:
     - name: Create autofs master directory
       ansible.builtin.file:
@@ -148,6 +153,7 @@
     # Home directory autofs: uses a wildcard map so any user accessing
     # /home/ad/<username> triggers a CIFS mount of their DC home share.
     - name: Configure autofs home directory mounts
+      when: sssd_homedir_mode == 'mounted'
       block:
         - name: Create mounted home base directory
           ansible.builtin.file:
@@ -173,14 +179,12 @@
             dest: /etc/auto.home
             mode: "0644"
           notify: Restart autofs
-      when: sssd_homedir_mode == 'mounted'
 
     - name: Enable and start autofs
       ansible.builtin.systemd:
         name: autofs
         enabled: true
         state: started
-  when: sssd_configure_autofs
 
 # --- Start SSSD ---
 - name: Enable and start sssd

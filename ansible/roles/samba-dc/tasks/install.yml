@@ -13,7 +13,7 @@
     masked: true
     state: stopped
   loop: "{{ samba_dc_mask_services }}"
-  ignore_errors: true
+  failed_when: false
 
 - name: Unmask and enable samba-ad-dc service
   ansible.builtin.systemd:

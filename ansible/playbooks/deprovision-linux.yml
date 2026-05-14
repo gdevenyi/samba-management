@@ -1,28 +1,21 @@
 ---
 - name: Deprovision Linux client from domain
-  hosts: linux_clients:member_servers
+  hosts: linux_clients
   become: true
   tasks:
     - name: Validate domain variable is defined
       ansible.builtin.assert:
         that:
-          - sssd_domain is defined or winbind_domain is defined
-        fail_msg: "Either sssd_domain or winbind_domain must be defined"
+          - sssd_domain is defined
+        fail_msg: "sssd_domain must be defined"
 
     - name: Leave the domain
-      ansible.builtin.shell: "realm leave {{ sssd_domain | default(winbind_domain) }}"
+      ansible.builtin.shell: "realm leave {{ sssd_domain }}"
       ignore_errors: true
 
     - name: Stop and disable SSSD
       ansible.builtin.systemd:
         name: sssd
-        state: stopped
-        enabled: false
-      ignore_errors: true
-
-    - name: Stop and disable winbind
-      ansible.builtin.systemd:
-        name: winbind
         state: stopped
         enabled: false
       ignore_errors: true
@@ -39,9 +32,5 @@
       loop:
         - /etc/auto.master.d/shares.autofs
         - /etc/auto.shares
-
-    - name: Remove libpam-winbind
-      ansible.builtin.apt:
-        name: libpam-winbind
-        state: absent
-      ignore_errors: true
+        - /etc/auto.master.d/home.autofs
+        - /etc/auto.home

@@ -1,6 +1,0 @@
----
-- name: Provision Linux Samba member server with winbind
-  hosts: member_servers
-  become: true
-  roles:
-    - winbind-client

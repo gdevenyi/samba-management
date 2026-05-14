@@ -28,6 +28,7 @@
       - realmd
       - adcli
       - krb5-user
+      - samba-common-bin
       - libnss-sss
       - libpam-sss
       - autofs
@@ -56,7 +57,7 @@
     command: "realm join -v -U {{ sssd_admin_user }} {{ sssd_domain }}"
     responses:
       "Password for.*": "{{ sssd_admin_password }}"
-  when: "sssd_domain + '\\n' not in realm_list.stdout and sssd_domain not in (realm_list.stdout | default(''))"
+  when: sssd_domain not in realm_list.stdout
   no_log: true
 
 # --- Home directory mode selection ---

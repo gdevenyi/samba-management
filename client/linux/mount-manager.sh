@@ -155,7 +155,7 @@ cmd_remove() {
         exit 3
     fi
 
-    sed -i "/^${name}[[:space:]]/d" "$AUTO_MAP"
+    grep -v "^${name}[[:space:]]" "$AUTO_MAP" > "${AUTO_MAP}.tmp" || true ; mv "${AUTO_MAP}.tmp" "$AUTO_MAP"
     automount -c 2>/dev/null || systemctl restart autofs
 
     log_info "Removed share '${name}'"

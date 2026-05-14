@@ -1,0 +1,156 @@
+# Post-provisioning configuration: smb.conf, NTP, DNS, shares, OUs.
+# These tasks run every time (idempotent), except where gated by
+# _samba_domain_provisioned (first-run-only).
+---
+- name: Deploy smb.conf from template
+  ansible.builtin.template:
+    src: smb.conf.j2
+    dest: /etc/samba/smb.conf
+    mode: "0644"
+    owner: root
+    group: root
+  notify: restart samba
+
+- name: Configure NTP
+  block:
+    - name: Create ntp_signd directory
+      ansible.builtin.file:
+        path: /var/lib/samba/ntp_signd
+        state: directory
+        owner: root
+        group: ntp
+        mode: "0750"
+
+    - name: Deploy ntp.conf
+      ansible.builtin.template:
+        src: ntp.conf.j2
+        dest: /etc/ntp.conf
+        mode: "0644"
+        owner: root
+        group: root
+      notify: restart ntp
+  when: ansible_facts['distribution'] in ['Ubuntu', 'Debian']
+
+- name: Configure DNS resolver
+  block:
+    - name: Remove systemd-resolved resolv.conf symlink
+      ansible.builtin.file:
+        path: /etc/resolv.conf
+        state: absent
+
+    - name: Deploy resolv.conf pointing to local Samba DNS
+      ansible.builtin.copy:
+        content: |
+          nameserver 127.0.0.1
+          search {{ samba_realm | lower }}
+        dest: /etc/resolv.conf
+        mode: "0644"
+        owner: root
+        group: root
+
+    - name: Disable systemd-resolved
+      ansible.builtin.systemd:
+        name: systemd-resolved
+        enabled: false
+        state: stopped
+      ignore_errors: true
+  when: ansible_facts['distribution'] in ['Ubuntu', 'Debian']
+
+- name: Flush handlers before service start
+  ansible.builtin.meta: flush_handlers
+
+- name: Clean stale Samba runtime files
+  ansible.builtin.command: /bin/true
+  notify: Clean Samba runtime files
+  changed_when: true
+  when: samba_cleanup_runtime_files | default(true) | bool
+
+- name: Flush cleanup handler
+  ansible.builtin.meta: flush_handlers
+  when: samba_cleanup_runtime_files | default(true) | bool
+
+- name: Start samba-ad-dc
+  ansible.builtin.systemd:
+    name: "{{ samba_dc_service }}"
+    state: started
+
+- name: Create reverse DNS zone
+  ansible.builtin.command: >
+    samba-tool dns zonecreate {{ ansible_hostname }}.{{ samba_realm | lower }}
+    {{ ansible_default_ipv4.address.split('.')[2] }}.{{ ansible_default_ipv4.address.split('.')[1] }}.{{ ansible_default_ipv4.address.split('.')[0] }}.in-addr.arpa
+    -U Administrator --password={{ samba_admin_password | quote }}
+  when: _samba_just_provisioned | default(false)
+  ignore_errors: true
+  no_log: true
+
+- name: Add PTR record for DC
+  ansible.builtin.command: >
+    samba-tool dns add {{ ansible_hostname }}.{{ samba_realm | lower }}
+    {{ ansible_default_ipv4.address.split('.')[2] }}.{{ ansible_default_ipv4.address.split('.')[1] }}.{{ ansible_default_ipv4.address.split('.')[0] }}.in-addr.arpa
+    {{ ansible_default_ipv4.address.split('.')[3] }} PTR {{ ansible_fqdn }}
+    -U Administrator --password={{ samba_admin_password | quote }}
+  when: _samba_just_provisioned | default(false)
+  ignore_errors: true
+  no_log: true
+
+- name: Create organizational units
+  ansible.builtin.command: >
+    samba-tool ou create OU={{ item }}
+    --description="Organizational Unit for {{ item }}"
+  loop: "{{ samba_ous }}"
+  when: _samba_just_provisioned | default(false)
+  ignore_errors: true
+
+- name: Create share base directory
+  ansible.builtin.file:
+    path: "{{ samba_share_base }}"
+    state: directory
+    mode: "0755"
+    owner: root
+    group: "domain users"
+
+- name: Create share directories
+  ansible.builtin.file:
+    path: "{{ item.path }}"
+    state: directory
+    mode: "0770"
+    owner: root
+    group: "domain users"
+  loop: "{{ samba_shares }}"
+
+- name: Deploy management scripts
+  block:
+    - name: Create management script directory
+      ansible.builtin.file:
+        path: /opt/samba-management
+        state: directory
+        mode: "0755"
+
+    - name: Deploy management bin scripts
+      ansible.builtin.copy:
+        src: "../../bin/"
+        dest: /opt/samba-management/bin/
+        mode: "0755"
+
+    - name: Deploy management lib scripts
+      ansible.builtin.copy:
+        src: "../../lib/"
+        dest: /opt/samba-management/lib/
+        mode: "0755"
+
+    - name: Deploy management config
+      ansible.builtin.copy:
+        src: "../../config/"
+        dest: /opt/samba-management/config/
+        mode: "0600"
+        force: false
+
+    - name: Create symlinks for management scripts
+      ansible.builtin.file:
+        src: "/opt/samba-management/bin/{{ item }}"
+        dest: "/usr/local/sbin/{{ item }}"
+        state: link
+      loop:
+        - samba-user.sh
+        - samba-group.sh
+        - samba-share.sh

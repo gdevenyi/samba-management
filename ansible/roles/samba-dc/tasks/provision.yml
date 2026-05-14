@@ -1,0 +1,60 @@
+# Provision the Samba AD domain (first run only).
+# Uses a state marker file in addition to sam.ldb for robustness.
+---
+- name: Check if domain is already provisioned
+  ansible.builtin.stat:
+    path: "{{ samba_statedir }}/.samba_domain_provisioned"
+  register: _samba_provisioned
+
+- name: Backup existing smb.conf
+  ansible.builtin.copy:
+    src: /etc/samba/smb.conf
+    dest: "/etc/samba/smb.conf.orig"
+    remote_src: true
+    mode: "0644"
+  ignore_errors: true
+  when: not _samba_provisioned.stat.exists
+
+- name: Remove existing smb.conf for provisioning
+  ansible.builtin.file:
+    path: /etc/samba/smb.conf
+    state: absent
+  when: not _samba_provisioned.stat.exists
+
+- name: Provision Samba AD DC
+  ansible.builtin.command: >
+    samba-tool domain provision
+    --server-role={{ samba_server_role }}
+    --use-rfc2307
+    --dns-backend={{ samba_dns_backend }}
+    --realm={{ samba_realm }}
+    --domain={{ samba_domain }}
+    --adminpass={{ samba_admin_password | quote }}
+    --option=interfaces=lo {{ ansible_default_ipv4.interface }}
+    --option="bind interfaces only=yes"
+  when: not _samba_provisioned.stat.exists
+  no_log: true
+
+- name: Deploy krb5.conf from provision output
+  ansible.builtin.copy:
+    src: /var/lib/samba/private/krb5.conf
+    dest: /etc/krb5.conf
+    remote_src: true
+    mode: "0644"
+  when: not _samba_provisioned.stat.exists
+
+- name: Mark domain as provisioned
+  ansible.builtin.file:
+    path: "{{ samba_statedir }}/.samba_domain_provisioned"
+    state: touch
+    mode: "0644"
+  when: not _samba_provisioned.stat.exists
+
+- name: Set fact that domain was just provisioned (first run only)
+  ansible.builtin.set_fact:
+    _samba_just_provisioned: true
+  when: not _samba_provisioned.stat.exists
+
+- name: Set fact that domain exists (always true once marker is present)
+  ansible.builtin.set_fact:
+    _samba_domain_exists: true

@@ -1,0 +1,100 @@
+# Apply sudo schema extension to Samba AD.
+# Stores sudo rules in AD via sudoRole class.
+# Requires stopping samba-ad-dc because the schema module blocks online changes.
+---
+- name: Check if sudo schema marker exists
+  ansible.builtin.stat:
+    path: "{{ samba_statedir }}/.sudo_schema_applied"
+  register: _sudo_schema_marker
+
+- name: Check if sudoRole class exists in schema
+  ansible.builtin.shell: |
+    set -o pipefail
+    ldbsearch -H /var/lib/samba/private/sam.ldb \
+      -b "CN=Schema,CN=Configuration,{{ samba_schema_base_dn }}" \
+      "(cn=sudoRole)" cn 2>/dev/null | grep -c "^cn: sudoRole" || true
+  args:
+    executable: /bin/bash
+  register: _sudo_schema_exists
+  changed_when: false
+
+- name: Apply sudo schema extensions
+  when:
+    - not _sudo_schema_marker.stat.exists
+    - _sudo_schema_exists.stdout | int == 0
+  block:
+    - name: Generate sudo schema LDIF
+      ansible.builtin.template:
+        src: ldif/sudo_schema.ldif.j2
+        dest: /tmp/sudo_schema.ldif
+        owner: root
+        group: root
+        mode: "0600"
+
+    - name: Stop Samba AD DC for sudo schema modification
+      ansible.builtin.systemd:
+        name: "{{ samba_dc_service }}"
+        state: stopped
+      register: _samba_stopped_for_sudo_schema
+
+    - name: Apply sudo schema to AD
+      ansible.builtin.command:
+        cmd: ldbmodify -H /var/lib/samba/private/sam.ldb /tmp/sudo_schema.ldif
+      register: _sudo_schema_apply
+      changed_when: _sudo_schema_apply.rc == 0
+
+    - name: Start Samba AD DC after sudo schema modification
+      ansible.builtin.systemd:
+        name: "{{ samba_dc_service }}"
+        state: started
+      when: _samba_stopped_for_sudo_schema is changed
+
+    - name: Wait for Samba to be ready after sudo schema
+      ansible.builtin.command:
+        cmd: samba-tool testparm --suppress-prompt
+      register: _samba_ready_sudo
+      until: _samba_ready_sudo.rc == 0
+      retries: 10
+      delay: 3
+      changed_when: false
+      when: _samba_stopped_for_sudo_schema is changed
+
+    - name: Verify sudo schema was applied
+      ansible.builtin.shell: |
+        set -o pipefail
+        ldbsearch -H /var/lib/samba/private/sam.ldb \
+          -b "CN=Schema,CN=Configuration,{{ samba_schema_base_dn }}" \
+          "(cn=sudoRole)" cn 2>/dev/null | grep -q "^cn: sudoRole"
+      args:
+        executable: /bin/bash
+      register: _sudo_schema_verify_applied
+      failed_when: _sudo_schema_verify_applied.rc != 0
+
+    - name: Create sudo schema marker file
+      ansible.builtin.file:
+        path: "{{ samba_statedir }}/.sudo_schema_applied"
+        state: touch
+        owner: root
+        group: root
+        mode: "0644"
+
+    - name: Clean up sudo schema LDIF
+      ansible.builtin.file:
+        path: /tmp/sudo_schema.ldif
+        state: absent
+
+  rescue:
+    - name: Ensure Samba is started after sudo schema failure
+      ansible.builtin.systemd:
+        name: "{{ samba_dc_service }}"
+        state: started
+      when: _samba_stopped_for_sudo_schema is defined and _samba_stopped_for_sudo_schema is changed
+
+    - name: Clean up sudo schema LDIF on failure
+      ansible.builtin.file:
+        path: /tmp/sudo_schema.ldif
+        state: absent
+
+    - name: Fail with sudo schema error
+      ansible.builtin.fail:
+        msg: "Failed to apply sudo schema extension. Check logs above for details."

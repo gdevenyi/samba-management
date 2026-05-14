@@ -1,0 +1,17 @@
+# Distribution-specific variables for Debian.
+# Loaded automatically by tasks/main.yml via first_found lookup.
+---
+samba_dc_packages:
+  - samba-ad-dc
+  - krb5-user
+  - bind9-dnsutils
+  - acl
+  - attr
+  - ntp
+samba_dc_service: samba-ad-dc
+samba_dc_mask_services:
+  - smbd
+  - nmbd
+  - winbind
+samba_ntp_service: ntp
+samba_statedir: /var/lib/samba

@@ -133,7 +133,8 @@ cmd_add() {
     local home_dir="${HOME_BASE}/${username}"
     if [[ ! -d "$home_dir" ]]; then
         mkdir -p "$home_dir"
-        chmod 0755 "$home_dir"
+        chmod 0770 "$home_dir"
+        chown root:"domain users" "$home_dir"
         log_info "Created home directory: ${home_dir}"
     fi
 

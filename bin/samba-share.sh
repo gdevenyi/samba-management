@@ -100,12 +100,11 @@ remove_share_stanza() {
     local in_stanza=0
     local tmp="${conf}.tmp.$$"
 
-    while IFS= read -r line; do
+    while IFS= read -r line || [[ -n "$line" ]]; do
         if [[ "$line" == "[${name}]" ]]; then
             in_stanza=1
             continue
         fi
-        # A new section header ends the target stanza.
         if [[ "$in_stanza" -eq 1 ]] && [[ "$line" =~ ^\[ ]]; then
             in_stanza=0
         fi
@@ -256,7 +255,7 @@ cmd_modify() {
     local tmp="${conf}.tmp.$$"
     local in_stanza=0
 
-    while IFS= read -r line; do
+    while IFS= read -r line || [[ -n "$line" ]]; do
         if [[ "$line" == "[${name}]" ]]; then
             in_stanza=1
             echo "$line"
@@ -276,32 +275,32 @@ cmd_modify() {
         if [[ "$in_stanza" -eq 1 ]]; then
             # Replace existing parameter lines that match the ones we want to change.
             # Each replacement clears its variable so it isn't emitted again at stanza end.
-            if [[ -n "$comment" ]] && [[ "$line" =~ ^[[:space:]]*comment= ]]; then
+            if [[ -n "$comment" ]] && [[ "$line" =~ ^[[:space:]]*comment[[:space:]]*= ]]; then
                 echo "    comment = ${comment}"
                 comment=""
                 continue
             fi
-            if [[ -n "$valid_users" ]] && [[ "$line" =~ ^[[:space:]]*valid[[:space:]]*users= ]]; then
+            if [[ -n "$valid_users" ]] && [[ "$line" =~ ^[[:space:]]*valid[[:space:]]*users[[:space:]]*= ]]; then
                 echo "    valid users = ${valid_users}"
                 valid_users=""
                 continue
             fi
-            if [[ -n "$write_list" ]] && [[ "$line" =~ ^[[:space:]]*write[[:space:]]*list= ]]; then
+            if [[ -n "$write_list" ]] && [[ "$line" =~ ^[[:space:]]*write[[:space:]]*list[[:space:]]*= ]]; then
                 echo "    write list = ${write_list}"
                 write_list=""
                 continue
             fi
-            if [[ -n "$read_list" ]] && [[ "$line" =~ ^[[:space:]]*read[[:space:]]*list= ]]; then
+            if [[ -n "$read_list" ]] && [[ "$line" =~ ^[[:space:]]*read[[:space:]]*list[[:space:]]*= ]]; then
                 echo "    read list = ${read_list}"
                 read_list=""
                 continue
             fi
-            if [[ -n "$writable" ]] && [[ "$line" =~ ^[[:space:]]*writable= ]]; then
+            if [[ -n "$writable" ]] && [[ "$line" =~ ^[[:space:]]*writable[[:space:]]*= ]]; then
                 echo "    writable = ${writable}"
                 writable=""
                 continue
             fi
-            if [[ -n "$browseable" ]] && [[ "$line" =~ ^[[:space:]]*browseable= ]]; then
+            if [[ -n "$browseable" ]] && [[ "$line" =~ ^[[:space:]]*browseable[[:space:]]*= ]]; then
                 echo "    browseable = ${browseable}"
                 browseable=""
                 continue
@@ -344,7 +343,7 @@ cmd_show() {
 
     # Print lines from [name] up to (but not including) the next section.
     local in_stanza=0
-    while IFS= read -r line; do
+    while IFS= read -r line || [[ -n "$line" ]]; do
         if [[ "$line" == "[${name}]" ]]; then
             in_stanza=1
             echo "$line"
@@ -419,16 +418,12 @@ cmd_grant_access() {
             local tmp="${SAMBA_CONF}.tmp.$$"
             local in_stanza=0
             local added=0
-            while IFS= read -r line; do
-                echo "$line"
-                if [[ "$line" == "[${name}]" ]]; then
-                    in_stanza=1
-                    continue
-                fi
-                # Insert the new directive after path/comment but before any other key.
-                if [[ "$in_stanza" -eq 1 && "$added" -eq 0 ]] && [[ "$line" =~ ^[[:space:]]*(path|comment) ]]; then
-                    :
-                elif [[ "$in_stanza" -eq 1 && "$added" -eq 0 ]]; then
+            while IFS= read -r line || [[ -n "$line" ]]; do
+                # Insert the new directive before the first non-path/comment
+                # line in the stanza (after printing the section header).
+                if [[ "$in_stanza" -eq 1 && "$added" -eq 0 ]] && \
+                   [[ ! "$line" =~ ^[[:space:]]*(path|comment) ]] && \
+                   [[ "$line" != "[${name}]" ]]; then
                     if [[ "$read_only" -eq 1 ]]; then
                         echo "    read list = @${DOMAIN}\\\\${principal}"
                     else
@@ -436,7 +431,21 @@ cmd_grant_access() {
                     fi
                     added=1
                 fi
+                echo "$line"
+                if [[ "$line" == "[${name}]" ]]; then
+                    in_stanza=1
+                elif [[ "$in_stanza" -eq 1 ]] && [[ "$line" =~ ^\[ ]]; then
+                    in_stanza=0
+                fi
             done < "$SAMBA_CONF" > "$tmp"
+            # Handle stanza at end of file with only path/comment lines.
+            if [[ "$in_stanza" -eq 1 && "$added" -eq 0 ]]; then
+                if [[ "$read_only" -eq 1 ]]; then
+                    echo "    read list = @${DOMAIN}\\\\${principal}"
+                else
+                    echo "    valid users = @${DOMAIN}\\\\${principal}"
+                fi >> "$tmp"
+            fi
             mv "$tmp" "$SAMBA_CONF"
         else
             # The quadruple backslash is needed: sed sees \\, writes \ to smb.conf,
@@ -459,7 +468,7 @@ cmd_grant_access() {
             else
                 acl_ace="A;;0x1f01ff;;;${principal}"
             fi
-            smbcacls "//localhost/${name}" "$share_path" -a "$acl_ace" -U Administrator 2>/dev/null || \
+            smbcacls "//localhost/${name}" "$share_path" -a "$acl_ace" -U Administrator < /dev/null 2>/dev/null || \
                 log_warn "Could not set Windows ACL. Use Windows RSAT/ADUC to set permissions on the share."
         else
             log_warn "smbcacls not available. Use Windows RSAT/ADUC to set share permissions."
@@ -505,7 +514,7 @@ cmd_revoke_access() {
     # Escape regex-special characters in the principal name so sed treats
     # it as a literal string (handles names containing dots, brackets, etc.).
     local escaped_principal
-    escaped_principal=$(printf '%s' "${principal}" | sed 's/[[\.*^$()+?{|]/\\&/g')
+    escaped_principal=$(printf '%s' "${principal}" | sed 's/[][\\\/.*^$()+?{|]/\\&/g')
 
     # Delete any valid users / write list / read list lines containing this
     # principal within the share's section only.

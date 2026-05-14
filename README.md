@@ -10,7 +10,7 @@ A complete toolkit for provisioning and managing a Samba Active Directory Domain
 - Ansible 2.12+
 - SSH access to all target hosts
 - WinRM access to Windows targets (for Windows provisioning)
-- `ansible-galaxy collection install ansible.windows` (for Windows client support)
+- `ansible-galaxy collection install -r requirements.yml` (for Windows client support)
 
 ### Domain Controller Target
 - Fresh Ubuntu LTS installation
@@ -165,7 +165,7 @@ For a standalone check on a Linux client (no Ansible needed):
 
 ## Day-to-Day Management (Bash Scripts)
 
-All scripts run **as root on the DC**. They source `lib/common.sh` and `config/samba-mgmt.conf`.
+All scripts run **as root on the DC**. They source `lib/common.sh` then `lib/config.sh`, which reads `config/samba-mgmt.conf` for site-specific settings. Config values support optional quoting for values with spaces (e.g., `DEFAULT_GROUP="Domain Users"`).
 
 ### User Management (`bin/samba-user.sh`)
 
@@ -348,6 +348,39 @@ ansible-playbook playbooks/deprovision-linux.yml
 ```
 
 This runs `realm leave`, stops SSSD, and removes autofs share configs and SSSD configuration.
+
+## Integration Testing
+
+A libvirt-based test environment creates two Ubuntu 24.04 VMs (DC + Linux client), provisions them with Ansible, and exercises the management scripts end-to-end against a live Samba AD domain.
+
+### Prerequisites
+
+- libvirt group membership (`sudo usermod -aG libvirt $USER`, then log out/in)
+- `virsh`, `virt-install`, `qemu-img`, `cloud-localds` (`apt install libvirt-clients qemu-utils cloud-image-utils`)
+- ~12GB free disk, ~4GB RAM
+- Your SSH public key at `~/.ssh/id_ed25519.pub`
+
+### Usage
+
+```bash
+./test/setup.sh       # Download cloud image, create VMs, wait for SSH
+./test/provision.sh   # Run Ansible playbooks against the VMs
+./test/run-tests.sh   # Exercise bin/* scripts, verify client resolution
+./test/teardown.sh    # Destroy VMs, clean up
+```
+
+The test environment uses domain `samba.test` (RFC 2606 reserved TLD) on the default libvirt NAT network (`192.168.122.0/24`). A random admin password is generated and stored in `test/test-config.env` (mode 0600). The Ubuntu cloud image is cached at `/var/lib/libvirt/images/ubuntu-noble-base.qcow2` for reuse across runs.
+
+### What `run-tests.sh` Verifies
+
+| Category | Tests |
+|---|---|
+| Users | create, list, show, disable, enable, set-password, delete |
+| Groups | create, add-members, list-members, show, remove-members, delete |
+| Shares | create, list, show, modify, grant-access, revoke-access, delete |
+| Client | getent user lookup, getent group lookup |
+
+All tests clean up after themselves (users, groups, and shares are deleted at the end).
 
 ## Configuration Reference
 

@@ -9,14 +9,14 @@ A Samba Active Directory Domain Controller management suite. Ansible provisions 
 | Component | Runs on | How |
 |---|---|---|
 | `ansible/` | Control machine → targets via SSH/WinRM | `ansible-playbook` |
-| `bin/` + `lib/` | **DC, as root** | Direct execution |
+| `bin/` + `lib/` | **DC, as root** (deployed to `/opt/samba-management/`, symlinked to `/usr/local/sbin/`) | Direct execution |
 | `config/` | DC (read by lib/config.sh) | Sourced |
 | `client/linux/` | Linux clients | Direct execution |
 | `client/windows/` | Windows clients | PowerShell |
 
 ## Validation Commands
 
-No formal test suite exists. Validate changes with:
+No formal test suite exists for unit testing. Validate changes with:
 
 ```bash
 # Bash syntax check (run from repo root)
@@ -30,12 +30,29 @@ python3 -c "import yaml; yaml.safe_load(open('ansible/playbooks/provision-dc.yml
 cd ansible && ansible-playbook --syntax-check playbooks/provision-dc.yml
 ```
 
+For integration testing, see `test/` below.
+
+## Test Environment (`test/`)
+
+A libvirt-based integration test that creates two Ubuntu 24.04 VMs (DC + client), provisions them with Ansible, and exercises the management scripts end-to-end.
+
+**Prerequisites**: libvirt, virsh, virt-install, cloud-image-utils, ~12GB disk, ~4GB RAM.
+
+```bash
+sudo ./test/setup.sh       # Download cloud image, create VMs, wait for SSH
+     ./test/provision.sh   # Run Ansible playbooks against the VMs
+     ./test/run-tests.sh   # Exercise bin/* scripts, verify client resolution
+sudo ./test/teardown.sh    # Destroy VMs, clean up
+```
+
+The test uses domain `samba.test` (RFC 2606 reserved TLD). A random admin password is generated and stored in `test/test-config.env` (mode 0600). Ansible inventory and group_vars are auto-generated from it. The base cloud image is cached at `/var/lib/libvirt/images/ubuntu-noble-base.qcow2` across runs.
+
 There is no lint, typecheck, or CI pipeline. Always run `bash -n` and YAML validation after edits.
 
 ## Architecture Notes
 
 - **Two separate worlds**: Ansible is for one-time provisioning only. Bash scripts are for ongoing operations. Do not blur these boundaries.
-- **`bin/*` scripts source `lib/common.sh` then `lib/config.sh`** in that order. `common.sh` provides logging, validation, dry-run, and Samba helpers. `config.sh` reads `config/samba-mgmt.conf` into exported variables.
+- **`bin/*` scripts source `lib/common.sh` then `lib/config.sh`** in that order. `common.sh` provides logging, validation, dry-run, and Samba helpers. `config.sh` reads `config/samba-mgmt.conf` into exported variables (using `export` so child processes see them). Values may be quoted (`KEY="value with spaces"`) — quotes are stripped during parsing.
 - **`client/linux/*` scripts are standalone** — they define their own logging because they run on client machines without access to `lib/`.
 - **`sssd-client` role embeds autofs logic inline** rather than depending on the `autofs-client` role. The `autofs-client` role is a standalone alternative for adding shares to already-joined clients.
 - **Home directory modes**: `sssd_homedir_mode` controls where AD users get homedirs. `"mounted"` (default) uses autofs CIFS mounts at `/home/ad/<user>`. `"local"` uses `pam_mkhomedir` at `/home/<user>@<domain>`. These are mutually exclusive — `pam_mkhomedir` is disabled when using mounted mode.
@@ -61,7 +78,7 @@ There is no lint, typecheck, or CI pipeline. Always run `bash -n` and YAML valid
 ## Ansible Conventions
 
 - FQCN for all modules: `ansible.builtin.apt`, `ansible.builtin.systemd`, etc.
-- **`ansible.windows` collection is required** for `provision-windows.yml` but not declared in a `requirements.yml`. Install with `ansible-galaxy collection install ansible.windows`.
+- **`ansible.windows` collection is required** for `provision-windows.yml`. It is declared in `requirements.yml` at the repo root. Install with `ansible-galaxy collection install -r requirements.yml`.
 - **Idempotency gates**: DC provisioning checks `sam.ldb` existence. Client join checks `realm list` output.
 - **Password quoting**: use `{{ var | quote }}` filter with `ansible.builtin.command`. Never use `ansible.builtin.shell` with interpolated passwords.
 - **`no_log: true`** on every task that touches passwords.

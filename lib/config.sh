@@ -14,13 +14,17 @@ CONFIG_FILE="${CONFIG_FILE:-${BASE_DIR}/config/samba-mgmt.conf}"
 if [[ -f "$CONFIG_FILE" ]]; then
     # Parse simple KEY=VALUE lines; skip comments and blank lines.
     # `xargs` trims leading/trailing whitespace from both key and value.
-    # `declare -g` creates a global variable so the value is visible to
-    # the sourcing script (not scoped to the while-loop subshell).
+    # `export` creates a global variable AND exports it so child processes
+    # can see it (declare -g only creates a global, does not export).
     while IFS='=' read -r key value; do
         key="$(echo "$key" | xargs)"
         value="$(echo "$value" | xargs)"
+        # Strip surrounding double quotes from values (allows
+        # KEY="value with spaces" in the config file).
+        value="${value#\"}"
+        value="${value%\"}"
         if [[ -n "$key" && ! "$key" =~ ^# ]]; then
-            declare -g "$key=$value"
+            export "$key=$value"
         fi
     done < "$CONFIG_FILE"
 else

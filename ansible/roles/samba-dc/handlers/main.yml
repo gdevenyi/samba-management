@@ -1,27 +1,24 @@
 # samba-dc handlers - Service restart handlers triggered by config changes.
-#
-# Handlers run at the end of the play (or when flushed) and only if
-# notified by a task that changed something.  Using `listen` allows
-# multiple tasks to notify the same handler via different names.
 ---
-# Restart the Samba AD DC service (samba-ad-dc, NOT smbd).
-# On a DC, samba-ad-dc provides SMB, LDAP, Kerberos, and DNS in one process.
 - name: Reload samba-ad-dc
   ansible.builtin.systemd:
-    name: samba-ad-dc
+    name: "{{ samba_dc_service | default('samba-ad-dc') }}"
     state: restarted
   listen: restart samba
 
-# Restart NTP.  The service name varies by distro; ntp_service_name
-# should be set in tasks or defaults (e.g. "ntp" on Ubuntu).
 - name: Reload ntp
   ansible.builtin.systemd:
-    name: "{{ ntp_service_name }}"
+    name: "{{ samba_ntp_service | default('ntp') }}"
     state: restarted
   listen: restart ntp
 
-# Rebuild resolv.conf from the configuration sources.  Needed when
-# we replace the static resolv.conf that systemd-resolved managed.
 - name: Reload resolv
   ansible.builtin.shell: resolvconf -u || true
   listen: reload resolv
+
+- name: Clean Samba runtime files
+  ansible.builtin.shell: |
+    set -o pipefail
+    rm -f /var/run/samba/*.pid /var/run/samba/*.tdb 2>/dev/null || true
+    rm -f /var/cache/samba/*.tdb 2>/dev/null || true
+  listen: Clean Samba runtime files

@@ -1,0 +1,22 @@
+# Install packages and manage services.
+---
+- name: Install samba-ad-dc packages
+  ansible.builtin.apt:
+    name: "{{ samba_dc_packages }}"
+    state: present
+    update_cache: true
+
+- name: Disable and mask standard Samba services
+  ansible.builtin.systemd:
+    name: "{{ item }}"
+    enabled: false
+    masked: true
+    state: stopped
+  loop: "{{ samba_dc_mask_services }}"
+  ignore_errors: true
+
+- name: Unmask and enable samba-ad-dc service
+  ansible.builtin.systemd:
+    name: "{{ samba_dc_service }}"
+    masked: false
+    enabled: true

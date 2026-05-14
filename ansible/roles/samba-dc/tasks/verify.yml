@@ -1,0 +1,25 @@
+# Verify the DC is fully operational: DNS, Kerberos, SMB, AD users.
+---
+- name: Verify DNS SRV records
+  ansible.builtin.command: "host -t SRV _ldap._tcp.{{ samba_realm | lower }}"
+  register: dns_srv
+  changed_when: false
+  retries: 5
+  delay: 2
+  until: "'has SRV record' in dns_srv.stdout"
+
+- name: Verify Kerberos authentication
+  ansible.builtin.expect:
+    command: "kinit Administrator"
+    responses:
+      "Password for Administrator@{{ samba_realm }}:": "{{ samba_admin_password }}"
+  no_log: true
+  changed_when: false
+  ignore_errors: true
+
+- name: Verify netlogon share
+  ansible.builtin.command: "smbclient //localhost/netlogon -U Administrator -c ls"
+  environment:
+    PASSWD: "{{ samba_admin_password }}"
+  changed_when: false
+  no_log: true

@@ -101,11 +101,14 @@ echo ""
 # ---------------------------------------------------------------------------
 echo "--- DNS ---"
 _ldap_count=$(host -t SRV "_ldap._tcp.$(echo "${REALM}" | tr '[:upper:]' '[:lower:]')" 2>/dev/null | grep -c 'has SRV record' || true)
+[[ -z "$_ldap_count" ]] && _ldap_count=0
 check "DNS SRV _ldap._tcp" test "$_ldap_count" -gt 0
 _krb_count=$(host -t SRV "_kerberos._tcp.$(echo "${REALM}" | tr '[:upper:]' '[:lower:]')" 2>/dev/null | grep -c 'has SRV record' || true)
+[[ -z "$_krb_count" ]] && _krb_count=0
 check "DNS SRV _kerberos._tcp" test "$_krb_count" -gt 0
 if [[ -n "$DC_HOST" ]]; then
     _a_count=$(host -t A "$DC_HOST" 2>/dev/null | grep -c 'has address' || true)
+    [[ -z "$_a_count" ]] && _a_count=0
     check "DNS A record for DC" test "$_a_count" -gt 0
 fi
 

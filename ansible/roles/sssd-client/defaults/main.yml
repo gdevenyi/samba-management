@@ -11,7 +11,7 @@ sssd_use_fully_qualified_names: true
 sssd_cache_credentials: true
 sssd_ldap_id_mapping: true
 sssd_access_provider: "ad"
-sssd_homedir_mode: "local"
+sssd_homedir_mode: "mounted"
 sssd_dc_hostname: "dc01"
 sssd_configure_autofs: true
 sssd_autofs_base: "/mnt/shares"

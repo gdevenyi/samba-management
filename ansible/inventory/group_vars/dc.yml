@@ -1,0 +1,18 @@
+---
+samba_realm: "EXAMPLE.INTERNAL"
+samba_domain: "EXAMPLE"
+samba_netbios: "EXAMPLE"
+samba_admin_password: "CHANGE_ME_STRONG_PASSWORD"
+samba_dns_forwarder: "8.8.8.8"
+samba_tls_enabled: false
+samba_shares:
+  - name: public
+    path: /srv/samba/shares/public
+    comment: "Public share for all domain users"
+    writable: yes
+    valid_users: "@EXAMPLE\\Domain Users"
+  - name: finance
+    path: /srv/samba/shares/finance
+    comment: "Finance department share"
+    writable: yes
+    valid_users: "@EXAMPLE\\Finance"

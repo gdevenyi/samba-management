@@ -1,0 +1,4 @@
+---
+healthcheck_realm: "EXAMPLE.INTERNAL"
+healthcheck_dc_hostname: "dc01"
+healthcheck_test_user: "Administrator"

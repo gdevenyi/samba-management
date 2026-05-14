@@ -1,0 +1,40 @@
+---
+- name: Install autofs and cifs-utils
+  ansible.builtin.apt:
+    name:
+      - autofs
+      - cifs-utils
+    state: present
+    update_cache: true
+
+- name: Create autofs master directory
+  ansible.builtin.file:
+    path: /etc/auto.master.d
+    state: directory
+    mode: "0755"
+
+- name: Deploy autofs master map
+  ansible.builtin.template:
+    src: shares.autofs.j2
+    dest: /etc/auto.master.d/shares.autofs
+    mode: "0644"
+  notify: Restart autofs
+
+- name: Deploy autofs shares map
+  ansible.builtin.template:
+    src: auto.shares.j2
+    dest: /etc/auto.shares
+    mode: "0644"
+  notify: Restart autofs
+
+- name: Create autofs mount base
+  ansible.builtin.file:
+    path: "{{ autofs_base }}"
+    state: directory
+    mode: "0755"
+
+- name: Enable and start autofs
+  ansible.builtin.systemd:
+    name: autofs
+    enabled: true
+    state: started

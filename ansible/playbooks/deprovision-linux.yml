@@ -1,0 +1,41 @@
+---
+- name: Deprovision Linux client from domain
+  hosts: linux_clients:member_servers
+  become: true
+  tasks:
+    - name: Leave the domain
+      ansible.builtin.command: "realm leave {{ sssd_domain | default(winbind_domain | default('')) }}"
+      ignore_errors: true
+
+    - name: Stop and disable SSSD
+      ansible.builtin.systemd:
+        name: sssd
+        state: stopped
+        enabled: false
+      ignore_errors: true
+
+    - name: Stop and disable winbind
+      ansible.builtin.systemd:
+        name: winbind
+        state: stopped
+        enabled: false
+      ignore_errors: true
+
+    - name: Remove sssd.conf
+      ansible.builtin.file:
+        path: /etc/sssd/sssd.conf
+        state: absent
+
+    - name: Remove autofs share configs
+      ansible.builtin.file:
+        path: "{{ item }}"
+        state: absent
+      loop:
+        - /etc/auto.master.d/shares.autofs
+        - /etc/auto.shares
+
+    - name: Remove libpam-winbind
+      ansible.builtin.apt:
+        name: libpam-winbind
+        state: absent
+      ignore_errors: true

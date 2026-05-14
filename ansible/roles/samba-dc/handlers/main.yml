@@ -1,0 +1,16 @@
+---
+- name: Reload samba-ad-dc
+  ansible.builtin.systemd:
+    name: samba-ad-dc
+    state: restarted
+  listen: restart samba
+
+- name: Reload ntp
+  ansible.builtin.systemd:
+    name: "{{ ntp_service_name }}"
+    state: restarted
+  listen: restart ntp
+
+- name: Reload resolv
+  ansible.builtin.shell: resolvconf -u || true
+  listen: reload resolv

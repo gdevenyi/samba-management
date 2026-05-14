@@ -1,0 +1,96 @@
+---
+- name: Check DNS SRV _ldap._tcp
+  ansible.builtin.command: "host -t SRV _ldap._tcp.{{ healthcheck_realm | lower }}"
+  register: dns_ldap
+  changed_when: false
+  failed_when: "'has SRV record' not in dns_ldap.stdout"
+
+- name: Check DNS SRV _kerberos._tcp
+  ansible.builtin.command: "host -t SRV _kerberos._tcp.{{ healthcheck_realm | lower }}"
+  register: dns_krb
+  changed_when: false
+  failed_when: "'has SRV record' not in dns_krb.stdout"
+
+- name: Check A record for DC
+  ansible.builtin.command: "host -t A {{ healthcheck_dc_hostname }}.{{ healthcheck_realm | lower }}"
+  register: dns_a
+  changed_when: false
+  failed_when: "'has address' not in dns_a.stdout"
+
+- name: Check Kerberos ticket
+  ansible.builtin.command: klist
+  register: klist_result
+  changed_when: false
+  ignore_errors: true
+
+- name: Check SSSD service
+  ansible.builtin.systemd:
+    name: sssd
+  register: sssd_status
+  ignore_errors: true
+
+- name: Check winbind service
+  ansible.builtin.systemd:
+    name: winbind
+  register: winbind_status
+  ignore_errors: true
+
+- name: Check autofs service
+  ansible.builtin.systemd:
+    name: autofs
+  register: autofs_status
+  ignore_errors: true
+
+- name: Check domain user lookup
+  ansible.builtin.command: "getent passwd {{ healthcheck_test_user }}@{{ healthcheck_realm }}"
+  register: getent_user
+  changed_when: false
+  ignore_errors: true
+
+- name: Check mounted CIFS shares
+  ansible.builtin.command: mount -t cifs
+  register: cifs_mounts
+  changed_when: false
+  ignore_errors: true
+
+- name: Check connectivity to DC (port 445)
+  ansible.builtin.wait_for:
+    host: "{{ healthcheck_dc_hostname }}.{{ healthcheck_realm | lower }}"
+    port: 445
+    timeout: 5
+  ignore_errors: true
+  register: dc_port_445
+
+- name: Check connectivity to DC (port 88)
+  ansible.builtin.wait_for:
+    host: "{{ healthcheck_dc_hostname }}.{{ healthcheck_realm | lower }}"
+    port: 88
+    timeout: 5
+  ignore_errors: true
+  register: dc_port_88
+
+- name: Check connectivity to DC (port 53)
+  ansible.builtin.wait_for:
+    host: "{{ healthcheck_dc_hostname }}.{{ healthcheck_realm | lower }}"
+    port: 53
+    timeout: 5
+  ignore_errors: true
+  register: dc_port_53
+
+- name: Healthcheck summary
+  ansible.builtin.debug:
+    msg: |
+      ===== Healthcheck Summary =====
+      DNS _ldap._tcp SRV:    {{ 'PASS' if 'has SRV record' in dns_ldap.stdout else 'FAIL' }}
+      DNS _kerberos._tcp SRV: {{ 'PASS' if 'has SRV record' in dns_krb.stdout else 'FAIL' }}
+      DNS A record (DC):     {{ 'PASS' if 'has address' in dns_a.stdout else 'FAIL' }}
+      Kerberos ticket:       {{ 'PASS' if klist_result.rc == 0 and 'Default principal' in klist_result.stdout else 'NO TICKET' }}
+      SSSD service:          {{ 'RUNNING' if sssd_status.status.ActiveState | default('') == 'active' else 'NOT RUNNING' }}
+      Winbind service:       {{ 'RUNNING' if winbind_status.status.ActiveState | default('') == 'active' else 'NOT RUNNING' }}
+      Autofs service:        {{ 'RUNNING' if autofs_status.status.ActiveState | default('') == 'active' else 'NOT RUNNING' }}
+      User lookup:           {{ 'PASS' if getent_user.rc == 0 else 'FAIL' }}
+      DC port 445 (SMB):     {{ 'OPEN' if dc_port_445 is not failed else 'CLOSED' }}
+      DC port 88 (Kerberos): {{ 'OPEN' if dc_port_88 is not failed else 'CLOSED' }}
+      DC port 53 (DNS):      {{ 'OPEN' if dc_port_53 is not failed else 'CLOSED' }}
+      CIFS mounts:           {{ cifs_mounts.stdout_lines | default([]) | length }} active
+      ================================

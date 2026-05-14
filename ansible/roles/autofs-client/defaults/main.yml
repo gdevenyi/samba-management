@@ -1,0 +1,6 @@
+---
+autofs_base: "/mnt/shares"
+autofs_dc_hostname: "dc01"
+autofs_domain: "example.internal"
+autofs_shares: []
+autofs_timeout: 300

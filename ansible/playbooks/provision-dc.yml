@@ -1,0 +1,6 @@
+---
+- name: Provision Samba Active Directory Domain Controller
+  hosts: dc
+  become: true
+  roles:
+    - samba-dc

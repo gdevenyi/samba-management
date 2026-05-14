@@ -1,0 +1,63 @@
+[global]
+    workgroup = {{ samba_domain }}
+    realm = {{ samba_realm }}
+    netbios name = {{ samba_netbios }}
+    server role = {{ samba_server_role }}
+    dns forwarder = {{ samba_dns_forwarder }}
+    idmap_ldb:use rfc2307 = {{ 'yes' if samba_use_rfc2307 else 'no' }}
+{% if samba_tls_enabled %}
+    tls enabled = yes
+    tls keyfile = tls/key.pem
+    tls certfile = tls/cert.pem
+    tls cafile = tls/ca.pem
+{% endif %}
+    log file = /var/log/samba/log.%m
+    max log size = 1000
+    logging = file
+    panic action = /usr/share/samba/panic-action %d
+
+{% if samba_enable_homes %}
+[homes]
+    browseable = no
+    writable = yes
+    create mask = 0600
+    directory mask = 0700
+    vfs objects = dfs_samba4 acl_xattr{% if samba_enable_recycle %} recycle{% endif %}
+{% if samba_enable_recycle %}
+    recycle:repository = .recycle
+    recycle:keeptree = {{ 'yes' if samba_recycle_keep_tree else 'no' }}
+    recycle:versions = yes
+    recycle:touch = yes
+{% if samba_recycle_max_size > 0 %}
+    recycle:maxsize = {{ samba_recycle_max_size }}
+{% endif %}
+{% endif %}
+{% endif %}
+
+{% for share in samba_shares %}
+[{{ share.name }}]
+    path = {{ share.path }}
+    comment = {{ share.comment | default('') }}
+    writable = {{ share.writable | default('yes') }}
+    browseable = {{ share.browseable | default('yes') }}
+{% if share.valid_users is defined %}
+    valid users = {{ share.valid_users }}
+{% endif %}
+{% if share.write_list is defined %}
+    write list = {{ share.write_list }}
+{% endif %}
+{% if share.read_list is defined %}
+    read list = {{ share.read_list }}
+{% endif %}
+    vfs objects = dfs_samba4 acl_xattr{% if samba_enable_recycle %} recycle{% endif %}
+{% if samba_enable_recycle %}
+    recycle:repository = .recycle
+    recycle:keeptree = {{ 'yes' if samba_recycle_keep_tree else 'no' }}
+    recycle:versions = yes
+    recycle:touch = yes
+{% if samba_recycle_max_size > 0 %}
+    recycle:maxsize = {{ samba_recycle_max_size }}
+{% endif %}
+{% endif %}
+
+{% endfor %}

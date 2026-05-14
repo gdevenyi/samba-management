@@ -1,0 +1,6 @@
+---
+- name: Run domain healthcheck
+  hosts: linux_clients:member_servers:dc
+  become: true
+  roles:
+    - samba-healthcheck

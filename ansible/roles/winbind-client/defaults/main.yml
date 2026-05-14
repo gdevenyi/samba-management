@@ -1,0 +1,14 @@
+---
+winbind_realm: "EXAMPLE.INTERNAL"
+winbind_domain: "example.internal"
+winbind_domain_short: "EXAMPLE"
+winbind_admin_user: "Administrator"
+winbind_admin_password: ""
+winbind_default_shell: "/bin/bash"
+winbind_template_homedir: "/home/%U@%D"
+winbind_separator: "\\"
+winbind_use_default_domain: false
+winbind_idmap_backend: "rid"
+winbind_idmap_range: "2000000-2999999"
+winbind_default_idmap_range: "10000-999999"
+winbind_enable_mkhomedir: true

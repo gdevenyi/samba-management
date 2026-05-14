@@ -1,0 +1,89 @@
+---
+- name: Validate required variables
+  ansible.builtin.assert:
+    that:
+      - winbind_realm | length > 0
+      - winbind_admin_password | length > 0
+    fail_msg: "winbind_realm and winbind_admin_password are required"
+
+- name: Set FQDN hostname
+  ansible.builtin.hostname:
+    name: "{{ inventory_hostname }}.{{ winbind_domain }}"
+  when: ansible_fqdn != inventory_hostname ~ '.' ~ winbind_domain
+
+- name: Install realmd and samba
+  ansible.builtin.apt:
+    name:
+      - realmd
+      - samba
+      - winbind
+      - libnss-winbind
+      - libpam-winbind
+    state: present
+    update_cache: true
+
+- name: Discover AD domain
+  ansible.builtin.command: "realm discover {{ winbind_domain }}"
+  register: realm_discover
+  changed_when: false
+
+- name: Check if already joined
+  ansible.builtin.command: "realm list"
+  register: realm_list
+  changed_when: false
+
+- name: Join AD domain with winbind
+  ansible.builtin.expect:
+    command: >
+      realm join -v
+      --membership-software=samba
+      --client-software=winbind
+      {{ winbind_domain }}
+    responses:
+      "Password for.*": "{{ winbind_admin_password }}"
+  when: "winbind_domain not in realm_list.stdout"
+  no_log: true
+
+- name: Configure smb.conf for member server
+  ansible.builtin.blockinfile:
+    path: /etc/samba/smb.conf
+    block: |
+      template shell = {{ winbind_default_shell }}
+      template homedir = {{ winbind_template_homedir }}
+      winbind separator = {{ winbind_separator }}
+      winbind use default domain = {{ 'yes' if winbind_use_default_domain else 'no' }}
+      idmap config {{ winbind_domain_short | lower }} : backend = {{ winbind_idmap_backend }}
+      idmap config {{ winbind_domain_short | lower }} : range = {{ winbind_idmap_range }}
+      idmap config * : backend = tdb
+      idmap config * : range = {{ winbind_default_idmap_range }}
+    marker: "# {mark} SAMBA-MGMT MANAGED BLOCK"
+  notify: Restart winbind
+
+- name: Configure nsswitch for winbind
+  ansible.builtin.lineinfile:
+    path: /etc/nsswitch.conf
+    regexp: "^{{ item }}:"
+    line: "{{ item }}:         files systemd winbind"
+  loop:
+    - passwd
+    - group
+  notify: Restart winbind
+
+- name: Enable pam_mkhomedir
+  ansible.builtin.shell: pam-auth-update --enable mkhomedir
+  when: winbind_enable_mkhomedir
+  changed_when: false
+
+- name: Enable and start winbind
+  ansible.builtin.systemd:
+    name: winbind
+    enabled: true
+    state: started
+
+- name: Verify winbind user lookup
+  ansible.builtin.command: "getent passwd {{ winbind_domain_short }}\\Administrator"
+  register: getent_check
+  changed_when: false
+  retries: 5
+  delay: 3
+  until: getent_check.rc == 0

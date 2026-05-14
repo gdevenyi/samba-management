@@ -1,0 +1,5 @@
+---
+windows_domain: "example.internal"
+windows_dc_ip: "10.0.0.1"
+windows_admin_user: "Administrator"
+windows_admin_password: "CHANGE_ME_STRONG_PASSWORD"

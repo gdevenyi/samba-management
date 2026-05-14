@@ -1,0 +1,6 @@
+---
+- name: Provision Linux workstation with SSSD
+  hosts: linux_clients
+  become: true
+  roles:
+    - sssd-client

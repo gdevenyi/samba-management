@@ -1,0 +1,33 @@
+---
+samba_realm: "EXAMPLE.INTERNAL"
+samba_domain: "EXAMPLE"
+samba_netbios: "EXAMPLE"
+samba_admin_password: ""
+samba_dns_backend: "SAMBA_INTERNAL"
+samba_dns_forwarder: "8.8.8.8"
+samba_server_role: "dc"
+samba_use_rfc2307: true
+samba_tls_enabled: false
+samba_share_base: "/srv/samba/shares"
+samba_home_base: "/home"
+samba_default_shell: "/bin/bash"
+samba_ntp_servers:
+  - "0.pool.ntp.org"
+  - "1.pool.ntp.org"
+  - "2.pool.ntp.org"
+  - "3.pool.ntp.org"
+samba_ous:
+  - "Users"
+  - "Groups"
+  - "Computers"
+  - "Shares"
+samba_shares: []
+samba_enable_homes: true
+samba_enable_recycle: true
+samba_recycle_keep_tree: true
+samba_recycle_max_size: 0
+samba_password_complexity: "on"
+samba_password_min_length: 7
+samba_password_max_age: 42
+samba_password_min_age: 1
+samba_password_history: 24

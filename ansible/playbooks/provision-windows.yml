@@ -1,0 +1,22 @@
+---
+- name: Provision Windows client in AD domain
+  hosts: windows_clients
+  gather_facts: true
+  tasks:
+    - name: Set DNS to domain controller
+      ansible.windows.win_dns_client:
+        adapter_names: "*"
+        dns_servers:
+          - "{{ windows_dc_ip }}"
+
+    - name: Join the domain
+      ansible.windows.win_domain_membership:
+        dns_domain_name: "{{ windows_domain }}"
+        domain_admin_user: "{{ windows_admin_user }}"
+        domain_admin_password: "{{ windows_admin_password }}"
+        state: domain
+      register: domain_result
+
+    - name: Reboot after domain join
+      ansible.windows.win_reboot:
+      when: domain_result.reboot_required

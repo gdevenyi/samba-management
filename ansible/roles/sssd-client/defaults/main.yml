@@ -1,0 +1,17 @@
+---
+sssd_realm: "EXAMPLE.INTERNAL"
+sssd_domain: "example.internal"
+sssd_domain_short: "EXAMPLE"
+sssd_admin_user: "Administrator"
+sssd_admin_password: ""
+sssd_fallback_homedir: "/home/%u@%d"
+sssd_default_shell: "/bin/bash"
+sssd_use_fully_qualified_names: true
+sssd_cache_credentials: true
+sssd_ldap_id_mapping: true
+sssd_access_provider: "ad"
+sssd_enable_mkhomedir: true
+sssd_configure_autofs: true
+sssd_autofs_base: "/mnt/shares"
+sssd_dc_hostname: "dc01"
+sssd_shares: []

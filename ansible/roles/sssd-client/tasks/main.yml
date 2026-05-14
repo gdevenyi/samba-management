@@ -1,0 +1,104 @@
+---
+- name: Validate required variables
+  ansible.builtin.assert:
+    that:
+      - sssd_realm | length > 0
+      - sssd_admin_password | length > 0
+    fail_msg: "sssd_realm and sssd_admin_password are required"
+
+- name: Install SSSD and dependencies
+  ansible.builtin.apt:
+    name:
+      - sssd-ad
+      - sssd-tools
+      - realmd
+      - adcli
+      - krb5-user
+      - autofs
+      - cifs-utils
+    state: present
+    update_cache: true
+
+- name: Discover AD domain
+  ansible.builtin.command: "realm discover {{ sssd_domain }}"
+  register: realm_discover
+  changed_when: false
+
+- name: Check if already joined
+  ansible.builtin.command: "realm list"
+  register: realm_list
+  changed_when: false
+
+- name: Join the AD domain
+  ansible.builtin.expect:
+    command: "realm join -v {{ sssd_domain }}"
+    responses:
+      "Password for.*": "{{ sssd_admin_password }}"
+  when: "sssd_domain not in realm_list.stdout"
+  no_log: true
+
+- name: Deploy sssd.conf
+  ansible.builtin.template:
+    src: sssd.conf.j2
+    dest: /etc/sssd/sssd.conf
+    mode: "0600"
+    owner: root
+    group: root
+  notify: Restart sssd
+
+- name: Enable pam_mkhomedir
+  ansible.builtin.shell: pam-auth-update --enable mkhomedir
+  when: sssd_enable_mkhomedir
+  changed_when: false
+
+- name: Configure autofs
+  block:
+    - name: Create autofs master directory
+      ansible.builtin.file:
+        path: /etc/auto.master.d
+        state: directory
+        mode: "0755"
+
+    - name: Deploy autofs master map
+      ansible.builtin.copy:
+        content: "{{ sssd_autofs_base }} /etc/auto.shares --timeout=300\n"
+        dest: /etc/auto.master.d/shares.autofs
+        mode: "0644"
+      notify: Restart autofs
+
+    - name: Deploy autofs shares map
+      ansible.builtin.copy:
+        content: |
+          {% for share in sssd_shares %}
+          {{ share }} -fstype=cifs,multiuser,sec=krb5,cruid=%(UID) ://{{ sssd_dc_hostname }}.{{ sssd_domain }}/{{ share }}
+          {% endfor %}
+        dest: /etc/auto.shares
+        mode: "0644"
+      notify: Restart autofs
+
+    - name: Create autofs mount base
+      ansible.builtin.file:
+        path: "{{ sssd_autofs_base }}"
+        state: directory
+        mode: "0755"
+
+    - name: Enable and start autofs
+      ansible.builtin.systemd:
+        name: autofs
+        enabled: true
+        state: started
+  when: sssd_configure_autofs
+
+- name: Enable and start sssd
+  ansible.builtin.systemd:
+    name: sssd
+    enabled: true
+    state: started
+
+- name: Verify domain user lookup
+  ansible.builtin.command: "getent passwd Administrator@{{ sssd_realm }}"
+  register: getent_check
+  changed_when: false
+  retries: 5
+  delay: 3
+  until: getent_check.rc == 0

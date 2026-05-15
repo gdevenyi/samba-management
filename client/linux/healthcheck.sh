@@ -133,7 +133,7 @@ check_warn "Kerberos ticket" test "$(klist 2>/dev/null | grep -c 'Default princi
 if [[ -n "$REALM" ]]; then
     realm_lower=$(echo "${REALM}" | tr '[:upper:]' '[:lower:]')
     # getent verification proves NSS can resolve AD users through SSSD.
-    check "User lookup (getent)" test "$(getent passwd "Administrator@${realm_lower}" 2>/dev/null | wc -l)" -gt 0
+    check "User lookup (getent)" test "$(getent passwd "Administrator" 2>/dev/null | wc -l)" -gt 0
 fi
 
 # ---------------------------------------------------------------------------

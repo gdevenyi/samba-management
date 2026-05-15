@@ -55,7 +55,7 @@
 
 # --- NSS resolution check ---
 - name: Check domain user lookup
-  ansible.builtin.command: "getent passwd {{ healthcheck_test_user }}@{{ healthcheck_realm }}"
+  ansible.builtin.command: "getent passwd {{ healthcheck_test_user }}"
   register: getent_user
   changed_when: false
   failed_when: false

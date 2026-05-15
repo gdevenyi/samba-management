@@ -193,11 +193,14 @@
     enabled: true
     state: started
 
+- name: Flush handlers (restart SSSD if config changed)
+  ansible.builtin.meta: flush_handlers
+
 # --- Verification ---
 # Retry getent a few times because SSSD may need a moment to initialise
 # its connection to the DC after first startup.
 - name: Verify domain user lookup (getent)
-  ansible.builtin.command: "getent passwd {{ sssd_admin_user }}@{{ sssd_realm }}"
+  ansible.builtin.command: "getent passwd {{ sssd_admin_user }}"
   register: getent_check
   changed_when: false
   retries: 5
@@ -205,7 +208,7 @@
   until: getent_check.rc == 0
 
 - name: Verify domain group lookup
-  ansible.builtin.command: "getent group 'domain users@{{ sssd_realm }}'"
+  ansible.builtin.command: "getent group 'domain users'"
   register: getent_group
   changed_when: false
   retries: 3

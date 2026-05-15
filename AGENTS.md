@@ -55,7 +55,7 @@ There is no lint, typecheck, or CI pipeline. Always run `bash -n` and YAML valid
 - **`bin/*` scripts source `lib/common.sh` then `lib/config.sh`** in that order. `common.sh` provides logging, validation, dry-run, and Samba helpers. `config.sh` reads `config/samba-mgmt.conf` into exported variables (using `export` so child processes see them). Values may be quoted (`KEY="value with spaces"`) — quotes are stripped during parsing.
 - **`client/linux/*` scripts are standalone** — they define their own logging because they run on client machines without access to `lib/`.
 - **`sssd-client` role embeds autofs logic inline** rather than depending on the `autofs-client` role. The `autofs-client` role is a standalone alternative for adding shares to already-joined clients.
-- **Home directory modes**: `sssd_homedir_mode` controls where AD users get homedirs. `"mounted"` (default) uses autofs CIFS mounts at `/home/ad/<user>`. `"local"` uses `pam_mkhomedir` at `/home/<user>@<domain>`. These are mutually exclusive — `pam_mkhomedir` is disabled when using mounted mode.
+- **Home directory modes**: `sssd_homedir_mode` controls where AD users get homedirs. `"mounted"` (default) uses autofs CIFS mounts at `/home/ad/<user>`. `"local"` uses `pam_mkhomedir` at `/home/<user>`. These are mutually exclusive — `pam_mkhomedir` is disabled when using mounted mode.
 
 ## Samba AD DC Gotchas
 

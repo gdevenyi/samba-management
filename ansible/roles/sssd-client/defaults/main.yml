@@ -18,16 +18,15 @@ sssd_admin_password: ""
 
 # --- Home directory configuration ---
 # Two modes are supported:
-#   "local"   - pam_mkhomedir creates /home/user@domain on first login
+#   "local"   - pam_mkhomedir creates /home/user on first login
 #   "mounted" - autofs mounts the user's home dir via CIFS from the DC
-sssd_fallback_homedir: "/home/%u@%d"
+sssd_fallback_homedir: "/home/%u"
 sssd_mounted_homedir_base: "/home/ad"
 sssd_default_shell: "/bin/bash"
 
 # --- SSSD behaviour ---
-# use_fully_qualified_names requires user@domain format for logins,
-# preventing conflicts between local and domain accounts.
-sssd_use_fully_qualified_names: true
+# use_fully_qualified_names allows bare usernames for logins.
+sssd_use_fully_qualified_names: false
 # Cache credentials for offline authentication (e.g., laptop on WiFi).
 sssd_cache_credentials: true
 # ldap_id_mapping uses SSSD's automatic SID-to-UID mapping instead of

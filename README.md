@@ -130,8 +130,8 @@ This configures each Linux client to:
 
 After joining, verify on a client:
 ```bash
-getent passwd Administrator@yourdomain.internal
-groups john@yourdomain.internal
+getent passwd Administrator
+groups john
 ls /mnt/shares/public    # autofs mounts on access
 ```
 
@@ -409,7 +409,7 @@ Key variables in role defaults (overridden by `group_vars/`):
 
 | Variable | Default | Role | Description |
 |---|---|---|---|
-| `sssd_homedir_mode` | `mounted` | sssd-client | `mounted` = CIFS autofs at `/home/ad/<user>`, `local` = pam_mkhomedir |
+| `sssd_homedir_mode` | `mounted` | sssd-client | `mounted` = CIFS autofs at `/home/ad/<user>`, `local` = pam_mkhomedir at `/home/<user>` |
 | `sssd_mounted_homedir_base` | `/home/ad` | sssd-client | Where remote homedirs mount (mounted mode) |
 | `samba_password_complexity` | `on` | samba-dc | Password complexity requirement |
 | `samba_password_min_length` | `7` | samba-dc | Minimum password length |

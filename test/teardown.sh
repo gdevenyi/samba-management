@@ -6,13 +6,13 @@ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 CONFIG_FILE="${SCRIPT_DIR}/test-config.env"
 
 if [[ -f "$CONFIG_FILE" ]]; then
+    # shellcheck source=test-config.env
     source "$CONFIG_FILE"
 fi
 
 DC_NAME="${SMB_TEST_DC_NAME:-samba-dc}"
 CLIENT_NAME="${SMB_TEST_CLIENT_NAME:-samba-client}"
 
-RED='\033[0;31m'
 GREEN='\033[0;32m'
 YELLOW='\033[1;33m'
 NC='\033[0m'

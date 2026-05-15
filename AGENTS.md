@@ -30,6 +30,21 @@ python3 -c "import yaml; yaml.safe_load(open('ansible/playbooks/provision-dc.yml
 cd ansible && ansible-playbook --syntax-check playbooks/provision-dc.yml
 ```
 
+## Linting
+
+Run both linters before committing. The CI-equivalent checks are:
+
+```bash
+# ShellCheck — must produce zero warnings/errors (SC1091 info-level is acceptable)
+shellcheck -s bash -S warning bin/*.sh lib/*.sh client/linux/*.sh test/*.sh
+
+# ansible-lint — must pass with zero failures (run from ansible/ directory so
+# roles_path in ansible.cfg is resolved correctly)
+cd ansible && ansible-lint .
+```
+
+**Common SC1091 info messages are expected** — `bin/*` scripts `source` `lib/common.sh` and `lib/config.sh` which only exist on the DC at deploy time, not in the local checkout. Test scripts `source` `test-config.env` which is generated at runtime. The `# shellcheck source=...` directives document the expected file locations for IDE integration.
+
 For integration testing, see `test/` below.
 
 ## Test Environment (`test/`)

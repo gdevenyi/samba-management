@@ -173,9 +173,8 @@ cmd_list() {
     printf "%-20s %s\n" "SHARE" "MOUNT POINT"
     printf "%-20s %s\n" "-----" "-----------"
     while IFS= read -r line; do
-        local share_name share_path
+        local share_name
         share_name=$(echo "$line" | awk '{print $1}')
-        share_path=$(echo "$line" | awk '{print $NF}' | sed 's|://||')
         printf "%-20s %s/%s\n" "$share_name" "$AUTOMOUNT_BASE" "$share_name"
     done < "$AUTO_MAP"
 }

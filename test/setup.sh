@@ -219,6 +219,7 @@ wait_for_ssh() {
 # Generate Ansible inventory and group_vars
 # ---------------------------------------------------------------------------
 generate_ansible_config() {
+    # shellcheck source=test-config.env
     source "$CONFIG_FILE"
 
     cat > "${SCRIPT_DIR}/inventory.yml" <<EOF
@@ -278,6 +279,7 @@ echo ""
 
 download_base_image
 generate_config
+# shellcheck source=test-config.env
 source "$CONFIG_FILE"
 
 log_info "Creating DC (${DC_NAME}, ${DC_IP})..."

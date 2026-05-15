@@ -6,20 +6,22 @@
 set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+# shellcheck source=test-config.env
 source "${SCRIPT_DIR}/test-config.env"
 
 RED='\033[0;31m'
 GREEN='\033[0;32m'
-YELLOW='\033[1;33m'
 NC='\033[0m'
 
 TESTS_PASS=0
 TESTS_FAIL=0
 
-SSH_OPTS="-o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null -o ConnectTimeout=10 -i ${SMB_TEST_SSH_KEY}"
+SSH_OPTS=(-o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null -o ConnectTimeout=10 -i "${SMB_TEST_SSH_KEY}")
 
-ssh_dc()    { ssh $SSH_OPTS "${SMB_TEST_SSH_USER}@${SMB_TEST_DC_IP}" "$*"; }
-ssh_client() { ssh $SSH_OPTS "${SMB_TEST_SSH_USER}@${SMB_TEST_CLIENT_IP}" "$*"; }
+# shellcheck disable=SC2029
+ssh_dc()    { ssh "${SSH_OPTS[@]}" "${SMB_TEST_SSH_USER}@${SMB_TEST_DC_IP}" "$*"; }
+# shellcheck disable=SC2029
+ssh_client() { ssh "${SSH_OPTS[@]}" "${SMB_TEST_SSH_USER}@${SMB_TEST_CLIENT_IP}" "$*"; }
 
 run_test() {
     local desc="$1"

@@ -8,7 +8,9 @@
 set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "$(readlink -f "${BASH_SOURCE[0]}")")" && pwd)"
+# shellcheck source=../lib/common.sh
 source "${SCRIPT_DIR}/../lib/common.sh"
+# shellcheck source=../lib/config.sh
 source "${SCRIPT_DIR}/../lib/config.sh"
 
 require_root
@@ -409,7 +411,6 @@ cmd_grant_access() {
 
     backup_smb_conf
 
-    local smb_principal="${principal}"
     if [[ "$principal_type" == "group" ]]; then
         # If the share has no valid users/read list line yet, inject one
         # right after the path/comment lines.  Otherwise append the group
@@ -425,8 +426,10 @@ cmd_grant_access() {
                    [[ ! "$line" =~ ^[[:space:]]*(path|comment) ]] && \
                    [[ "$line" != "[${name}]" ]]; then
                     if [[ "$read_only" -eq 1 ]]; then
+                        # shellcheck disable=SC2028
                         echo "    read list = @${DOMAIN}\\\\${principal}"
                     else
+                        # shellcheck disable=SC2028
                         echo "    valid users = @${DOMAIN}\\\\${principal}"
                     fi
                     added=1
@@ -441,8 +444,10 @@ cmd_grant_access() {
             # Handle stanza at end of file with only path/comment lines.
             if [[ "$in_stanza" -eq 1 && "$added" -eq 0 ]]; then
                 if [[ "$read_only" -eq 1 ]]; then
+                    # shellcheck disable=SC2028
                     echo "    read list = @${DOMAIN}\\\\${principal}"
                 else
+                    # shellcheck disable=SC2028
                     echo "    valid users = @${DOMAIN}\\\\${principal}"
                 fi >> "$tmp"
             fi
@@ -514,6 +519,7 @@ cmd_revoke_access() {
     # Escape regex-special characters in the principal name so sed treats
     # it as a literal string (handles names containing dots, brackets, etc.).
     local escaped_principal
+    # shellcheck disable=SC2016
     escaped_principal=$(printf '%s' "${principal}" | sed 's/[][\\\/.*^$()+?{|]/\\&/g')
 
     # Delete any valid users / write list / read list lines containing this

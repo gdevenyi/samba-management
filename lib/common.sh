@@ -16,6 +16,7 @@ NC='\033[0m'
 # --- Determine project root from this file's location ---
 # BASH_SOURCE[0] resolves symlinks and works when sourced, unlike $0
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+# shellcheck disable=SC2034
 BASE_DIR="$(cd "${SCRIPT_DIR}/.." && pwd)"
 
 # ---------------------------------------------------------------------------
@@ -81,7 +82,8 @@ confirm_action() {
 backup_smb_conf() {
     local conf="${SAMBA_CONF:-/etc/samba/smb.conf}"
     if [[ -f "$conf" ]]; then
-        local backup="${conf}.$(date +%Y%m%d%H%M%S)"
+        local backup
+        backup="${conf}.$(date +%Y%m%d%H%M%S)"
         cp -a "$conf" "$backup"
         log_info "Backed up smb.conf to ${backup}"
     fi

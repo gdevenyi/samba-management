@@ -10,17 +10,12 @@
 # it will NOT prompt for a password (no credential exposure risk).
 set -euo pipefail
 
-SCRIPT_NAME="$(basename "$0")"
 REALM=""
-DOMAIN_SHORT=""
 
 # --- Detect the AD realm from realmd or sssd.conf ---
 detect_realm() {
     if command -v realm &>/dev/null; then
         REALM=$(realm list 2>/dev/null | grep "realm-name" | head -1 | awk '{print $NF}')
-        # Extract the short (NetBIOS) domain name and uppercase it for
-        # Windows-style DOMAIN\User references.
-        DOMAIN_SHORT=$(realm list 2>/dev/null | grep "domain-name" | head -1 | awk '{print $NF}' | tr '[:lower:]' '[:upper:]')
     fi
     if [[ -z "$REALM" && -f /etc/sssd/sssd.conf ]]; then
         REALM=$(grep "krb5_realm" /etc/sssd/sssd.conf 2>/dev/null | awk '{print $NF}')

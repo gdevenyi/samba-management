@@ -199,6 +199,12 @@ All scripts run **as root on the DC**. They source `lib/common.sh` then `lib/con
 # Password policy
 ./bin/samba-user.sh password-policy show
 ./bin/samba-user.sh password-policy set --complexity=off --min-length=12
+
+# SSH key management
+./bin/samba-user.sh add-sshkey jsmith --key="ssh-ed25519 AAAA... jsmith@laptop"
+./bin/samba-user.sh add-sshkey jsmith --key-file=/path/to/id_ed25519.pub
+./bin/samba-user.sh list-sshkeys jsmith
+./bin/samba-user.sh remove-sshkey jsmith --key="ssh-ed25519 AAAA... jsmith@laptop"
 ```
 
 ### Group Management (`bin/samba-group.sh`)

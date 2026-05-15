@@ -49,3 +49,5 @@ sssd_shares: []
 # --- NFS mount options ---
 # Kerberos security flavour: krb5 (auth), krb5i (auth+integrity), krb5p (full encryption)
 sssd_nfs_sec: "krb5p"
+
+sssd_enable_ssh: true

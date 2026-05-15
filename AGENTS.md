@@ -92,6 +92,13 @@ There is no lint, typecheck, or CI pipeline. Always run `bash -n` and YAML valid
 - **`samba-tool` creates Samba/AD users, not local Linux users.** Do not confuse with `useradd`.
 - **Share permissions are POSIX-based** (chown/chmod). NFS exports use `sec=krb5p` for authentication but access control is determined by file system permissions on the DC.
 
+## SSH Key Management
+
+- **SSH public keys** are stored in the `altSecurityIdentities` AD attribute with the `ssh: ` prefix (e.g., `ssh: ssh-ed25519 AAAA... user@host`). This avoids irreversible AD schema extensions.
+- `bin/samba-user.sh` provides `add-sshkey`, `remove-sshkey`, `list-sshkeys` subcommands that use `ldbmodify`/`ldbsearch` directly on the DC's `sam.ldb`.
+- The `sssd-client` role configures SSSD's `ssh` service to read keys from `altSecurityIdentities` and deploys an `AuthorizedKeysCommand` snippet to `sshd_config.d/`.
+- **`sssd_enable_ssh`** (default: `true`) controls whether the client configures SSH key retrieval. Set to `false` in `group_vars` to disable.
+
 ## Bash Script Conventions
 
 - All scripts: `set -euo pipefail`, `require_root`, subcommand dispatch via `case`

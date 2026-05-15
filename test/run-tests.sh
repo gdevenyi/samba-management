@@ -270,6 +270,35 @@ run_test "Lookup testuser1 from client" \
 run_test "Lookup domain users group from client" \
     ssh_client "getent group 'domain users'"
 
+# --- SSH Key Management ---
+echo ""
+echo "--- SSH Key Management ---"
+
+TEST_SSH_KEY="ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAITestKeyForSambaManagementTest12345 test@samba.test"
+
+run_test "Add SSH key to testuser1" \
+    ssh_dc "sudo samba-user.sh add-sshkey testuser1 --key='${TEST_SSH_KEY}'"
+
+run_test "List SSH keys for testuser1 shows the key" \
+    ssh_dc "sudo samba-user.sh list-sshkeys testuser1 | grep -q 'AAAAC3NzaC1lZDI1NTE5AAAAITestKeyForSambaManagementTest12345'"
+
+run_test "Show user testuser1 includes SSH keys" \
+    ssh_dc "sudo samba-user.sh show testuser1 | grep -q 'SSH Keys'"
+
+run_test "Flush SSSD cache for SSH key retrieval" \
+    ssh_client sudo sss_cache -E
+
+sleep 2
+
+run_test "Client retrieves SSH key via sss_ssh_authorizedkeys" \
+    ssh_client "sss_ssh_authorizedkeys testuser1 | grep -q 'AAAAC3NzaC1lZDI1NTE5AAAAITestKeyForSambaManagementTest12345'"
+
+run_test "Remove SSH key from testuser1" \
+    ssh_dc "sudo samba-user.sh remove-sshkey testuser1 --key='${TEST_SSH_KEY}'"
+
+run_test "Verify SSH key removed from testuser1" \
+    ssh_dc "! sudo samba-user.sh list-sshkeys testuser1 | grep -q 'AAAAC3NzaC1lZDI1NTE5AAAAITestKeyForSambaManagementTest12345'"
+
 # --- Cleanup ---
 echo ""
 echo "--- Cleanup ---"

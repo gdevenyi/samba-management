@@ -60,7 +60,6 @@ samba_account_lockout_duration: 30
 samba_account_reset_lockout_after: 30
 
 # --- Schema extensions ---
-samba_enable_ssh_schema: false
 samba_enable_sudo_schema: false
 
 # --- Runtime file cleanup ---

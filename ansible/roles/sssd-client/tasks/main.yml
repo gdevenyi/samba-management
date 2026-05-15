@@ -119,7 +119,7 @@
     src: idmapd.conf.j2
     dest: /etc/idmapd.conf
     mode: "0644"
-  notify: Restart nfs-idmapd
+  notify: Restart autofs
 
 - name: Enable GSSD for Kerberos NFS
   ansible.builtin.lineinfile:
@@ -165,12 +165,6 @@
 - name: Enable and start rpc-gssd (Kerberos NFS)
   ansible.builtin.systemd:
     name: rpc-gssd
-    enabled: true
-    state: started
-
-- name: Enable and start nfs-idmapd
-  ansible.builtin.systemd:
-    name: nfs-idmapd
     enabled: true
     state: started
 
@@ -258,6 +252,19 @@
 
 - name: Flush handlers (restart SSSD if config changed)
   ansible.builtin.meta: flush_handlers
+
+# --- SSH key retrieval from AD ---
+- name: Configure sshd for SSSD key lookup
+  when: sssd_enable_ssh | bool
+  block:
+    - name: Deploy sshd_config AuthorizedKeysCommand snippet
+      ansible.builtin.copy:
+        dest: /etc/ssh/sshd_config.d/sssd.conf
+        mode: "0644"
+        content: |
+          AuthorizedKeysCommand /usr/bin/sss_ssh_authorizedkeys
+          AuthorizedKeysCommandUser root
+      notify: Restart sshd
 
 # --- Verification ---
 # Retry getent a few times because SSSD may need a moment to initialise

@@ -22,12 +22,6 @@
 - name: Configure NSS/PAM for DC-as-client
   ansible.builtin.include_tasks: nss_pam.yml
 
-- name: Apply SSH key schema extension
-  ansible.builtin.include_tasks: ssh_schema.yml
-  when:
-    - samba_enable_ssh_schema | bool
-    - _samba_domain_exists | default(false)
-
 - name: Apply sudo schema extension
   ansible.builtin.include_tasks: sudo_schema.yml
   when:

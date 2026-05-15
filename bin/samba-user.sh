@@ -31,6 +31,7 @@ Subcommands:
     --must-change-pw                     Force password change at first login
     --shell=SHELL                        Login shell (default: ${DEFAULT_SHELL})
     --group=GROUP                        Add to group after creation
+    --ssh-key=PUBLIC_KEY                 Add SSH public key to user
 
   delete <username>                     Delete an AD user
     --archive-home                       Archive home directory to tarball
@@ -48,6 +49,15 @@ Subcommands:
   disable <username>                   Disable an account
   set-password <username>              Reset user password
     --password=PASS                      New password (prompted if omitted)
+
+  add-sshkey <username>                Add SSH public key to user
+    --key=PUBLIC_KEY                     Key string
+    --key-file=PATH                      Read key from file
+
+  remove-sshkey <username>             Remove SSH public key from user
+    --key=PUBLIC_KEY                     Key string (or unique suffix)
+
+  list-sshkeys <username>              List SSH public keys for user
 
   password-policy show                 Show current domain password policy
   password-policy set                  Modify domain password policy
@@ -76,6 +86,7 @@ cmd_add() {
     local must_change_pw=0
     local shell="${DEFAULT_SHELL}"
     local group=""
+    local ssh_key=""
 
     username="$1"; shift
 
@@ -90,6 +101,7 @@ cmd_add() {
             --must-change-pw) must_change_pw=1; shift ;;
             --shell=*) shell="${1#*=}"; shift ;;
             --group=*) group="${1#*=}"; shift ;;
+            --ssh-key=*) ssh_key="${1#*=}"; shift ;;
             *) log_error "Unknown option: $1"; exit 2 ;;
         esac
     done
@@ -142,6 +154,10 @@ cmd_add() {
     if [[ -n "$group" ]]; then
         log_info "Adding '${username}' to group '${group}'..."
         samba-tool group addmembers "$group" "$username" || log_warn "Failed to add to group '${group}'"
+    fi
+
+    if [[ -n "$ssh_key" ]]; then
+        _add_sshkey "$username" "$ssh_key"
     fi
 }
 
@@ -278,6 +294,9 @@ cmd_show() {
         exit 3
     fi
     samba-tool user show "$username"
+    echo ""
+    echo "SSH Keys:"
+    _list_sshkeys "$username"
 }
 
 # ---------------------------------------------------------------------------
@@ -377,6 +396,178 @@ cmd_password_policy_set() {
 }
 
 # ---------------------------------------------------------------------------
+# SSH key management
+# SSH public keys are stored in the altSecurityIdentities attribute using
+# the "ssh:" prefix convention.  This avoids AD schema extensions.
+# _user_dn and _ldap_prefix are helpers shared by all SSH key operations.
+# ---------------------------------------------------------------------------
+_ldif_unfold() {
+    local line buf=""
+    while IFS= read -r line || [[ -n "$line" ]]; do
+        case "$line" in
+            " "*)
+                buf="${buf}${line# }"
+                ;;
+            *)
+                if [[ -n "$buf" ]]; then
+                    printf '%s\n' "$buf"
+                fi
+                buf="$line"
+                ;;
+        esac
+    done
+    if [[ -n "$buf" ]]; then
+        printf '%s\n' "$buf"
+    fi
+}
+
+_user_dn() {
+    local username="$1"
+    ldbsearch -H /var/lib/samba/private/sam.ldb \
+        -s sub "(sAMAccountName=${username})" dn 2>/dev/null \
+        | _ldif_unfold \
+        | grep '^dn:' \
+        | sed 's/^dn: //'
+}
+
+_list_sshkeys() {
+    local username="$1"
+    local user_dn
+    user_dn=$(_user_dn "$username")
+    [[ -n "$user_dn" ]] || return 0
+    local lines
+    lines=$(ldbsearch -H /var/lib/samba/private/sam.ldb \
+        -b "$user_dn" altSecurityIdentities 2>/dev/null \
+        | _ldif_unfold \
+        | grep '^altSecurityIdentities: ' || true)
+    if [[ -n "$lines" ]]; then
+        printf '%s\n' "$lines" \
+            | sed 's/^altSecurityIdentities: //' \
+            | while IFS= read -r line; do
+                case "$line" in
+                    ssh:\ *) printf "  %s\n" "${line#ssh: }" ;;
+                    ssh:*) printf "  %s\n" "${line#ssh:}" ;;
+                esac
+            done
+    fi
+}
+
+_add_sshkey() {
+    local username="$1"
+    local key="$2"
+    local user_dn
+    user_dn=$(_user_dn "$username")
+    [[ -n "$user_dn" ]] || { log_error "Could not resolve DN for '${username}'"; exit 3; }
+
+    dry_run "Would add SSH key to '${username}'" && return
+
+    local rc=0
+    ldbmodify -H /var/lib/samba/private/sam.ldb <<EOF 2>/dev/null || rc=$?
+dn: ${user_dn}
+changetype: modify
+add: altSecurityIdentities
+altSecurityIdentities: ssh: ${key}
+EOF
+    if [[ $rc -eq 0 ]]; then
+        log_info "SSH key added to '${username}'"
+    else
+        log_error "Failed to add SSH key to '${username}'"
+        exit 1
+    fi
+}
+
+cmd_add_sshkey() {
+    local username=""
+    local key=""
+    local key_file=""
+
+    username="$1"; shift
+
+    if ! user_exists "$username"; then
+        log_error "User '${username}' not found"
+        exit 3
+    fi
+
+    while [[ $# -gt 0 ]]; do
+        case "$1" in
+            --key=*) key="${1#*=}"; shift ;;
+            --key-file=*) key_file="${1#*=}"; shift ;;
+            *) log_error "Unknown option: $1"; exit 2 ;;
+        esac
+    done
+
+    if [[ -n "$key_file" ]]; then
+        if [[ ! -f "$key_file" ]]; then
+            log_error "Key file not found: ${key_file}"
+            exit 2
+        fi
+        key=$(tr -d '\n\r' < "$key_file" | xargs)
+    fi
+
+    if [[ -z "$key" ]]; then
+        log_error "Must specify --key=PUBLIC_KEY or --key-file=PATH"
+        exit 2
+    fi
+
+    _add_sshkey "$username" "$key"
+}
+
+cmd_remove_sshkey() {
+    local username=""
+    local key=""
+
+    username="$1"; shift
+
+    if ! user_exists "$username"; then
+        log_error "User '${username}' not found"
+        exit 3
+    fi
+
+    while [[ $# -gt 0 ]]; do
+        case "$1" in
+            --key=*) key="${1#*=}"; shift ;;
+            *) log_error "Unknown option: $1"; exit 2 ;;
+        esac
+    done
+
+    if [[ -z "$key" ]]; then
+        log_error "Must specify --key=PUBLIC_KEY"
+        exit 2
+    fi
+
+    local user_dn
+    user_dn=$(_user_dn "$username")
+    [[ -n "$user_dn" ]] || { log_error "Could not resolve DN for '${username}'"; exit 3; }
+
+    dry_run "Would remove SSH key from '${username}'" && return
+
+    local rc=0
+    ldbmodify -H /var/lib/samba/private/sam.ldb <<EOF 2>/dev/null || rc=$?
+dn: ${user_dn}
+changetype: modify
+delete: altSecurityIdentities
+altSecurityIdentities: ssh: ${key}
+EOF
+    if [[ $rc -eq 0 ]]; then
+        log_info "SSH key removed from '${username}'"
+    else
+        log_error "Failed to remove SSH key (key may not exist)"
+        exit 1
+    fi
+}
+
+cmd_list_sshkeys() {
+    local username="$1"
+
+    if ! user_exists "$username"; then
+        log_error "User '${username}' not found"
+        exit 3
+    fi
+
+    _list_sshkeys "$username"
+}
+
+# ---------------------------------------------------------------------------
 # Subcommand dispatch
 # ---------------------------------------------------------------------------
 if [[ $# -eq 0 ]] || [[ "$1" == "help" ]] || [[ "$1" == "--help" ]]; then
@@ -395,6 +586,9 @@ case "$subcommand" in
     enable) cmd_enable "$@" ;;
     disable) cmd_disable "$@" ;;
     set-password) cmd_set_password "$@" ;;
+    add-sshkey) cmd_add_sshkey "$@" ;;
+    remove-sshkey) cmd_remove_sshkey "$@" ;;
+    list-sshkeys) cmd_list_sshkeys "$@" ;;
     password-policy) 
         if [[ $# -eq 0 ]]; then
             cmd_usage

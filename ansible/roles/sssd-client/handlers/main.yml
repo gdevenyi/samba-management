@@ -14,7 +14,7 @@
     name: autofs
     state: restarted
 
-- name: Restart nfs-idmapd
+- name: Restart sshd
   ansible.builtin.systemd:
-    name: nfs-idmapd
+    name: ssh
     state: restarted

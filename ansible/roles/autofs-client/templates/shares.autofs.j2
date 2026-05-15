@@ -1,6 +1,0 @@
-{# shares.autofs.j2 - Autofs master map entry for network shares. #}
-{# #}
-{# This file is placed in /etc/auto.master.d/ and read by the autofs #}
-{# daemon on startup.  It maps the base directory to the shares map file #}
-{# with an idle timeout to automatically unmount unused shares. #}
-{{ autofs_base }} /etc/auto.shares --timeout={{ autofs_timeout }}

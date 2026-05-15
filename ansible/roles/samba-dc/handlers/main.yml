@@ -25,3 +25,26 @@
     executable: /bin/bash
   changed_when: true
   listen: Clean Samba runtime files
+
+- name: Reload NFS exports
+  ansible.builtin.command: exportfs -ra
+  changed_when: true
+  listen: Reload NFS exports
+
+- name: Restart nfs-server
+  ansible.builtin.systemd:
+    name: nfs-server
+    state: restarted
+  listen: Restart nfs-server
+
+- name: Restart nfs-idmapd
+  ansible.builtin.systemd:
+    name: nfs-idmapd
+    state: restarted
+  listen: Restart nfs-idmapd
+
+- name: Restart rpc-gssd
+  ansible.builtin.systemd:
+    name: rpc-gssd
+    state: restarted
+  listen: Restart rpc-gssd

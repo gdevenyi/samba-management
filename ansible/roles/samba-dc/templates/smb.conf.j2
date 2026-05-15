@@ -10,7 +10,7 @@
     netbios name = {{ ansible_facts['hostname'] | upper }}
     server role = {{ samba_server_role }}
     dns forwarder = {{ samba_dns_forwarder }}
-    {# rfc2307 enables POSIX UID/GID attributes in AD for NFS/CIFS interop #}
+    {# rfc2307 enables POSIX UID/GID attributes in AD for NFS interop #}
     idmap_ldb:use rfc2307 = {{ 'yes' if samba_use_rfc2307 else 'no' }}
 {% if samba_tls_enabled %}
     tls enabled = yes
@@ -32,59 +32,3 @@
 [sysvol]
     path = /var/lib/samba/sysvol
     read only = No
-
-{# --- Home directories share --- #}
-{# The [homes] meta-share auto-exports each user's home directory. #}
-{# create mask 0600 / directory mask 0700 restrict access to the owner only. #}
-{% if samba_enable_homes %}
-[homes]
-    browseable = no
-    writable = yes
-    create mask = 0600
-    directory mask = 0700
-    {# dfs_samba4: enables DFS referral for AD shares #}
-    {# acl_xattr: stores Windows ACLs as POSIX xattrs for full NT ACL support #}
-    vfs objects = dfs_samba4 acl_xattr{% if samba_enable_recycle %} recycle{% endif %}
-{% if samba_enable_recycle %}
-    recycle:repository = .recycle
-    recycle:keeptree = {{ 'yes' if samba_recycle_keep_tree else 'no' }}
-    {# recycle:versions preserves overwritten files as versions #}
-    recycle:versions = yes
-    {# recycle:touch updates the file timestamp for prune-by-age policies #}
-    recycle:touch = yes
-{% if samba_recycle_max_size > 0 %}
-    recycle:maxsize = {{ samba_recycle_max_size }}
-{% endif %}
-{% endif %}
-{% endif %}
-
-{# --- User-defined file shares --- #}
-{% for share in samba_shares %}
-[{{ share.name }}]
-    path = {{ share.path }}
-    comment = {{ share.comment | default('') }}
-    writable = {{ share.writable | default('yes') }}
-    browseable = {{ share.browseable | default('yes') }}
-{% if share.valid_users is defined %}
-    {# Restricts access to listed users/groups; uses DOMAIN\Group format #}
-    valid users = {{ share.valid_users }}
-{% endif %}
-{% if share.write_list is defined %}
-    {# write_list grants write even when writable=no (read-only + exceptions) #}
-    write list = {{ share.write_list }}
-{% endif %}
-{% if share.read_list is defined %}
-    read list = {{ share.read_list }}
-{% endif %}
-    vfs objects = dfs_samba4 acl_xattr{% if samba_enable_recycle %} recycle{% endif %}
-{% if samba_enable_recycle %}
-    recycle:repository = .recycle
-    recycle:keeptree = {{ 'yes' if samba_recycle_keep_tree else 'no' }}
-    recycle:versions = yes
-    recycle:touch = yes
-{% if samba_recycle_max_size > 0 %}
-    recycle:maxsize = {{ samba_recycle_max_size }}
-{% endif %}
-{% endif %}
-
-{% endfor %}

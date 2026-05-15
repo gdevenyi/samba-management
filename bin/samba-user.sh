@@ -128,8 +128,8 @@ cmd_add() {
     fi
 
     # Provision a local home directory on the DC.  In a setup where home
-    # dirs are served via autofs/CIFS from the DC, this directory IS the
-    # network home and will be exported via the [homes] share.
+    # dirs are served via NFS from the DC, this directory IS the
+    # network home and will be exported via NFS (homes.exports).
     local home_dir="${HOME_BASE}/${username}"
     if [[ ! -d "$home_dir" ]]; then
         mkdir -p "$home_dir"

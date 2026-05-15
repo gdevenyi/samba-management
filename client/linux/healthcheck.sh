@@ -3,7 +3,7 @@
 #
 # Runs a battery of tests covering DNS resolution, critical services (SSSD,
 # autofs, Winbind), Kerberos ticket validity, network port reachability,
-# NTP sync, and active CIFS mounts.  Exits non-zero if any HARD check fails,
+# NTP sync, and active NFS mounts.  Exits non-zero if any HARD check fails,
 # making it suitable for monitoring/alerting integration.
 set -euo pipefail
 
@@ -138,13 +138,13 @@ fi
 
 # ---------------------------------------------------------------------------
 # Network connectivity - verifies the DC is reachable on the ports that
-# AD clients need: 445 (SMB/CIFS), 88 (Kerberos), 53 (DNS), 389 (LDAP).
+# AD clients need: 2049 (NFS), 88 (Kerberos), 53 (DNS), 389 (LDAP).
 # Uses bash's /dev/tcp pseudo-device for port checks (no external tools).
 # ---------------------------------------------------------------------------
 echo ""
 echo "--- Network ---"
 if [[ -n "$DC_HOST" ]]; then
-    check "DC port 445 (SMB)" bash -c "echo >/dev/tcp/${DC_HOST}/445"
+    check "DC port 2049 (NFS)" bash -c "echo >/dev/tcp/${DC_HOST}/2049"
     check "DC port 88 (Kerberos)" bash -c "echo >/dev/tcp/${DC_HOST}/88"
     check "DC port 53 (DNS)" bash -c "echo >/dev/tcp/${DC_HOST}/53"
     check "DC port 389 (LDAP)" bash -c "echo >/dev/tcp/${DC_HOST}/389"
@@ -159,12 +159,12 @@ echo "--- Time Sync ---"
 check_warn "NTP synchronized" bash -c "timedatectl show | grep -q 'NTPSynchronized=yes'"
 
 # ---------------------------------------------------------------------------
-# Active CIFS mounts
+# Active NFS mounts
 # ---------------------------------------------------------------------------
 echo ""
 echo "--- Mounts ---"
-cifs_count=$(mount -t cifs 2>/dev/null | wc -l)
-printf "  Active CIFS mounts: %s\n" "$cifs_count"
+nfs_count=$(mount -t nfs4 2>/dev/null | wc -l)
+printf "  Active NFS mounts: %s\n" "$nfs_count"
 
 echo ""
 echo "=============================="

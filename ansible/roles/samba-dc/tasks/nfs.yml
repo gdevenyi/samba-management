@@ -1,0 +1,127 @@
+# nfs.yml - Configure NFSv4 server for Kerberos-authenticated exports.
+#
+# Sets up the NFS kernel server with sec=krb5p, deploys per-share
+# export files under /etc/exports.d/, and provisions idmapd.conf
+# for consistent UID/GID mapping across server and clients.
+---
+- name: Add NFS service principal to DC machine account
+  ansible.builtin.command: >-
+    samba-tool spn add nfs/{{ ansible_fqdn }} {{ ansible_hostname }}$
+  failed_when: false
+  changed_when: true
+
+- name: Check if NFS principal exists in keytab
+  ansible.builtin.command: klist -k /etc/krb5.keytab
+  register: _keytab_check
+  changed_when: false
+  failed_when: false
+
+- name: Export NFS principal to system keytab
+  ansible.builtin.shell: >
+    samba-tool domain exportkeytab /etc/krb5.keytab
+    --principal=nfs/{{ ansible_fqdn }}
+  when: >-
+    _keytab_check.rc != 0 or
+    'nfs/' + ansible_fqdn not in _keytab_check.stdout
+
+- name: Create /etc/exports.d directory
+  ansible.builtin.file:
+    path: /etc/exports.d
+    state: directory
+    mode: "0755"
+
+- name: Deploy per-share NFS export files
+  ansible.builtin.template:
+    src: exports.d/share.exports.j2
+    dest: "/etc/exports.d/{{ item.name }}.exports"
+    mode: "0644"
+  loop: "{{ samba_shares }}"
+  notify: Reload NFS exports
+
+- name: Deploy NFS home directories export
+  ansible.builtin.template:
+    src: exports.d/homes.exports.j2
+    dest: /etc/exports.d/homes.exports
+    mode: "0644"
+  when: samba_nfs_export_homes | bool
+  notify: Reload NFS exports
+
+- name: Deploy idmapd.conf
+  ansible.builtin.template:
+    src: idmapd.conf.j2
+    dest: /etc/idmapd.conf
+    mode: "0644"
+  notify:
+    - Restart nfs-idmapd
+    - Restart rpc-gssd
+
+- name: Enable GSSD for Kerberos NFS
+  ansible.builtin.lineinfile:
+    path: /etc/default/nfs-common
+    regexp: "^NEED_GSSD="
+    line: "NEED_GSSD=yes"
+    create: true
+    mode: "0644"
+
+- name: Remove package-level mask symlink for nfs-common (Ubuntu 24.04)
+  ansible.builtin.file:
+    path: /usr/lib/systemd/system/nfs-common.service
+    state: absent
+  when: >-
+    ansible_facts['distribution'] == "Ubuntu" and
+    ansible_facts['distribution_major_version'] == "24"
+
+- name: Create real nfs-common service unit
+  ansible.builtin.copy:
+    dest: /etc/systemd/system/nfs-common.service
+    mode: "0644"
+    content: |
+      [Unit]
+      Description=NFS Common daemons and services
+      DefaultDependencies=no
+      After=local-fs.target network.target
+      Wants=nfs-client.target
+
+      [Service]
+      Type=oneshot
+      RemainAfterExit=yes
+      ExecStart=/bin/true
+
+      [Install]
+      WantedBy=multi-user.target
+  register: _nfs_common_unit
+
+- name: Reload systemd after unit change
+  ansible.builtin.systemd:
+    daemon_reload: true
+  when: _nfs_common_unit.changed
+
+- name: Enable and start nfs-common
+  ansible.builtin.systemd:
+    name: nfs-common
+    enabled: true
+    state: started
+
+- name: Enable and start rpc-gssd (Kerberos NFS)
+  ansible.builtin.systemd:
+    name: rpc-gssd
+    enabled: true
+    state: started
+
+- name: Enable and start nfs-idmapd
+  ansible.builtin.systemd:
+    name: nfs-idmapd
+    enabled: true
+    state: started
+
+- name: Enable and start NFS server
+  ansible.builtin.systemd:
+    name: nfs-server
+    enabled: true
+    state: started
+
+- name: Enable and start rpc-svcgssd (server-side Kerberos NFS)
+  ansible.builtin.systemd:
+    name: rpc-svcgssd
+    enabled: true
+    state: started

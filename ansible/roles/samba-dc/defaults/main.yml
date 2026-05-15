@@ -17,7 +17,7 @@ samba_use_rfc2307: true
 samba_tls_enabled: false
 
 # --- File system paths ---
-samba_share_base: "/srv/samba/shares"
+samba_share_base: "/data"
 samba_home_base: "/home"
 samba_default_shell: "/bin/bash"
 
@@ -36,15 +36,16 @@ samba_ous:
   - "Shares"
 
 # --- File shares (empty by default; define in group_vars) ---
+# Each share creates a directory under samba_share_base and an NFS export
+# entry in /etc/exports.d/<name>.exports. Access control is via POSIX
+# permissions on the directory.
 samba_shares: []
 
-# --- Home share settings ---
-samba_enable_homes: true
-
-# --- Recycle bin VFS module (per-share safety net) ---
-samba_enable_recycle: true
-samba_recycle_keep_tree: true
-samba_recycle_max_size: 0
+# --- NFS server configuration ---
+# Kerberos security flavour: krb5 (auth), krb5i (auth+integrity), krb5p (auth+integrity+privacy)
+samba_nfs_sec: "krb5p"
+# Whether to export /home via NFS for home directory mounts.
+samba_nfs_export_homes: true
 
 # --- Domain password policy ---
 samba_password_complexity: "on"

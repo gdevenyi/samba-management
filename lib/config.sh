@@ -34,7 +34,7 @@ else
     NETBIOS="${NETBIOS:-EXAMPLE}"
     DC_HOSTNAME="${DC_HOSTNAME:-dc01}"
     SAMBA_CONF="${SAMBA_CONF:-/etc/samba/smb.conf}"
-    SHARE_BASE="${SHARE_BASE:-/srv/samba/shares}"
+    SHARE_BASE="${SHARE_BASE:-/data}"
     HOME_BASE="${HOME_BASE:-/home}"
     DEFAULT_SHELL="${DEFAULT_SHELL:-/bin/bash}"
     LOG_FILE="${LOG_FILE:-/var/log/samba-management.log}"

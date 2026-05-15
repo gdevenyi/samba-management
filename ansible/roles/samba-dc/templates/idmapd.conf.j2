@@ -1,0 +1,11 @@
+{# idmapd.conf.j2 - NFSv4 ID mapping configuration for the DC. #}
+{# #}
+{# Maps between NFSv4 string names (user@domain) and local UIDs/GIDs. #}
+{# The domain MUST match between server and clients for correct mapping. #}
+[General]
+Verbosity = 0
+Domain = {{ samba_realm | lower }}
+
+[Mapping]
+Nobody-User = nobody
+Nobody-Group = nogroup

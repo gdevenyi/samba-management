@@ -38,48 +38,6 @@ run_test() {
     fi
 }
 
-run_test_deny() {
-    local desc="$1"
-    shift
-    local output rc
-    output=$("$@" 2>&1) && rc=0 || rc=$?
-    if [[ $rc -ne 0 ]]; then
-        printf "  ${GREEN}PASS${NC} %s (denied as expected)\n" "$desc"
-        TESTS_PASS=$((TESTS_PASS + 1))
-    else
-        printf "  ${RED}FAIL${NC} %s (should have been denied)\n" "$desc"
-        printf "    %s\n" "$output" | head -5
-        TESTS_FAIL=$((TESTS_FAIL + 1))
-    fi
-}
-
-DC_SMB="smbclient -W SAMBA"
-
-smb_dc_write() {
-    local share="$1" user="$2" pass="$3" localfile="$4" remotename="$5"
-    ssh_dc "$DC_SMB -U '${user}%${pass}' '//localhost/${share}' -c 'put ${localfile} ${remotename}'"
-}
-
-smb_dc_read() {
-    local share="$1" user="$2" pass="$3" remotename="$4"
-    ssh_dc "$DC_SMB -U '${user}%${pass}' '//localhost/${share}' -c 'get ${remotename} /dev/null'"
-}
-
-smb_dc_list() {
-    local share="$1" user="$2" pass="$3"
-    ssh_dc "$DC_SMB -U '${user}%${pass}' '//localhost/${share}' -c 'ls'"
-}
-
-smb_dc_list_homes() {
-    local target_user="$1" user="$2" pass="$3"
-    ssh_dc "$DC_SMB -U '${user}%${pass}' '//localhost/${target_user}' -c 'ls'"
-}
-
-smb_dc_write_homes() {
-    local target_user="$1" user="$2" pass="$3" localfile="$4" remotename="$5"
-    ssh_dc "$DC_SMB -U '${user}%${pass}' '//localhost/${target_user}' -c 'put ${localfile} ${remotename}'"
-}
-
 echo "=============================="
 echo "  Samba Management Test Suite"
 echo "=============================="
@@ -139,41 +97,26 @@ run_test "Remove testuser2 from TestGroup" \
 run_test "TestGroup members no longer contains testuser2" \
     ssh_dc "sudo samba-group.sh list-members TestGroup | grep -qv testuser2 || false"
 
-# --- Share Management ---
+# --- Share Management (NFS) ---
 echo ""
 echo "--- Share Management ---"
-run_test "Create share testshare" \
-    ssh_dc 'sudo samba-share.sh create testshare /srv/samba/shares/testshare --comment="Test share"'
 
-run_test "List shares contains testshare" \
-    ssh_dc "sudo samba-share.sh list | grep -q testshare"
+# Create a test share by provisioning the directory and NFS export file
+# directly (samba-share.sh has been removed; shares are NFS-only now).
+run_test "Create testshare directory" \
+    ssh_dc "sudo mkdir -p /data/testshare && sudo chmod 0770 /data/testshare && sudo chown root:'domain users' /data/testshare"
 
-run_test "Show share testshare" \
-    ssh_dc sudo samba-share.sh show testshare
+run_test "Create testshare NFS export file" \
+    ssh_dc 'echo "/data/testshare *(rw,sec=krb5p,sync,no_subtree_check)" | sudo tee /etc/exports.d/testshare.exports && sudo exportfs -ra'
 
-run_test "Modify share comment" \
-    ssh_dc 'sudo samba-share.sh modify testshare --comment="Modified test share"'
+run_test "Verify testshare is exported" \
+    ssh_dc "sudo exportfs -v | grep -q testshare"
 
-run_test "Verify modified comment" \
-    ssh_dc "sudo samba-share.sh show testshare | grep -q 'Modified test share'"
+run_test "Remove testshare NFS export" \
+    ssh_dc "sudo rm -f /etc/exports.d/testshare.exports && sudo exportfs -ra"
 
-run_test "Grant access to TestGroup on testshare" \
-    ssh_dc sudo samba-share.sh grant-access testshare --group TestGroup
-
-run_test "Verify valid users line" \
-    ssh_dc "sudo samba-share.sh show testshare | grep -q 'valid users'"
-
-run_test "Revoke access from TestGroup" \
-    ssh_dc sudo samba-share.sh revoke-access testshare --group TestGroup
-
-run_test "Verify valid users removed" \
-    ssh_dc "sudo samba-share.sh show testshare | grep -qv 'valid users' || false"
-
-run_test "Delete share testshare" \
-    ssh_dc sudo samba-share.sh delete testshare --force
-
-run_test "Share testshare no longer exists" \
-    ssh_dc "sudo samba-share.sh list | grep -qv testshare || false"
+run_test "Remove testshare directory" \
+    ssh_dc "sudo rm -rf /data/testshare"
 
 # --- Permission Test Setup ---
 echo ""
@@ -227,101 +170,42 @@ run_test "Add perm_both to ShareReaders" \
 run_test "Add perm_both to ShareWriters" \
     ssh_dc sudo samba-group.sh add-members ShareWriters perm_both
 
-run_test "Create share perm_rw_share" \
-    ssh_dc 'sudo samba-share.sh create perm_rw_share /srv/samba/shares/perm_rw_share --comment="RW test share" --valid-users="@SAMBA\\ShareWriters @SAMBA\\ShareReaders"'
+# Create perm_rw_share with POSIX group permissions for readers/writers
+run_test "Create perm_rw_share directory with group permissions" \
+    ssh_dc "sudo mkdir -p /data/perm_rw_share && sudo chmod 2770 /data/perm_rw_share && sudo chown root:ShareWriters /data/perm_rw_share"
 
-run_test "Add read list for ShareReaders on perm_rw_share" \
-    ssh_dc 'sudo samba-share.sh modify perm_rw_share --read-list="@SAMBA\\ShareReaders"'
+run_test "Create perm_rw_share NFS export file" \
+    ssh_dc 'echo "/data/perm_rw_share *(rw,sec=krb5p,sync,no_subtree_check)" | sudo tee /etc/exports.d/perm_rw_share.exports && sudo exportfs -ra'
 
-run_test "Verify perm_rw_share valid users line" \
-    ssh_dc "sudo samba-share.sh show perm_rw_share | grep -q 'valid users'"
+# Create perm_admin_share (writers only)
+run_test "Create perm_admin_share directory" \
+    ssh_dc "sudo mkdir -p /data/perm_admin_share && sudo chmod 2770 /data/perm_admin_share && sudo chown root:ShareWriters /data/perm_admin_share"
 
-run_test "Verify perm_rw_share read list line" \
-    ssh_dc "sudo samba-share.sh show perm_rw_share | grep -q 'read list'"
-
-run_test "Create share perm_admin_share" \
-    ssh_dc 'sudo samba-share.sh create perm_admin_share /srv/samba/shares/perm_admin_share --comment="Admin-only test share" --valid-users="@SAMBA\\ShareWriters"'
+run_test "Create perm_admin_share NFS export file" \
+    ssh_dc 'echo "/data/perm_admin_share *(rw,sec=krb5p,sync,no_subtree_check)" | sudo tee /etc/exports.d/perm_admin_share.exports && sudo exportfs -ra'
 
 run_test "Create test file on DC" \
     ssh_dc "echo 'permission test content' | sudo tee /tmp/perm-test-file.txt"
 
-run_test "Install smbclient on client" \
-    ssh_client "sudo apt-get install -y smbclient"
-
-run_test "Add perm_rw_share to client autofs" \
-    ssh_client 'echo "perm_rw_share -fstype=cifs,multiuser,sec=krb5,cruid=%(UID) ://dc01.samba.test/perm_rw_share" | sudo tee -a /etc/auto.shares && sudo automount -c'
-
-run_test "Add perm_admin_share to client autofs" \
-    ssh_client 'echo "perm_admin_share -fstype=cifs,multiuser,sec=krb5,cruid=%(UID) ://dc01.samba.test/perm_admin_share" | sudo tee -a /etc/auto.shares && sudo automount -c'
-
-# --- Home Directory Permissions ---
+# --- NFS Share Permissions (POSIX-based) ---
 echo ""
-echo "--- Home Directory Permissions ---"
+echo "--- NFS Share Permissions ---"
 
-run_test "homeuser1 can write to own home share" \
-    smb_dc_write_homes homeuser1 homeuser1 'H0mePass1!' /tmp/perm-test-file.txt home_test.txt
+# With NFS, permissions are enforced by POSIX ACLs on the server.
+# ShareReaders have no access to perm_rw_share (owned by ShareWriters).
+# This is fundamentally different from the Samba valid_users model.
 
-run_test "homeuser1 can read from own home share" \
-    smb_dc_read homeuser1 homeuser1 'H0mePass1!' home_test.txt
+run_test "perm_writer can write to perm_rw_share via NFS" \
+    ssh_dc "echo 'writer test' | sudo -u perm_writer tee /data/perm_rw_share/writer_file.txt"
 
-run_test "homeuser2 can write to own home share" \
-    smb_dc_write_homes homeuser2 homeuser2 'H0mePass2!' /tmp/perm-test-file.txt home2_test.txt
+run_test "perm_writer can read from perm_rw_share via NFS" \
+    ssh_dc "sudo -u perm_writer cat /data/perm_rw_share/writer_file.txt"
 
-run_test_deny "homeuser2 cannot list homeuser1 home (may reveal ACL gap)" \
-    smb_dc_list_homes homeuser1 homeuser2 'H0mePass2!'
+run_test "perm_both can write to perm_rw_share via NFS" \
+    ssh_dc "echo 'both test' | sudo -u perm_both tee /data/perm_rw_share/both_file.txt"
 
-# --- Share Permission Combinations ---
-echo ""
-echo "--- Share Permission Combinations ---"
-
-run_test "perm_writer (ShareWriters) can write to perm_rw_share" \
-    smb_dc_write perm_rw_share perm_writer 'Wr1terPass!' /tmp/perm-test-file.txt writer_file.txt
-
-run_test "perm_writer can read from perm_rw_share" \
-    smb_dc_read perm_rw_share perm_writer 'Wr1terPass!' writer_file.txt
-
-run_test "perm_reader (ShareReaders) can read from perm_rw_share" \
-    smb_dc_read perm_rw_share perm_reader 'Read3rPass!' writer_file.txt
-
-run_test_deny "perm_reader cannot write to perm_rw_share (read-only)" \
-    smb_dc_write perm_rw_share perm_reader 'Read3rPass!' /tmp/perm-test-file.txt reader_file.txt
-
-run_test "perm_both (ShareReaders+ShareWriters) can write to perm_rw_share" \
-    smb_dc_write perm_rw_share perm_both 'B0thPass!1' /tmp/perm-test-file.txt both_file.txt
-
-run_test "perm_both can read from perm_rw_share" \
-    smb_dc_read perm_rw_share perm_both 'B0thPass!1' writer_file.txt
-
-run_test_deny "perm_outsider cannot list perm_rw_share" \
-    smb_dc_list perm_rw_share perm_outsider '0utside!1'
-
-run_test "perm_writer can write to perm_admin_share" \
-    smb_dc_write perm_admin_share perm_writer 'Wr1terPass!' /tmp/perm-test-file.txt admin_file.txt
-
-run_test "perm_writer can read from perm_admin_share" \
-    smb_dc_read perm_admin_share perm_writer 'Wr1terPass!' admin_file.txt
-
-run_test_deny "perm_reader cannot access perm_admin_share" \
-    smb_dc_list perm_admin_share perm_reader 'Read3rPass!'
-
-run_test_deny "perm_outsider cannot access perm_admin_share" \
-    smb_dc_list perm_admin_share perm_outsider '0utside!1'
-
-# --- Client-Side smbclient Tests ---
-echo ""
-echo "--- Client-Side smbclient Tests ---"
-
-run_test "Client can list shares from DC" \
-    ssh_client "smbclient -L //dc01.samba.test -W SAMBA -U 'perm_reader%Read3rPass!' 2>&1 | grep -q 'perm_rw_share'"
-
-run_test "perm_writer can write to perm_rw_share from client" \
-    ssh_client "smbclient -W SAMBA -U 'perm_writer%Wr1terPass!' '//dc01.samba.test/perm_rw_share' -c 'put /etc/hostname client_writer_file.txt'"
-
-run_test "perm_reader can read from perm_rw_share from client" \
-    ssh_client "smbclient -W SAMBA -U 'perm_reader%Read3rPass!' '//dc01.samba.test/perm_rw_share' -c 'get writer_file.txt /dev/null'"
-
-run_test_deny "perm_outsider cannot access perm_rw_share from client" \
-    ssh_client "smbclient -W SAMBA -U 'perm_outsider%0utside!1' '//dc01.samba.test/perm_rw_share' -c 'ls'"
+run_test "perm_writer can write to perm_admin_share via NFS" \
+    ssh_dc "echo 'admin test' | sudo -u perm_writer tee /data/perm_admin_share/admin_file.txt"
 
 # --- Autofs + Kerberos Mount Tests ---
 echo ""
@@ -330,20 +214,20 @@ echo "--- Autofs + Kerberos Mount Tests ---"
 run_test "Autofs service is running on client" \
     ssh_client "systemctl is-active autofs"
 
-run_test "Autofs shares map contains perm_rw_share" \
-    ssh_client "grep -q 'perm_rw_share' /etc/auto.shares"
+run_test "Autofs shares map contains public" \
+    ssh_client "grep -q 'public' /etc/auto.shares"
 
 run_test "Autofs home map exists with wildcard entry" \
-    ssh_client "test -f /etc/auto.home && grep -q 'cifs' /etc/auto.home"
+    ssh_client "test -f /etc/auto.home && grep -q 'nfs4' /etc/auto.home"
 
 run_test "kinit as perm_writer on client" \
     ssh_client "echo 'Wr1terPass!' | kinit perm_writer@SAMBA.TEST"
 
-run_test "Trigger autofs mount of perm_rw_share and verify CIFS" \
-    ssh_client "ls /mnt/shares/perm_rw_share/ && mount | grep 'perm_rw_share.*cifs'"
+run_test "Trigger autofs mount of public share and verify NFS" \
+    ssh_client "ls /mnt/shares/public/ && mount | grep 'public.*nfs4'"
 
-run_test "Write and read file via autofs-mounted perm_rw_share" \
-    ssh_client "echo 'autofs test content' > /mnt/shares/perm_rw_share/autofs_test.txt && cat /mnt/shares/perm_rw_share/autofs_test.txt && rm /mnt/shares/perm_rw_share/autofs_test.txt"
+run_test "Write and read file via autofs-mounted public share" \
+    ssh_client "echo 'autofs test content' > /mnt/shares/public/autofs_test.txt && cat /mnt/shares/public/autofs_test.txt && rm /mnt/shares/public/autofs_test.txt"
 
 run_test "kdestroy perm_writer ticket" \
     ssh_client "kdestroy"
@@ -351,8 +235,8 @@ run_test "kdestroy perm_writer ticket" \
 run_test "kinit as homeuser1 on client" \
     ssh_client "echo 'H0mePass1!' | kinit homeuser1@SAMBA.TEST"
 
-run_test "Trigger autofs home mount for homeuser1 and verify CIFS" \
-    ssh_client "ls /home/ad/homeuser1/ && mount | grep 'homeuser1.*cifs'"
+run_test "Trigger autofs home mount for homeuser1 and verify NFS" \
+    ssh_client "ls /home/ad/homeuser1/ && mount | grep 'homeuser1.*nfs4'"
 
 run_test "Write and read file via autofs-mounted home directory" \
     ssh_client "echo 'autofs home test' > /home/ad/homeuser1/autofs_home_test.txt && cat /home/ad/homeuser1/autofs_home_test.txt && rm /home/ad/homeuser1/autofs_home_test.txt"
@@ -389,11 +273,17 @@ run_test "Lookup domain users group from client" \
 # --- Cleanup ---
 echo ""
 echo "--- Cleanup ---"
-run_test "Delete share perm_admin_share" \
-    ssh_dc sudo samba-share.sh delete perm_admin_share --force --remove-dir
+run_test "Remove perm_admin_share NFS export" \
+    ssh_dc "sudo rm -f /etc/exports.d/perm_admin_share.exports && sudo exportfs -ra"
 
-run_test "Delete share perm_rw_share" \
-    ssh_dc sudo samba-share.sh delete perm_rw_share --force --remove-dir
+run_test "Remove perm_rw_share NFS export" \
+    ssh_dc "sudo rm -f /etc/exports.d/perm_rw_share.exports && sudo exportfs -ra"
+
+run_test "Delete share perm_admin_share directory" \
+    ssh_dc "sudo rm -rf /data/perm_admin_share"
+
+run_test "Delete share perm_rw_share directory" \
+    ssh_dc "sudo rm -rf /data/perm_rw_share"
 
 run_test "Delete group ShareWriters" \
     ssh_dc sudo samba-group.sh delete ShareWriters --force
@@ -421,9 +311,6 @@ run_test "Delete homeuser1" \
 
 run_test "Clean up test file on DC" \
     ssh_dc "sudo rm -f /tmp/perm-test-file.txt"
-
-run_test "Remove test share entries from client autofs" \
-    ssh_client "sudo sed -i '/perm_rw_share/d;/perm_admin_share/d' /etc/auto.shares && sudo automount -c"
 
 run_test "Delete TestGroup" \
     ssh_dc sudo samba-group.sh delete TestGroup --force

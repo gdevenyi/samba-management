@@ -124,12 +124,15 @@
 
 - name: Create share directories
   ansible.builtin.file:
-    path: "{{ item.path }}"
+    path: "{{ item.path | default(samba_share_base ~ '/' ~ item.name) }}"
     state: directory
     mode: "0770"
     owner: root
     group: "domain users"
   loop: "{{ samba_shares }}"
+
+- name: Configure NFS server
+  ansible.builtin.include_tasks: nfs.yml
 
 - name: Deploy management scripts
   block:
@@ -158,6 +161,11 @@
         mode: "0600"
         force: false
 
+    - name: Remove obsolete samba-share.sh symlink
+      ansible.builtin.file:
+        path: /usr/local/sbin/samba-share.sh
+        state: absent
+
     - name: Create symlinks for management scripts
       ansible.builtin.file:
         src: "/opt/samba-management/bin/{{ item }}"
@@ -166,4 +174,3 @@
       loop:
         - samba-user.sh
         - samba-group.sh
-        - samba-share.sh

@@ -2,7 +2,7 @@
 #
 # Installs SSSD + dependencies, joins via realmd, deploys sssd.conf,
 # configures PAM for home directory creation, and sets up autofs for
-# CIFS share and home directory auto-mounting.
+# NFSv4 share and home directory auto-mounting.
 ---
 # --- Pre-flight validation ---
 - name: Validate required variables
@@ -19,7 +19,7 @@
 # realmd:     High-level domain join tool (wraps adcli/sssd)
 # adcli:      Low-level AD join tool (creates computer object)
 # libnss-sss/libpam-sss: NSS and PAM modules for identity resolution
-# autofs/cifs-utils: on-demand CIFS mounting with Kerberos auth
+# autofs/nfs-common: on-demand NFSv4 mounting with Kerberos auth
 - name: Install SSSD and dependencies
   ansible.builtin.apt:
     name:
@@ -32,7 +32,7 @@
       - libnss-sss
       - libpam-sss
       - autofs
-      - cifs-utils
+      - nfs-common
     state: present
     update_cache: true
   environment:
@@ -73,7 +73,7 @@
 
 # --- Home directory mode selection ---
 # Set the effective fallback_homedir based on whether homes are created
-# locally (pam_mkhomedir) or auto-mounted via CIFS from the DC.
+# locally (pam_mkhomedir) or auto-mounted via NFS from the DC.
 - name: Set fallback_homedir for mounted mode
   ansible.builtin.set_fact:
     sssd_effective_fallback_homedir: "{{ sssd_mounted_homedir_base }}/%u"
@@ -100,7 +100,7 @@
 
 # pam_mkhomedir automatically creates a local home directory skeleton
 # on first login.  Only enable for local mode; in mounted mode the home
-# dir comes from the DC via CIFS.
+# dir comes from the DC via NFS.
 - name: Enable pam_mkhomedir (local homedirs only)
   ansible.builtin.command: pam-auth-update --enable mkhomedir
   when: sssd_homedir_mode == 'local'
@@ -111,8 +111,71 @@
   when: sssd_homedir_mode == 'mounted'
   changed_when: false
 
+# --- idmapd configuration ---
+# Required for NFSv4 UID/GID name mapping.  The domain must match the
+# DC's idmapd.conf for consistent identity translation.
+- name: Deploy idmapd.conf
+  ansible.builtin.template:
+    src: idmapd.conf.j2
+    dest: /etc/idmapd.conf
+    mode: "0644"
+  notify: Restart nfs-idmapd
+
+- name: Enable GSSD for Kerberos NFS
+  ansible.builtin.lineinfile:
+    path: /etc/default/nfs-common
+    regexp: "^NEED_GSSD="
+    line: "NEED_GSSD=yes"
+    create: true
+    mode: "0644"
+
+- name: Remove package-level mask symlink for nfs-common (Ubuntu 24.04)
+  ansible.builtin.file:
+    path: /usr/lib/systemd/system/nfs-common.service
+    state: absent
+  when: >-
+    ansible_facts['distribution'] == "Ubuntu" and
+    ansible_facts['distribution_major_version'] == "24"
+
+- name: Create real nfs-common service unit
+  ansible.builtin.copy:
+    dest: /etc/systemd/system/nfs-common.service
+    mode: "0644"
+    content: |
+      [Unit]
+      Description=NFS Common daemons and services
+      DefaultDependencies=no
+      After=local-fs.target network.target
+      Wants=nfs-client.target
+
+      [Service]
+      Type=oneshot
+      RemainAfterExit=yes
+      ExecStart=/bin/true
+
+      [Install]
+      WantedBy=multi-user.target
+  register: _nfs_common_unit
+
+- name: Reload systemd after unit change
+  ansible.builtin.systemd:
+    daemon_reload: true
+  when: _nfs_common_unit.changed
+
+- name: Enable and start rpc-gssd (Kerberos NFS)
+  ansible.builtin.systemd:
+    name: rpc-gssd
+    enabled: true
+    state: started
+
+- name: Enable and start nfs-idmapd
+  ansible.builtin.systemd:
+    name: nfs-idmapd
+    enabled: true
+    state: started
+
 # --- Autofs configuration ---
-# Sets up on-demand CIFS mounting for network shares and (optionally)
+# Sets up on-demand NFSv4 mounting for network shares and (optionally)
 # home directories.  The autofs timeout determines how long shares stay
 # mounted after last access.
 - name: Configure autofs
@@ -133,12 +196,12 @@
         mode: "0644"
       notify: Restart autofs
 
-    # The shares map: one line per share with CIFS mount options.
+    # The shares map: one line per share with NFSv4 mount options.
     - name: Deploy autofs shares map
       ansible.builtin.copy:
         content: |
           {% for share in sssd_shares %}
-          {{ share }} -fstype=cifs,multiuser,sec=krb5,cruid=%(UID) ://{{ sssd_dc_hostname }}.{{ sssd_domain }}/{{ share }}
+          {{ share }} -fstype=nfs4,sec={{ sssd_nfs_sec }} {{ sssd_dc_hostname }}.{{ sssd_domain }}:/data/{{ share }}
           {% endfor %}
         dest: /etc/auto.shares
         mode: "0644"
@@ -151,7 +214,7 @@
         mode: "0755"
 
     # Home directory autofs: uses a wildcard map so any user accessing
-    # /home/ad/<username> triggers a CIFS mount of their DC home share.
+    # /home/ad/<username> triggers an NFS mount of their DC home dir.
     - name: Configure autofs home directory mounts
       when: sssd_homedir_mode == 'mounted'
       block:
@@ -171,11 +234,11 @@
           notify: Restart autofs
 
         # The wildcard (*) map key matches any subdirectory name.  The
-        # ampersand (&) in the UNC path is replaced by the matched key,
-        # so accessing /home/ad/jsmith mounts //dc01/jsmith.
-        - name: Deploy autofs home map (wildcard CIFS mount)
+        # ampersand (&) in the NFS path is replaced by the matched key,
+        # so accessing /home/ad/jsmith mounts dc01:/home/jsmith.
+        - name: Deploy autofs home map (wildcard NFS mount)
           ansible.builtin.copy:
-            content: "* -fstype=cifs,multiuser,sec=krb5,cruid=%(UID) ://{{ sssd_dc_hostname }}.{{ sssd_domain }}/&\n"
+            content: "* -fstype=nfs4,sec={{ sssd_nfs_sec }} {{ sssd_dc_hostname }}.{{ sssd_domain }}:/home/&\n"
             dest: /etc/auto.home
             mode: "0644"
           notify: Restart autofs

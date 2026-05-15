@@ -1,0 +1,11 @@
+{# idmapd.conf.j2 - NFSv4 ID mapping configuration for Linux clients. #}
+{# #}
+{# Maps between NFSv4 string names (user@domain) and local UIDs/GIDs. #}
+{# The domain MUST match the DC's idmapd.conf for correct mapping. #}
+[General]
+Verbosity = 0
+Domain = {{ sssd_domain }}
+
+[Mapping]
+Nobody-User = nobody
+Nobody-Group = nogroup

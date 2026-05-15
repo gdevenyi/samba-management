@@ -15,17 +15,11 @@ samba_admin_password: "CHANGE_ME_STRONG_PASSWORD"
 samba_dns_forwarder: "8.8.8.8"
 # TLS is disabled by default; enable only after deploying proper certificates.
 samba_tls_enabled: false
-# List of file shares to provision on the DC.  Each entry creates both
-# the directory on disk and the share stanza in smb.conf.
-# valid_users uses the DOMAIN\Group format with escaped backslash.
+# List of shares to provision on the DC.  Each entry creates the directory
+# under /data and an NFS export file in /etc/exports.d/<name>.exports.
+# Access control is managed via POSIX permissions on the directory.
 samba_shares:
   - name: public
-    path: /srv/samba/shares/public
     comment: "Public share for all domain users"
-    writable: yes
-    valid_users: "@EXAMPLE\\Domain Users"
   - name: finance
-    path: /srv/samba/shares/finance
     comment: "Finance department share"
-    writable: yes
-    valid_users: "@EXAMPLE\\Finance"

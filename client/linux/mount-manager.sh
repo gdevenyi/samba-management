@@ -1,10 +1,10 @@
 #!/usr/bin/env bash
-# mount-manager.sh - Linux client tool for managing autofs-based CIFS mounts.
+# mount-manager.sh - Linux client tool for managing autofs-based NFSv4 mounts.
 #
-# Sets up autofs master/map files so that Samba shares are mounted on-demand
+# Sets up autofs master/map files so that NFS shares are mounted on-demand
 # (when accessed) and unmounted after an idle timeout.  Uses Kerberos
-# authentication (sec=krb5) with multiuser mode so each user accesses the
-# share under their own identity without storing passwords locally.
+# authentication (sec=krb5p) so each user accesses the share under their
+# own identity without storing passwords locally.
 #
 # Prerequisites: the client must be domain-joined (SSSD/realmd) and the
 # user must have a valid Kerberos ticket (kinit).
@@ -20,6 +20,7 @@ NC='\033[0m'
 AUTOMOUNT_BASE="${AUTOMOUNT_BASE:-/mnt/shares}"
 AUTO_MASTER="/etc/auto.master.d/shares.autofs"
 AUTO_MAP="/etc/auto.shares"
+NFS_SEC="${NFS_SEC:-krb5p}"
 
 log_info() { printf "${GREEN}[INFO]${NC} %s\n" "$*"; }
 log_warn() { printf "${YELLOW}[WARN]${NC} %s\n" "$*"; }
@@ -56,7 +57,7 @@ cmd_usage() {
 Usage: $(basename "$0") <subcommand> [options]
 
 Subcommands:
-  setup [--base=PATH] [--server=HOST]  Initialize autofs for CIFS shares
+  setup [--base=PATH] [--server=HOST]  Initialize autofs for NFS shares
   add <name> [--server=HOST]           Add a share to autofs maps
   remove <name>                        Remove a share from autofs maps
   list                                 List configured shares
@@ -81,7 +82,7 @@ cmd_setup() {
     done
 
     if ! command -v automount &>/dev/null; then
-        log_error "autofs is not installed. Install with: apt install autofs cifs-utils"
+        log_error "autofs is not installed. Install with: apt install autofs nfs-common"
         exit 1
     fi
 
@@ -128,19 +129,14 @@ cmd_add() {
         exit 1
     fi
 
-    # CIFS mount options:
-    #   multiuser  - each process authenticates as its own user via Kerberos
-    #   sec=krb5   - use Kerberos tickets for authentication (no stored creds)
-    #   cruid=%(UID) - tells the CIFS client to use the Kerberos ccache of the
-    #                  accessing user (the %(UID) macro is expanded by autofs)
-    local domain
-    domain=$(detect_dc)
-    echo "${name} -fstype=cifs,multiuser,sec=krb5,cruid=%(UID) ://${server}/${name}" >> "$AUTO_MAP"
+    # NFSv4 mount options:
+    #   sec=$NFS_SEC - Kerberos security flavour (configurable, default krb5p)
+    echo "${name} -fstype=nfs4,sec=${NFS_SEC} ${server}:/data/${name}" >> "$AUTO_MAP"
 
     # Signal autofs to re-read its maps without a full restart.
     automount -c 2>/dev/null || systemctl restart autofs
 
-    log_info "Added share '${name}' -> //${server}/${name}"
+    log_info "Added share '${name}' -> ${server}:/data/${name}"
     log_info "Access at: ${AUTOMOUNT_BASE}/${name}"
 }
 
@@ -197,7 +193,7 @@ cmd_test() {
         log_info "Mount successful. Contents:"
         ls -la "$mount_point"
     else
-        log_error "Mount failed. Check Kerberos ticket (klist) and share permissions."
+        log_error "Mount failed. Check Kerberos ticket (klist) and NFS export permissions."
         exit 1
     fi
 }

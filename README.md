@@ -2,7 +2,7 @@
 
 A complete toolkit for provisioning and managing a Samba Active Directory Domain Controller on Ubuntu LTS, with client provisioning for Linux (SSSD) and Windows machines.
 
-**Ansible** handles one-time provisioning. **Bash scripts** handle ongoing user, group, and share management. **PowerShell** scripts handle Windows client tasks.
+**Ansible** handles one-time provisioning. **Bash scripts** handle ongoing user and group management. **PowerShell** scripts handle Windows client tasks. File shares are served via NFSv4 with Kerberos encryption.
 
 ## Prerequisites
 
@@ -20,13 +20,13 @@ A complete toolkit for provisioning and managing a Samba Active Directory Domain
 
 ### Linux Client Targets
 - Ubuntu LTS (or Debian-based)
-- Network access to the DC on ports 53, 88, 389, 445
+- Network access to the DC on ports 53, 88, 389, 2049
 - SSH access with sudo
 
 ### Windows Client Targets
 - Windows 10/11 or Windows Server 2016+
 - WinRM enabled
-- Network access to the DC on ports 53, 88, 389, 445
+- Network access to the DC on ports 53, 88, 389
 
 ## Quick Start
 
@@ -62,10 +62,7 @@ samba_admin_password: "your-strong-password-here"
 samba_dns_forwarder: "8.8.8.8"   # upstream DNS for non-AD queries
 samba_shares:
   - name: public
-    path: /srv/samba/shares/public
     comment: "Public share"
-    writable: yes
-    valid_users: "@YOURDOMAIN\\Domain Users"
 ```
 
 **`ansible/inventory/group_vars/linux_clients.yml`:**
@@ -101,8 +98,8 @@ This installs and configures:
 - NTP (with `ntpsigndsocket` for AD-aware time signing)
 - Reverse DNS zone for the DC's subnet
 - Organizational Units: Users, Groups, Computers, Shares
-- Home directory share (`[homes]`)
-- Any shares defined in `samba_shares`
+- NFSv4 server with Kerberos (`sec=krb5p`) for shares and home directories
+- Any shares defined in `samba_shares` (directories under `/data` + NFS exports)
 - Password policy (complexity, length, expiry)
 - Optional TLS (disabled by default)
 
@@ -111,7 +108,7 @@ After provisioning, verify:
 # On the DC
 kinit Administrator        # test Kerberos
 host -t SRV _ldap._tcp.yourdomain.internal   # test DNS
-smbclient //localhost/netlogon -U Administrator -c ls   # test SMB
+showmount -e localhost      # test NFS exports
 ```
 
 ### Step 4: Join Linux Clients
@@ -124,8 +121,8 @@ ansible-playbook playbooks/provision-linux-sssd.yml
 This configures each Linux client to:
 - Install SSSD and join the AD domain via `realm`
 - Configure SSSD for AD authentication (`id_provider = ad`)
-- Set up autofs for network share mounting at `/mnt/shares/<name>`
-- Mount AD home directories via CIFS at `/home/ad/<username>` (default)
+- Set up autofs for NFSv4 share mounting at `/mnt/shares/<name>`
+- Mount AD home directories via NFS at `/home/ad/<username>` (default)
 - Disable `pam_mkhomedir` (remote homedirs are mounted, not created locally)
 
 After joining, verify on a client:
@@ -156,7 +153,7 @@ cd ansible
 ansible-playbook playbooks/healthcheck.yml
 ```
 
-Checks DNS SRV records, Kerberos, SSSD/autofs services, port connectivity, and NTP sync on all hosts.
+Checks DNS SRV records, Kerberos, SSSD/autofs/NFS services, port connectivity, and NTP sync on all hosts.
 
 For a standalone check on a Linux client (no Ansible needed):
 ```bash
@@ -229,40 +226,16 @@ All scripts run **as root on the DC**. They source `lib/common.sh` then `lib/con
 ./bin/samba-group.sh delete DevOps
 ```
 
-### Share Management (`bin/samba-share.sh`)
+### Share Management
 
-```bash
-# Create a share
-./bin/samba-share.sh create engineering /srv/samba/shares/engineering \
-    --comment="Engineering files" \
-    --valid-users="@EXAMPLE\\Engineering"
+Shares are defined in `group_vars/dc.yml` and provisioned by Ansible. Each share creates a directory under `/data` and an NFS export file in `/etc/exports.d/<name>.exports`. Access control is managed via POSIX permissions on the directory (chown/chmod).
 
-# List shares
-./bin/samba-share.sh list
+To add a new share after initial provisioning:
 
-# Show share config
-./bin/samba-share.sh show engineering
-
-# Modify share settings
-./bin/samba-share.sh modify engineering --comment="Engineering team files" \
-    --write-list="@EXAMPLE\\Eng Leads"
-
-# Grant access to a user or group
-./bin/samba-share.sh grant-access engineering --group "Engineering"
-./bin/samba-share.sh grant-access engineering --user jsmith --read-only
-
-# Revoke access
-./bin/samba-share.sh revoke-access engineering --user jsmith
-
-# Delete a share (and its directory)
-./bin/samba-share.sh delete engineering --remove-dir
-```
-
-All shares automatically include:
-- `vfs objects = dfs_samba4 acl_xattr recycle` (required on DC)
-- Recycle bin (`.recycle/` directory per share)
-
-**Note:** Share permissions use Windows ACLs. For fine-grained permissions beyond `valid users`/`write list`, use Windows RSAT/ADUC. POSIX ACLs do not work on DC shares.
+1. Add the share to `samba_shares` in `group_vars/dc.yml`
+2. Re-run `ansible-playbook playbooks/provision-dc.yml` (idempotent)
+3. Add the share name to `sssd_shares` in `group_vars/linux_clients.yml`
+4. Re-run `ansible-playbook playbooks/provision-linux-sssd.yml` (idempotent)
 
 ### Global Flags (all bin scripts)
 
@@ -279,7 +252,7 @@ These run on client machines (not the DC).
 ### Mount Manager (`client/linux/mount-manager.sh`)
 
 ```bash
-# Initialize autofs for CIFS shares
+# Initialize autofs for NFS shares
 ./client/linux/mount-manager.sh setup
 
 # Add a share (auto-detects DC from realm config)
@@ -301,7 +274,7 @@ These run on client machines (not the DC).
 ./client/linux/mount-manager.sh refresh
 ```
 
-Shares auto-mount on first access under `/mnt/shares/<name>` using Kerberos authentication. No stored passwords required.
+Shares auto-mount on first access under `/mnt/shares/<name>` using Kerberos authentication (`sec=krb5p`). No stored passwords required.
 
 ### Health Check (`client/linux/healthcheck.sh`)
 
@@ -377,8 +350,9 @@ The test environment uses domain `samba.test` (RFC 2606 reserved TLD) on the def
 |---|---|
 | Users | create, list, show, disable, enable, set-password, delete |
 | Groups | create, add-members, list-members, show, remove-members, delete |
-| Shares | create, list, show, modify, grant-access, revoke-access, delete |
-| Client | getent user lookup, getent group lookup |
+| Shares | directory creation, NFS export deployment, export verification |
+| NFS Permissions | POSIX-based read/write access via group membership |
+| Client | getent user lookup, getent group lookup, autofs NFS mounts |
 
 All tests clean up after themselves (users, groups, and shares are deleted at the end).
 
@@ -393,7 +367,7 @@ All tests clean up after themselves (users, groups, and shares are deleted at th
 | `NETBIOS` | `EXAMPLE` | NetBIOS hostname |
 | `DC_HOSTNAME` | `dc01` | DC hostname for client scripts |
 | `SAMBA_CONF` | `/etc/samba/smb.conf` | Path to Samba config |
-| `SHARE_BASE` | `/srv/samba/shares` | Base directory for shares |
+| `SHARE_BASE` | `/data` | Base directory for shares |
 | `HOME_BASE` | `/home` | Base directory for user homes |
 | `DEFAULT_SHELL` | `/bin/bash` | Shell for new AD users |
 | `DEFAULT_GROUP` | `Domain Users` | Default group for new users |
@@ -409,12 +383,12 @@ Key variables in role defaults (overridden by `group_vars/`):
 
 | Variable | Default | Role | Description |
 |---|---|---|---|
-| `sssd_homedir_mode` | `mounted` | sssd-client | `mounted` = CIFS autofs at `/home/ad/<user>`, `local` = pam_mkhomedir at `/home/<user>` |
+| `sssd_homedir_mode` | `mounted` | sssd-client | `mounted` = NFS autofs at `/home/ad/<user>`, `local` = pam_mkhomedir at `/home/<user>` |
 | `sssd_mounted_homedir_base` | `/home/ad` | sssd-client | Where remote homedirs mount (mounted mode) |
+| `sssd_nfs_sec` | `krb5p` | sssd-client | NFS Kerberos security flavour |
+| `samba_nfs_sec` | `krb5p` | samba-dc | NFS Kerberos security flavour (server side) |
 | `samba_password_complexity` | `on` | samba-dc | Password complexity requirement |
 | `samba_password_min_length` | `7` | samba-dc | Minimum password length |
-| `samba_enable_homes` | `true` | samba-dc | Enable `[homes]` share |
-| `samba_enable_recycle` | `true` | samba-dc | Enable vfs_recycle on all shares |
 
 ## Important Notes
 
@@ -424,3 +398,4 @@ Key variables in role defaults (overridden by `group_vars/`):
 - **The DC's `/etc/hosts` must resolve its FQDN to its LAN IP**, not `127.0.0.1`.
 - **For multiple DCs**, do not re-provision. Join additional DCs with `samba-tool domain join`.
 - **Passwords are never stored in config files.** All scripts prompt interactively or pipe via stdin.
+- **NFS share permissions are POSIX-based.** Use `chown`/`chmod`/`setfacl` on the DC to control access.

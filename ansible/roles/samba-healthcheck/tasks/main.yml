@@ -1,7 +1,7 @@
 # samba-healthcheck tasks - Non-destructive verification of domain health.
 #
 # Checks DNS SRV records, Kerberos tickets, SSSD/Winbind/Autofs services,
-# NSS user/group resolution, DC network connectivity, and active CIFS mounts.
+# NSS user/group resolution, DC network connectivity, and active NFS mounts.
 # All checks use ignore_errors: true so the full summary is always printed
 # even when individual checks fail.
 ---
@@ -53,6 +53,12 @@
   register: autofs_status
   failed_when: false
 
+- name: Check NFS server service
+  ansible.builtin.systemd:
+    name: nfs-server
+  register: nfs_server_status
+  failed_when: false
+
 # --- NSS resolution check ---
 - name: Check domain user lookup
   ansible.builtin.command: "getent passwd {{ healthcheck_test_user }}"
@@ -60,25 +66,27 @@
   changed_when: false
   failed_when: false
 
-# --- Active CIFS mounts ---
-- name: Check mounted CIFS shares
-  ansible.builtin.command: mount -t cifs # noqa: command-instead-of-module
-  register: cifs_mounts
+# --- Active NFS mounts ---
+- name: Check mounted NFS shares
+  ansible.builtin.command: mount -t nfs4 # noqa: command-instead-of-module
+  register: nfs_mounts
   changed_when: false
   failed_when: false
 
 # --- Network connectivity to DC ---
 # These ports must be open for AD clients to function:
-#   445 - SMB/CIFS file sharing
-#   88  - Kerberos authentication
-#   53  - DNS resolution
-- name: Check connectivity to DC (port 445)
+#   2049 - NFS file sharing (replaces SMB/CIFS for file access)
+#   88   - Kerberos authentication
+#   53   - DNS resolution
+# Note: Port 445 (SMB) is no longer checked since file shares are NFS-only,
+# but it remains open on the DC for sysvol/netlogon and domain join ops.
+- name: Check connectivity to DC (port 2049)
   ansible.builtin.wait_for:
     host: "{{ healthcheck_dc_hostname }}.{{ healthcheck_realm | lower }}"
-    port: 445
+    port: 2049
     timeout: 5
   failed_when: false
-  register: dc_port_445
+  register: dc_port_2049
 
 - name: Check connectivity to DC (port 88)
   ansible.builtin.wait_for:
@@ -110,9 +118,10 @@
       SSSD service:          {{ 'RUNNING' if sssd_status.status.ActiveState | default('') == 'active' else 'NOT RUNNING' }}
       Winbind service:       {{ 'RUNNING' if winbind_status.status.ActiveState | default('') == 'active' else 'NOT RUNNING' }}
       Autofs service:        {{ 'RUNNING' if autofs_status.status.ActiveState | default('') == 'active' else 'NOT RUNNING' }}
+      NFS server:            {{ 'RUNNING' if nfs_server_status.status.ActiveState | default('') == 'active' else 'NOT RUNNING' }}
       User lookup:           {{ 'PASS' if getent_user.rc == 0 else 'FAIL' }}
-      DC port 445 (SMB):     {{ 'OPEN' if dc_port_445 is not failed else 'CLOSED' }}
+      DC port 2049 (NFS):    {{ 'OPEN' if dc_port_2049 is not failed else 'CLOSED' }}
       DC port 88 (Kerberos): {{ 'OPEN' if dc_port_88 is not failed else 'CLOSED' }}
       DC port 53 (DNS):      {{ 'OPEN' if dc_port_53 is not failed else 'CLOSED' }}
-      CIFS mounts:           {{ cifs_mounts.stdout_lines | default([]) | length }} active
+      NFS mounts:            {{ nfs_mounts.stdout_lines | default([]) | length }} active
       ================================

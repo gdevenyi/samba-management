@@ -2,7 +2,7 @@
 # user-session.sh - Per-session initialisation script for domain users on Linux.
 #
 # Intended to be run from /etc/profile.d/ or as a PAM session hook.
-# Ensures the user has a valid Kerberos ticket (required for CIFS multiuser
+# Ensures the user has a valid Kerberos ticket (required for NFSv4
 # mounts) and that the autofs base directory exists.
 #
 # SECURITY NOTE: kinit -k attempts silent keytab-based authentication.

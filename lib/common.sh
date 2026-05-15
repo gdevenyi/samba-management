@@ -107,7 +107,6 @@ reload_samba() {
 # Input validation - constraints mirror AD/SamDB schema rules:
 #   - Usernames:  sAMAccountName format (max 32, lowercase, rfc2307-compatible)
 #   - Groupnames: more permissive (spaces allowed, up to 63 chars)
-#   - Sharenames: net share name format (no spaces, max 32)
 # ---------------------------------------------------------------------------
 validate_username() {
     local username="$1"
@@ -126,14 +125,6 @@ validate_groupname() {
     fi
 }
 
-validate_sharename() {
-    local sharename="$1"
-    if [[ ! "$sharename" =~ ^[a-zA-Z0-9][a-zA-Z0-9._-]{0,31}$ ]]; then
-        log_error "Invalid share name: ${sharename}"
-        return 1
-    fi
-}
-
 # ---------------------------------------------------------------------------
 # Existence checks - these query the live Samba AD LDAP via samba-tool
 # ---------------------------------------------------------------------------
@@ -143,12 +134,6 @@ user_exists() {
 
 group_exists() {
     samba-tool group show "$1" &>/dev/null
-}
-
-share_exists() {
-    local sharename="$1"
-    local conf="${SAMBA_CONF:-/etc/samba/smb.conf}"
-    grep -qF "[${sharename}]" "$conf" 2>/dev/null
 }
 
 # ---------------------------------------------------------------------------

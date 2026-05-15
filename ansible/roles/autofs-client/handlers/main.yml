@@ -1,8 +1,0 @@
-# autofs-client handlers - Service restart handler for autofs config changes.
----
-# Autofs must be restarted when map files change so it re-reads the
-# mount configuration.
-- name: Restart autofs
-  ansible.builtin.systemd:
-    name: autofs
-    state: restarted

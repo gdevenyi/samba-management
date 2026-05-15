@@ -9,14 +9,14 @@
 # Usage: ./test/setup.sh
 set -euo pipefail
 
+# Use a dedicated test key (passwordless ed25519, generated on first run).
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 CONFIG_FILE="${SCRIPT_DIR}/test-config.env"
 BASE_IMAGE="/var/lib/libvirt/images/ubuntu-noble-base.qcow2"
 IMAGE_URL="https://cloud-images.ubuntu.com/noble/current/noble-server-cloudimg-amd64.img"
 
-# Detect calling user's SSH key (works under sudo).
-CALLING_HOME=$(eval echo "~${SUDO_USER:-$USER}")
-SSH_KEY_FILE="${CALLING_HOME}/.ssh/id_ed25519"
+SSH_KEY_DIR="${SCRIPT_DIR}/.ssh"
+SSH_KEY_FILE="${SSH_KEY_DIR}/id_ed25519"
 SSH_PUB_KEY="${SSH_KEY_FILE}.pub"
 
 # VM settings
@@ -55,8 +55,10 @@ check_prereqs() {
     for cmd in virsh virt-install qemu-img wget cloud-localds; do
         command -v "$cmd" &>/dev/null || die "Missing: $cmd (install: apt install libvirt-clients qemu-utils cloud-image-utils)"
     done
-    if [[ ! -f "$SSH_PUB_KEY" ]]; then
-        die "SSH public key not found: ${SSH_PUB_KEY}"
+    if [[ ! -f "$SSH_KEY_FILE" ]]; then
+        mkdir -p "$SSH_KEY_DIR"
+        ssh-keygen -t ed25519 -f "$SSH_KEY_FILE" -N "" -C "samba-test"
+        log_info "Generated test SSH key: ${SSH_KEY_FILE}"
     fi
     for vm in "$DC_NAME" "$CLIENT_NAME"; do
         if virsh dominfo "$vm" &>/dev/null; then
@@ -248,10 +250,7 @@ healthcheck_realm: "${TEST_REALM}"
 healthcheck_dc_hostname: "dc01"
 samba_shares:
   - name: public
-    path: /srv/samba/shares/public
     comment: "Public share for all domain users"
-    writable: yes
-    valid_users: "@SAMBA\\\\Domain Users"
 EOF
 
     cat > "${SCRIPT_DIR}/group_vars/linux_clients.yml" <<EOF

@@ -2,7 +2,7 @@
 
 ## What This Is
 
-A Samba Active Directory Domain Controller management suite. Ansible provisions the DC and joins clients. Bash scripts handle day-to-day user/group/share operations on the DC. PowerShell scripts handle Windows client tasks.
+A Samba Active Directory Domain Controller management suite. Ansible provisions the DC and joins clients. Bash scripts handle day-to-day user and group operations on the DC. PowerShell scripts handle Windows client tasks. File shares are served via NFSv4 with Kerberos encryption.
 
 ## Where Things Run
 
@@ -69,18 +69,28 @@ There is no lint, typecheck, or CI pipeline. Always run `bash -n` and YAML valid
 - **Two separate worlds**: Ansible is for one-time provisioning only. Bash scripts are for ongoing operations. Do not blur these boundaries.
 - **`bin/*` scripts source `lib/common.sh` then `lib/config.sh`** in that order. `common.sh` provides logging, validation, dry-run, and Samba helpers. `config.sh` reads `config/samba-mgmt.conf` into exported variables (using `export` so child processes see them). Values may be quoted (`KEY="value with spaces"`) — quotes are stripped during parsing.
 - **`client/linux/*` scripts are standalone** — they define their own logging because they run on client machines without access to `lib/`.
-- **`sssd-client` role embeds autofs logic inline** rather than depending on the `autofs-client` role. The `autofs-client` role is a standalone alternative for adding shares to already-joined clients.
-- **Home directory modes**: `sssd_homedir_mode` controls where AD users get homedirs. `"mounted"` (default) uses autofs CIFS mounts at `/home/ad/<user>`. `"local"` uses `pam_mkhomedir` at `/home/<user>`. These are mutually exclusive — `pam_mkhomedir` is disabled when using mounted mode.
+- **`sssd-client` role embeds autofs logic inline** for on-demand NFSv4 share and home directory mounting.
+- **Home directory modes**: `sssd_homedir_mode` controls where AD users get homedirs. `"mounted"` (default) uses autofs NFS mounts at `/home/ad/<user>`. `"local"` uses `pam_mkhomedir` at `/home/<user>`. These are mutually exclusive — `pam_mkhomedir` is disabled when using mounted mode.
+- **Share management** is done via Ansible at provisioning time: `samba_shares` in group_vars defines shares, Ansible creates directories under `/data` and per-share NFS export files in `/etc/exports.d/`. Access control is via POSIX permissions on the directory.
+
+## NFSv4 Server Setup
+
+- The DC runs `nfs-kernel-server` alongside Samba AD DC. Shares are exported via NFSv4 with `sec=krb5p` (Kerberos authentication + integrity + encryption).
+- **NFS Kerberos principal**: `nfs/<fqdn>` SPN is added to the DC machine account and exported to `/etc/krb5.keytab` during provisioning. This is done by the `nfs.yml` task file in the `samba-dc` role.
+- **Export files**: Each share gets `/etc/exports.d/<name>.exports`. Home directories get `/etc/exports.d/homes.exports`. The NFS server reads all `*.exports` files in addition to `/etc/exports`.
+- **idmapd.conf** must be deployed on both DC and clients with matching `Domain = <realm>` for consistent UID/GID mapping.
+- **NEED_GSSD=yes** must be set in `/etc/default/nfs-common` on the DC for Kerberos NFS to function.
+- **Port 2049** (NFS) must be accessible from clients in addition to the standard AD ports (88 Kerberos, 53 DNS, 389 LDAP).
+- **Client mount syntax**: `mount -t nfs4 -o sec=krb5p dc01:/data/<share> /mnt/shares/<share>`. Autofs handles this automatically.
 
 ## Samba AD DC Gotchas
 
 - **On a DC, `samba-ad-dc` replaces `smbd`/`nmbd`/`winbind`**. These services must be masked, not just stopped. The `reload_samba()` function in `lib/common.sh` detects which service is running.
-- **Every share stanza must include `vfs objects = dfs_samba4 acl_xattr recycle`**. Missing `dfs_samba4` or `acl_xattr` breaks DC shares. This is hardcoded in all share creation/modification paths.
-- **POSIX ACLs (`setfacl`) do not work on DC shares**. The `acl_xattr` VFS only supports Windows ACLs. Share permissions use `smbcacls` or must be set from Windows via RSAT/ADUC.
 - **krb5.conf must be copied, never symlinked** — `/var/lib/samba/private/` is root-only readable since Samba 4.7.
 - **`/etc/hosts` must resolve FQDN to LAN IP, not 127.0.0.1** — Kerberos breaks otherwise.
 - **NTP requires `ntpsigndsocket /var/lib/samba/ntp_signd`** for AD-aware time signing.
 - **`samba-tool` creates Samba/AD users, not local Linux users.** Do not confuse with `useradd`.
+- **Share permissions are POSIX-based** (chown/chmod). NFS exports use `sec=krb5p` for authentication but access control is determined by file system permissions on the DC.
 
 ## Bash Script Conventions
 
@@ -88,7 +98,6 @@ There is no lint, typecheck, or CI pipeline. Always run `bash -n` and YAML valid
 - **Password handling**: pipe via stdin (`printf '%s' "$password" | samba-tool ... --newpassword-file=-`) to avoid `/proc/*/cmdline` exposure. Never pass passwords as CLI args.
 - **Command construction**: use bash arrays (`local -a cmd=(...)`) and `"${cmd[@]}"` execution. Never use `eval` with user input.
 - **Global flags**: `--force` (skip confirms), `--dry-run` (preview only), `--debug` (verbose output)
-- **Share name matching**: use `grep -F` and `==` (fixed string), never `=~` (regex) — share names can contain `.` which matches any char in regex.
 
 ## Ansible Conventions
 

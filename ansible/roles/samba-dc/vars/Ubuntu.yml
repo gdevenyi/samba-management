@@ -8,6 +8,8 @@ samba_dc_packages:
   - bind9-dnsutils
   - acl
   - attr
+  - nfs-kernel-server
+  - nfs-common
 samba_dc_service: samba-ad-dc
 samba_dc_mask_services:
   - smbd

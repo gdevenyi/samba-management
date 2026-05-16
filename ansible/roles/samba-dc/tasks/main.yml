@@ -32,5 +32,11 @@
     - samba_enable_sudo_schema | bool
     - _samba_domain_exists | default(false)
 
+- name: Seed AD-stored autofs maps
+  ansible.builtin.include_tasks: autofs_seed.yml
+  when:
+    - samba_enable_autofs_seed | bool
+    - _samba_domain_exists | default(false)
+
 - name: Verify DC is operational
   ansible.builtin.import_tasks: verify.yml

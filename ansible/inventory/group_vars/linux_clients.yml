@@ -13,6 +13,3 @@ sssd_domain_short: "EXAMPLE"
 sssd_admin_password: "CHANGE_ME_STRONG_PASSWORD"
 # DC hostname used in NFS mount targets.
 sssd_dc_hostname: "dc01"
-# List of share names to configure in the autofs map on each client.
-sssd_shares:
-  - public

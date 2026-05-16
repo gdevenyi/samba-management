@@ -1,0 +1,234 @@
+# autofs_seed.yml - Seed AD-stored autofs maps under OU=automount.
+#
+# Idempotent: every entry is created with ldbadd only if it does not exist;
+# pre-existing entries (including manual additions via bin/samba-automount.sh)
+# are left untouched.  No schema modification is needed -- Samba AD already
+# ships nisMap/nisObject in its default schema.
+---
+- name: Compute domain base DN (autofs)
+  ansible.builtin.set_fact:
+    _autofs_domain_dn: "{{ samba_realm | upper | regex_replace('\\.', ',DC=') | regex_replace('^', 'DC=') }}"
+
+- name: Set autofs DN facts
+  ansible.builtin.set_fact:
+    _autofs_base_dn: "OU=automount,{{ _autofs_domain_dn }}"
+    _autofs_dc_fqdn: "{{ ansible_fqdn }}"
+    _autofs_homes_target: "{{ ansible_fqdn }}:{{ samba_home_base }}/&"
+
+# --- OU=automount container ---
+- name: Check if OU=automount exists
+  ansible.builtin.shell: |
+    set -o pipefail
+    ldbsearch -H /var/lib/samba/private/sam.ldb -b "{{ _autofs_base_dn }}" -s base dn 2>/dev/null | grep -c '^dn:' || true
+  args:
+    executable: /bin/bash
+  register: _autofs_ou_check
+  changed_when: false
+
+- name: Create OU=automount
+  ansible.builtin.shell: |
+    set -o pipefail
+    cat <<'LDIF' | ldbadd -H /var/lib/samba/private/sam.ldb
+    dn: {{ _autofs_base_dn }}
+    objectClass: top
+    objectClass: organizationalUnit
+    ou: automount
+    LDIF
+  args:
+    executable: /bin/bash
+  when: _autofs_ou_check.stdout | int == 0
+  changed_when: true
+
+# --- auto.master map ---
+- name: Check if auto.master map exists
+  ansible.builtin.shell: |
+    set -o pipefail
+    ldbsearch -H /var/lib/samba/private/sam.ldb -b "CN=auto.master,{{ _autofs_base_dn }}" -s base dn 2>/dev/null | grep -c '^dn:' || true
+  args:
+    executable: /bin/bash
+  register: _autofs_master_check
+  changed_when: false
+
+- name: Create auto.master map
+  ansible.builtin.shell: |
+    set -o pipefail
+    cat <<'LDIF' | ldbadd -H /var/lib/samba/private/sam.ldb
+    dn: CN=auto.master,{{ _autofs_base_dn }}
+    objectClass: top
+    objectClass: nisMap
+    cn: auto.master
+    nisMapName: auto.master
+    LDIF
+  args:
+    executable: /bin/bash
+  when: _autofs_master_check.stdout | int == 0
+  changed_when: true
+
+# --- /mnt/shares pointer in auto.master ---
+- name: Check if auto.master has /mnt/shares pointer
+  ansible.builtin.shell: |
+    set -o pipefail
+    ldbsearch -H /var/lib/samba/private/sam.ldb -b "CN={{ samba_autofs_shares_mount }},CN=auto.master,{{ _autofs_base_dn }}" -s base dn 2>/dev/null | grep -c '^dn:' || true
+  args:
+    executable: /bin/bash
+  register: _autofs_master_shares_check
+  changed_when: false
+
+- name: Add /mnt/shares pointer to auto.master
+  ansible.builtin.shell: |
+    set -o pipefail
+    cat <<'LDIF' | ldbadd -H /var/lib/samba/private/sam.ldb
+    dn: CN={{ samba_autofs_shares_mount }},CN=auto.master,{{ _autofs_base_dn }}
+    objectClass: top
+    objectClass: nisObject
+    cn: {{ samba_autofs_shares_mount }}
+    nisMapName: auto.master
+    nisMapEntry: auto.shares --timeout={{ samba_autofs_shares_timeout }}
+    LDIF
+  args:
+    executable: /bin/bash
+  when: _autofs_master_shares_check.stdout | int == 0
+  changed_when: true
+
+# --- /home/ad pointer in auto.master (only if homes are exported) ---
+- name: Check if auto.master has /home/ad pointer
+  ansible.builtin.shell: |
+    set -o pipefail
+    ldbsearch -H /var/lib/samba/private/sam.ldb -b "CN={{ samba_autofs_homes_mount }},CN=auto.master,{{ _autofs_base_dn }}" -s base dn 2>/dev/null | grep -c '^dn:' || true
+  args:
+    executable: /bin/bash
+  register: _autofs_master_homes_check
+  changed_when: false
+  when: samba_nfs_export_homes | bool
+
+- name: Add /home/ad pointer to auto.master
+  ansible.builtin.shell: |
+    set -o pipefail
+    cat <<'LDIF' | ldbadd -H /var/lib/samba/private/sam.ldb
+    dn: CN={{ samba_autofs_homes_mount }},CN=auto.master,{{ _autofs_base_dn }}
+    objectClass: top
+    objectClass: nisObject
+    cn: {{ samba_autofs_homes_mount }}
+    nisMapName: auto.master
+    nisMapEntry: auto.home --timeout={{ samba_autofs_homes_timeout }}
+    LDIF
+  args:
+    executable: /bin/bash
+  when:
+    - samba_nfs_export_homes | bool
+    - _autofs_master_homes_check.stdout | int == 0
+  changed_when: true
+
+# --- auto.home map and wildcard entry ---
+- name: Check if auto.home map exists
+  ansible.builtin.shell: |
+    set -o pipefail
+    ldbsearch -H /var/lib/samba/private/sam.ldb -b "CN=auto.home,{{ _autofs_base_dn }}" -s base dn 2>/dev/null | grep -c '^dn:' || true
+  args:
+    executable: /bin/bash
+  register: _autofs_home_check
+  changed_when: false
+  when: samba_nfs_export_homes | bool
+
+- name: Create auto.home map
+  ansible.builtin.shell: |
+    set -o pipefail
+    cat <<'LDIF' | ldbadd -H /var/lib/samba/private/sam.ldb
+    dn: CN=auto.home,{{ _autofs_base_dn }}
+    objectClass: top
+    objectClass: nisMap
+    cn: auto.home
+    nisMapName: auto.home
+    LDIF
+  args:
+    executable: /bin/bash
+  when:
+    - samba_nfs_export_homes | bool
+    - _autofs_home_check.stdout | int == 0
+  changed_when: true
+
+- name: Check if auto.home has wildcard entry
+  ansible.builtin.shell: |
+    set -o pipefail
+    ldbsearch -H /var/lib/samba/private/sam.ldb -b "CN=*,CN=auto.home,{{ _autofs_base_dn }}" -s base dn 2>/dev/null | grep -c '^dn:' || true
+  args:
+    executable: /bin/bash
+  register: _autofs_home_wildcard_check
+  changed_when: false
+  when: samba_nfs_export_homes | bool
+
+- name: Add wildcard entry to auto.home
+  ansible.builtin.shell: |
+    set -o pipefail
+    cat <<'LDIF' | ldbadd -H /var/lib/samba/private/sam.ldb
+    dn: CN=*,CN=auto.home,{{ _autofs_base_dn }}
+    objectClass: top
+    objectClass: nisObject
+    cn: *
+    nisMapName: auto.home
+    nisMapEntry: -fstype=nfs4,sec={{ samba_nfs_sec }} {{ _autofs_homes_target }}
+    LDIF
+  args:
+    executable: /bin/bash
+  when:
+    - samba_nfs_export_homes | bool
+    - _autofs_home_wildcard_check.stdout | int == 0
+  changed_when: true
+
+# --- auto.shares map and per-share entries ---
+- name: Check if auto.shares map exists
+  ansible.builtin.shell: |
+    set -o pipefail
+    ldbsearch -H /var/lib/samba/private/sam.ldb -b "CN=auto.shares,{{ _autofs_base_dn }}" -s base dn 2>/dev/null | grep -c '^dn:' || true
+  args:
+    executable: /bin/bash
+  register: _autofs_shares_check
+  changed_when: false
+
+- name: Create auto.shares map
+  ansible.builtin.shell: |
+    set -o pipefail
+    cat <<'LDIF' | ldbadd -H /var/lib/samba/private/sam.ldb
+    dn: CN=auto.shares,{{ _autofs_base_dn }}
+    objectClass: top
+    objectClass: nisMap
+    cn: auto.shares
+    nisMapName: auto.shares
+    LDIF
+  args:
+    executable: /bin/bash
+  when: _autofs_shares_check.stdout | int == 0
+  changed_when: true
+
+# Per-share entries: loop over samba_shares; existing entries (including
+# CLI-added ones) are preserved -- only missing ones are created.
+- name: Check existing share entries in auto.shares
+  ansible.builtin.shell: |
+    set -o pipefail
+    ldbsearch -H /var/lib/samba/private/sam.ldb -b "CN={{ item.name }},CN=auto.shares,{{ _autofs_base_dn }}" -s base dn 2>/dev/null | grep -c '^dn:' || true
+  args:
+    executable: /bin/bash
+  register: _autofs_share_checks
+  changed_when: false
+  loop: "{{ samba_shares }}"
+  loop_control:
+    label: "{{ item.name }}"
+
+- name: Add per-share entries to auto.shares
+  ansible.builtin.shell: |
+    set -o pipefail
+    cat <<'LDIF' | ldbadd -H /var/lib/samba/private/sam.ldb
+    dn: CN={{ item.item.name }},CN=auto.shares,{{ _autofs_base_dn }}
+    objectClass: top
+    objectClass: nisObject
+    cn: {{ item.item.name }}
+    nisMapName: auto.shares
+    nisMapEntry: -fstype=nfs4,sec={{ samba_nfs_sec }} {{ _autofs_dc_fqdn }}:{{ samba_share_base }}/{{ item.item.name }}
+    LDIF
+  args:
+    executable: /bin/bash
+  when: item.stdout | int == 0
+  changed_when: true
+  loop: "{{ _autofs_share_checks.results }}"
+  loop_control:
+    label: "{{ item.item.name }}"

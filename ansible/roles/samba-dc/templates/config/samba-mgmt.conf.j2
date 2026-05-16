@@ -29,6 +29,7 @@ LOG_FILE=/var/log/samba-management.log
 
 # --- Linux client automount ---
 AUTOMOUNT_BASE=/mnt/shares
+NFS_SEC={{ samba_nfs_sec }}
 
 # --- DNS forwarder used by the Samba INTERNAL_DNS backend ---
 DNS_FORWARDER={{ samba_dns_forwarder }}

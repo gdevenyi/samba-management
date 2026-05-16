@@ -38,10 +38,11 @@ sssd_homedir_mode: "mounted"
 
 # --- DC and autofs configuration ---
 sssd_dc_hostname: "dc01"
+# Whether to enable autofs on the client.  When true, the autofs package is
+# installed, the mount-base directories are created, and SSSD is configured
+# to broker maps from AD (no per-client map files).
 sssd_configure_autofs: true
 sssd_autofs_base: "/mnt/shares"
-# Shares to auto-mount via NFSv4/autofs.
-sssd_shares: []
 
 # --- NFS mount options ---
 # Kerberos security flavour: krb5 (auth), krb5i (auth+integrity), krb5p (full encryption)
@@ -50,3 +51,7 @@ sssd_nfs_sec: "krb5p"
 sssd_enable_ssh: true
 
 sssd_enable_sudo: true
+
+# Pull autofs maps from AD via SSSD's autofs service.  Requires the DC to
+# have been provisioned with samba_enable_autofs_seed: true (default).
+sssd_enable_autofs: true

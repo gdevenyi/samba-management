@@ -178,81 +178,55 @@
     state: started
 
 # --- Autofs configuration ---
-# Sets up on-demand NFSv4 mounting for network shares and (optionally)
-# home directories.  The autofs timeout determines how long shares stay
-# mounted after last access.
+# Maps are stored in AD under OU=automount and consumed by SSSD's autofs
+# service; no per-client map files are written.  We only set up the
+# mount-base directories, the NSS routing, and start the service.
 - name: Configure autofs
   when: sssd_configure_autofs
   block:
-    - name: Create autofs master directory
-      ansible.builtin.file:
-        path: /etc/auto.master.d
-        state: directory
-        mode: "0755"
-
-    # Master map entry: tells autofs to watch sssd_autofs_base and use
-    # /etc/auto.shares as the map, with a 300-second idle timeout.
-    - name: Deploy autofs master map for network shares
-      ansible.builtin.copy:
-        content: "{{ sssd_autofs_base }} /etc/auto.shares --timeout=300\n"
-        dest: /etc/auto.master.d/shares.autofs
-        mode: "0644"
-      notify: Restart autofs
-
-    # The shares map: one line per share with NFSv4 mount options.
-    - name: Deploy autofs shares map
-      ansible.builtin.copy:
-        content: |
-          {% for share in sssd_shares %}
-          {{ share }} -fstype=nfs4,sec={{ sssd_nfs_sec }} {{ sssd_dc_hostname }}.{{ sssd_domain }}:/data/{{ share }}
-          {% endfor %}
-        dest: /etc/auto.shares
-        mode: "0644"
-      notify: Restart autofs
-
-    - name: Create autofs mount base
+    - name: Create autofs mount base for shares
       ansible.builtin.file:
         path: "{{ sssd_autofs_base }}"
         state: directory
         mode: "0755"
 
-    # Home directory autofs: uses a wildcard map so any user accessing
-    # /home/ad/<username> triggers an NFS mount of their DC home dir.
-    - name: Configure autofs home directory mounts
+    - name: Create autofs mount base for home directories
+      ansible.builtin.file:
+        path: "{{ sssd_mounted_homedir_base }}"
+        state: directory
+        mode: "0755"
       when: sssd_homedir_mode == 'mounted'
-      block:
-        - name: Create mounted home base directory
-          ansible.builtin.file:
-            path: "{{ sssd_mounted_homedir_base }}"
-            state: directory
-            mode: "0755"
 
-        # 600-second timeout for home dirs (longer than shares because
-        # users are more sensitive to home directory latency).
-        - name: Deploy autofs home master map
-          ansible.builtin.copy:
-            content: "{{ sssd_mounted_homedir_base }} /etc/auto.home --timeout=600\n"
-            dest: /etc/auto.master.d/home.autofs
-            mode: "0644"
-          notify: Restart autofs
+    # NSS routing: with sssd_enable_autofs on, look up maps via SSSD first
+    # (it brokers the AD-stored maps); 'files' kept as fallback so any
+    # locally dropped /etc/auto.* still resolves.
+    - name: Configure nsswitch.conf for SSSD autofs
+      ansible.builtin.lineinfile:
+        path: /etc/nsswitch.conf
+        regexp: '^automount:'
+        line: "automount: {{ 'sss files' if sssd_enable_autofs | bool else 'files' }}"
+        create: true
+        mode: "0644"
+      notify: Restart autofs
 
-        # The wildcard (*) map key matches any subdirectory name.  The
-        # ampersand (&) in the NFS path is replaced by the matched key,
-        # so accessing /home/ad/jsmith mounts dc01:/home/jsmith.
-        - name: Deploy autofs home map (wildcard NFS mount)
-          ansible.builtin.copy:
-            content: "* -fstype=nfs4,sec={{ sssd_nfs_sec }} {{ sssd_dc_hostname }}.{{ sssd_domain }}:/home/&\n"
-            dest: /etc/auto.home
-            mode: "0644"
-          notify: Restart autofs
-
-    - name: Enable and start autofs
-      ansible.builtin.systemd:
-        name: autofs
-        enabled: true
-        state: started
+    # One-shot cleanup of files written by previous (file-based) versions
+    # of this role.  Only runs when SSSD autofs is enabled, because the
+    # legacy maps should be kept as fallback when sssd_enable_autofs is false.
+    - name: Remove legacy static autofs map files
+      ansible.builtin.file:
+        path: "{{ item }}"
+        state: absent
+      loop:
+        - /etc/auto.master.d/shares.autofs
+        - /etc/auto.master.d/home.autofs
+        - /etc/auto.shares
+        - /etc/auto.home
+      when: sssd_enable_autofs | bool
+      notify: Restart autofs
 
 # --- Start SSSD ---
+# SSSD must come up before autofs so the autofs service can resolve maps
+# via the sss NSS module on first start (the maps live in AD, not on disk).
 - name: Enable and start sssd
   ansible.builtin.systemd:
     name: sssd
@@ -261,6 +235,13 @@
 
 - name: Flush handlers (restart SSSD if config changed)
   ansible.builtin.meta: flush_handlers
+
+- name: Enable and start autofs
+  ansible.builtin.systemd:
+    name: autofs
+    enabled: true
+    state: started
+  when: sssd_configure_autofs
 
 # --- SSH key retrieval from AD ---
 - name: Configure sshd for SSSD key lookup

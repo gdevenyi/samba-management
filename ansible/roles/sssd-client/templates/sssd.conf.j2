@@ -5,7 +5,7 @@
 
 [sssd]
 domains = {{ sssd_domain }}
-services = nss, pam{% if sssd_enable_ssh | bool %}, ssh{% endif %}{% if sssd_enable_sudo | bool %}, sudo{% endif %}
+services = nss, pam{% if sssd_enable_ssh | bool %}, ssh{% endif %}{% if sssd_enable_sudo | bool %}, sudo{% endif %}{% if sssd_enable_autofs | bool %}, autofs{% endif %}
 
 [domain/{{ sssd_domain }}]
 default_shell = {{ sssd_default_shell }}
@@ -24,6 +24,12 @@ access_provider = {{ sssd_access_provider }}
 {# permissive mode: log GPO denials but don't enforce them, avoiding #}
 {# lockouts from misconfigured or absent GPOs in a Samba AD domain #}
 ad_gpo_access_control = permissive
+{% endif %}
+{% if sssd_enable_autofs | bool %}
+{# autofs maps stored in AD under OU=automount (nisMap/nisObject).  With #}
+{# id_provider = ad SSSD uses the NIS attribute mapping by default, which #}
+{# matches Samba AD's stock schema -- no ldap_autofs_* overrides needed. #}
+autofs_provider = ad
 {% endif %}
 {% if sssd_enable_ssh | bool %}
 {# SSH key retrieval from AD altSecurityIdentities attribute. #}

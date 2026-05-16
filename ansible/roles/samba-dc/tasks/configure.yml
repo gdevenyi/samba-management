@@ -199,3 +199,4 @@
         - samba-user.sh
         - samba-group.sh
         - samba-sudorule.sh
+        - samba-automount.sh

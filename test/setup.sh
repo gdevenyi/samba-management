@@ -87,8 +87,22 @@ download_base_image() {
 # Generate random password and test config
 # ---------------------------------------------------------------------------
 generate_config() {
-    local password
-    password=$(openssl rand -base64 18 | tr -d '/+=' | head -c 24)
+    local password upper lower digit symbol
+    # Samba's default password policy requires at least 3 of 4 character
+    # classes (upper, lower, digit, symbol) and length >= 7.  Build a 24-char
+    # password with guaranteed coverage of all four, then shuffle.  We skip
+    # symbols that bash/YAML would re-interpret ($, \, ", ', `) so the value
+    # round-trips safely through the generated test-config.env and group_vars.
+    # NOTE: The '|| true' prevents set -euo pipefail from aborting when
+    # SIGPIPE kills tr after head closes the pipe early.
+    upper=$(LC_ALL=C tr -dc 'A-Z' </dev/urandom | head -c 6) || true
+    lower=$(LC_ALL=C tr -dc 'a-z' </dev/urandom | head -c 6) || true
+    digit=$(LC_ALL=C tr -dc '0-9' </dev/urandom | head -c 6) || true
+    # NOTE: anchor '-' at the end so tr treats it as a literal, not a range.
+    # 'A-_' (the range from previous bug) leaked $ ` : etc., which break
+    # shell-source of test-config.env and YAML quoting.
+    symbol=$(LC_ALL=C tr -dc '!@#%^*_=+-' </dev/urandom | head -c 6) || true
+    password=$(printf '%s' "${upper}${lower}${digit}${symbol}" | fold -w1 | shuf | tr -d '\n')
     cat > "$CONFIG_FILE" <<EOF
 SMB_TEST_ADMIN_PASSWORD="${password}"
 SMB_TEST_DC_IP="${DC_IP}"
@@ -274,8 +288,6 @@ sssd_admin_password: "${SMB_TEST_ADMIN_PASSWORD}"
 sssd_dc_hostname: "dc01"
 healthcheck_realm: "${TEST_REALM}"
 healthcheck_dc_hostname: "dc01"
-sssd_shares:
-  - public
 EOF
 
     # Hand generated files back to the invoking user so the un-privileged

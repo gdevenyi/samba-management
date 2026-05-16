@@ -195,14 +195,17 @@ echo "--- NFS Share Permissions ---"
 # correctly resolves the user's secondary AD groups.  On the DC itself the
 # built-in winbind doesn't return secondary group memberships, so `sudo -u
 # perm_writer` there fails to honour ShareWriters membership.
-# The shares were added to the autofs map below at provision time; we add
-# them dynamically here so the test is self-contained.
+# Map entries are added in AD via samba-automount.sh on the DC; the client
+# picks them up after SSSD's cache is flushed.
 
-run_test "Add perm_rw_share to client autofs map" \
-    ssh_client "sudo bash -c \"echo 'perm_rw_share -fstype=nfs4,sec=krb5p dc01.samba.test:/data/perm_rw_share' >> /etc/auto.shares && (systemctl reload autofs || systemctl restart autofs)\""
+run_test "Add perm_rw_share to auto.shares in AD" \
+    ssh_dc sudo samba-automount.sh add-share perm_rw_share
 
-run_test "Add perm_admin_share to client autofs map" \
-    ssh_client "sudo bash -c \"echo 'perm_admin_share -fstype=nfs4,sec=krb5p dc01.samba.test:/data/perm_admin_share' >> /etc/auto.shares && (systemctl reload autofs || systemctl restart autofs)\""
+run_test "Add perm_admin_share to auto.shares in AD" \
+    ssh_dc sudo samba-automount.sh add-share perm_admin_share
+
+run_test "Flush SSSD autofs cache on client" \
+    ssh_client "sudo sss_cache -A && sudo systemctl restart autofs"
 
 run_test "perm_writer can write to perm_rw_share via NFS" \
     ssh_client "echo 'Wr1terPass!' | kinit perm_writer@SAMBA.TEST && echo 'writer test' > /mnt/shares/perm_rw_share/writer_file.txt; rc=\$?; kdestroy; exit \$rc"
@@ -223,11 +226,11 @@ echo "--- Autofs + Kerberos Mount Tests ---"
 run_test "Autofs service is running on client" \
     ssh_client "systemctl is-active autofs"
 
-run_test "Autofs shares map contains public" \
-    ssh_client "grep -q 'public' /etc/auto.shares"
+run_test "AD auto.shares map contains public (via SSSD)" \
+    ssh_client "sudo automount -m | grep -E '^[[:space:]]*public[[:space:]]*\\|.*nfs4'"
 
-run_test "Autofs home map exists with wildcard entry" \
-    ssh_client "test -f /etc/auto.home && grep -q 'nfs4' /etc/auto.home"
+run_test "AD auto.home map exposes wildcard entry (via SSSD)" \
+    ssh_client "sudo automount -m | grep -E '^[[:space:]]*\\*[[:space:]]*\\|.*nfs4'"
 
 run_test "kinit as perm_writer on client" \
     ssh_client "echo 'Wr1terPass!' | kinit perm_writer@SAMBA.TEST"
@@ -359,11 +362,33 @@ run_test "Delete sudo rule admin-all" \
 run_test "Verify sudo rules deleted" \
     ssh_dc "! sudo samba-sudorule.sh list | grep -q users-nopasswd"
 
+# --- Autofs Map Management ---
+echo ""
+echo "--- Autofs Map Management ---"
+
+run_test "List autofs maps shows auto.master" \
+    ssh_dc "sudo samba-automount.sh list | grep -q '^auto.master$'"
+
+run_test "List autofs maps shows auto.shares" \
+    ssh_dc "sudo samba-automount.sh list | grep -q '^auto.shares$'"
+
+run_test "List autofs maps shows auto.home" \
+    ssh_dc "sudo samba-automount.sh list | grep -q '^auto.home$'"
+
+run_test "List auto.shares entries shows public" \
+    ssh_dc "sudo samba-automount.sh list auto.shares | grep -q '^public'"
+
+run_test "Show auto.home wildcard entry" \
+    ssh_dc "sudo samba-automount.sh show auto.home '*' | grep -q 'nisMapEntry:.*nfs4'"
+
 # --- Cleanup ---
 echo ""
 echo "--- Cleanup ---"
-run_test "Remove perm_rw_share/perm_admin_share from client autofs" \
-    ssh_client "sudo bash -c \"sed -i '/^perm_rw_share /d; /^perm_admin_share /d' /etc/auto.shares && (systemctl reload autofs || systemctl restart autofs)\""
+run_test "Remove perm_rw_share from auto.shares in AD" \
+    ssh_dc sudo samba-automount.sh delete-share perm_rw_share --force
+
+run_test "Remove perm_admin_share from auto.shares in AD" \
+    ssh_dc sudo samba-automount.sh delete-share perm_admin_share --force
 
 run_test "Remove perm_admin_share NFS export" \
     ssh_dc "sudo rm -f /etc/exports.d/perm_admin_share.exports && sudo exportfs -ra"

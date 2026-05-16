@@ -71,9 +71,10 @@ sssd_realm: "YOURDOMAIN.INTERNAL"
 sssd_domain: "yourdomain.internal"
 sssd_admin_password: "your-strong-password-here"
 sssd_dc_hostname: "dc01"
-sssd_shares:
-  - public
 ```
+
+(Autofs maps no longer need to be enumerated here — clients pull them from
+AD via SSSD.)
 
 **`ansible/inventory/group_vars/windows_clients.yml`:**
 ```yaml
@@ -213,6 +214,15 @@ All scripts run **as root on the DC**. They source `lib/common.sh` then `lib/con
 ./bin/samba-sudorule.sh show admin-all
 ./bin/samba-sudorule.sh modify dev-restart --option="!authenticate"
 ./bin/samba-sudorule.sh delete dev-restart --force
+
+# Autofs map management (AD-stored maps, consumed by SSSD on every client)
+./bin/samba-automount.sh add-share engineering          # /mnt/shares/engineering -> dc:/data/engineering
+./bin/samba-automount.sh add-share engineering --sec=krb5i
+./bin/samba-automount.sh list                           # list maps
+./bin/samba-automount.sh list auto.shares               # list entries in a map
+./bin/samba-automount.sh show auto.shares engineering
+./bin/samba-automount.sh modify auto.shares engineering --value="-fstype=nfs4,sec=krb5p other-host:/data/engineering"
+./bin/samba-automount.sh delete-share engineering --force
 ```
 
 ### Group Management (`bin/samba-group.sh`)
@@ -242,14 +252,29 @@ All scripts run **as root on the DC**. They source `lib/common.sh` then `lib/con
 
 ### Share Management
 
-Shares are defined in `group_vars/dc.yml` and provisioned by Ansible. Each share creates a directory under `/data` and an NFS export file in `/etc/exports.d/<name>.exports`. Access control is managed via POSIX permissions on the directory (chown/chmod).
+Shares are defined in `group_vars/dc.yml` and provisioned by Ansible. Each
+share creates a directory under `/data`, an NFS export file in
+`/etc/exports.d/<name>.exports`, and an autofs entry under
+`CN=auto.shares,OU=automount` in AD. Access control is managed via POSIX
+permissions on the directory (chown/chmod). All joined Linux clients see
+the share automatically via SSSD; no per-client configuration is needed.
 
-To add a new share after initial provisioning:
+To add a new share after initial provisioning, you have two options:
 
+**One-off (no Ansible run needed):**
+```bash
+# On the DC: create the directory + NFS export, then publish to autofs in AD
+sudo mkdir -p /data/engineering && sudo chmod 0770 /data/engineering
+sudo chown root:'domain users' /data/engineering
+echo "/data/engineering *(rw,sec=krb5p,sync,no_subtree_check)" | \
+    sudo tee /etc/exports.d/engineering.exports && sudo exportfs -ra
+sudo samba-automount.sh add-share engineering
+```
+Clients pick it up after the SSSD cache refresh (or `sudo sss_cache -A`).
+
+**Declarative (preferred for documented infrastructure):**
 1. Add the share to `samba_shares` in `group_vars/dc.yml`
 2. Re-run `ansible-playbook playbooks/provision-dc.yml` (idempotent)
-3. Add the share name to `sssd_shares` in `group_vars/linux_clients.yml`
-4. Re-run `ansible-playbook playbooks/provision-linux-sssd.yml` (idempotent)
 
 ### Global Flags (all bin scripts)
 
@@ -261,34 +286,9 @@ To add a new share after initial provisioning:
 
 ## Linux Client Scripts
 
-These run on client machines (not the DC).
-
-### Mount Manager (`client/linux/mount-manager.sh`)
-
-```bash
-# Initialize autofs for NFS shares
-./client/linux/mount-manager.sh setup
-
-# Add a share (auto-detects DC from realm config)
-./client/linux/mount-manager.sh add engineering
-
-# Add with explicit server
-./client/linux/mount-manager.sh add engineering --server=dc01.example.internal
-
-# List configured shares
-./client/linux/mount-manager.sh list
-
-# Test a mount
-./client/linux/mount-manager.sh test engineering
-
-# Remove a share
-./client/linux/mount-manager.sh remove engineering
-
-# Reload autofs after manual config changes
-./client/linux/mount-manager.sh refresh
-```
-
-Shares auto-mount on first access under `/mnt/shares/<name>` using Kerberos authentication (`sec=krb5p`). No stored passwords required.
+These run on client machines (not the DC). Note: autofs maps are managed
+centrally on the DC via `samba-automount.sh` and pulled by SSSD — there is
+no per-client tool for adding shares.
 
 ### Health Check (`client/linux/healthcheck.sh`)
 

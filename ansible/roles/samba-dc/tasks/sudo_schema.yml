@@ -1,7 +1,12 @@
 # Apply sudo schema extension to Samba AD.
 # Stores sudo rules in AD via sudoRole class.
 # Requires stopping samba-ad-dc because the schema module blocks online changes.
+# Attributes and class are applied in separate steps per Samba wiki guidance.
 ---
+- name: Compute schema base DN
+  ansible.builtin.set_fact:
+    samba_schema_base_dn: "{{ samba_realm | upper | regex_replace('\\.', ',DC=') | regex_replace('^', 'DC=') }}"
+
 - name: Check if sudo schema marker exists
   ansible.builtin.stat:
     path: "{{ samba_statedir }}/.sudo_schema_applied"
@@ -23,10 +28,18 @@
     - not _sudo_schema_marker.stat.exists
     - _sudo_schema_exists.stdout | int == 0
   block:
-    - name: Generate sudo schema LDIF
+    - name: Generate sudo schema attributes LDIF
       ansible.builtin.template:
-        src: ldif/sudo_schema.ldif.j2
-        dest: /tmp/sudo_schema.ldif
+        src: ldif/sudo_schema_attrs.ldif.j2
+        dest: /tmp/sudo_schema_attrs.ldif
+        owner: root
+        group: root
+        mode: "0600"
+
+    - name: Generate sudo schema class LDIF
+      ansible.builtin.template:
+        src: ldif/sudo_schema_class.ldif.j2
+        dest: /tmp/sudo_schema_class.ldif
         owner: root
         group: root
         mode: "0600"
@@ -37,11 +50,17 @@
         state: stopped
       register: _samba_stopped_for_sudo_schema
 
-    - name: Apply sudo schema to AD
+    - name: Apply sudo schema attributes to AD
       ansible.builtin.command:
-        cmd: ldbmodify -H /var/lib/samba/private/sam.ldb /tmp/sudo_schema.ldif
-      register: _sudo_schema_apply
-      changed_when: _sudo_schema_apply.rc == 0
+        cmd: ldbadd -H /var/lib/samba/private/sam.ldb /tmp/sudo_schema_attrs.ldif --option="dsdb:schema update allowed"=true
+      register: _sudo_schema_attrs_apply
+      changed_when: _sudo_schema_attrs_apply.rc == 0
+
+    - name: Apply sudo schema class to AD
+      ansible.builtin.command:
+        cmd: ldbadd -H /var/lib/samba/private/sam.ldb /tmp/sudo_schema_class.ldif --option="dsdb:schema update allowed"=true
+      register: _sudo_schema_class_apply
+      changed_when: _sudo_schema_class_apply.rc == 0
 
     - name: Start Samba AD DC after sudo schema modification # noqa: no-handler
       ansible.builtin.systemd:
@@ -79,10 +98,13 @@
         group: root
         mode: "0644"
 
-    - name: Clean up sudo schema LDIF
+    - name: Clean up sudo schema LDIFs
       ansible.builtin.file:
-        path: /tmp/sudo_schema.ldif
+        path: "{{ item }}"
         state: absent
+      loop:
+        - /tmp/sudo_schema_attrs.ldif
+        - /tmp/sudo_schema_class.ldif
 
   rescue:
     - name: Ensure Samba is started after sudo schema failure
@@ -91,10 +113,13 @@
         state: started
       when: _samba_stopped_for_sudo_schema is defined and _samba_stopped_for_sudo_schema is changed
 
-    - name: Clean up sudo schema LDIF on failure
+    - name: Clean up sudo schema LDIFs on failure
       ansible.builtin.file:
-        path: /tmp/sudo_schema.ldif
+        path: "{{ item }}"
         state: absent
+      loop:
+        - /tmp/sudo_schema_attrs.ldif
+        - /tmp/sudo_schema_class.ldif
 
     - name: Fail with sudo schema error
       ansible.builtin.fail:

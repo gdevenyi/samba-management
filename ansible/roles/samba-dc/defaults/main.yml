@@ -34,6 +34,7 @@ samba_ous:
   - "Groups"
   - "Computers"
   - "Shares"
+  - "Sudoers"
 
 # --- File shares (empty by default; define in group_vars) ---
 # Each share creates a directory under samba_share_base and an NFS export
@@ -60,7 +61,7 @@ samba_account_lockout_duration: 30
 samba_account_reset_lockout_after: 30
 
 # --- Schema extensions ---
-samba_enable_sudo_schema: false
+samba_enable_sudo_schema: true
 
 # --- Runtime file cleanup ---
 samba_cleanup_runtime_files: true

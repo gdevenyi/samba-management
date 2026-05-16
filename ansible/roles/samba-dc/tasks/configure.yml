@@ -154,12 +154,19 @@
         dest: /opt/samba-management/lib/
         mode: "0755"
 
-    - name: Deploy management config
-      ansible.builtin.copy:
-        src: "../../config/"
-        dest: /opt/samba-management/config/
+    - name: Deploy management config directory
+      ansible.builtin.file:
+        path: /opt/samba-management/config/
+        state: directory
+        owner: root
+        group: root
+        mode: "0700"
+
+    - name: Deploy management config from template
+      ansible.builtin.template:
+        src: config/samba-mgmt.conf.j2
+        dest: /opt/samba-management/config/samba-mgmt.conf
         mode: "0600"
-        force: false
 
     - name: Remove obsolete samba-share.sh symlink
       ansible.builtin.file:
@@ -174,3 +181,4 @@
       loop:
         - samba-user.sh
         - samba-group.sh
+        - samba-sudorule.sh

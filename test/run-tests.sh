@@ -299,6 +299,57 @@ run_test "Remove SSH key from testuser1" \
 run_test "Verify SSH key removed from testuser1" \
     ssh_dc "! sudo samba-user.sh list-sshkeys testuser1 | grep -q 'AAAAC3NzaC1lZDI1NTE5AAAAITestKeyForSambaManagementTest12345'"
 
+# --- Sudo Rule Management ---
+echo ""
+echo "--- Sudo Rule Management ---"
+
+run_test "Create sudo rule for domain admins" \
+    ssh_dc 'sudo samba-sudorule.sh add admin-all --user="%Domain Admins" --command=ALL'
+
+run_test "Create sudo rule for domain users with no password" \
+    ssh_dc 'sudo samba-sudorule.sh add users-nopasswd --user="%Domain Users" --command=ALL --option="!authenticate"'
+
+run_test "List sudo rules shows admin-all" \
+    ssh_dc "sudo samba-sudorule.sh list | grep -q admin-all"
+
+run_test "List sudo rules shows users-nopasswd" \
+    ssh_dc "sudo samba-sudorule.sh list | grep -q users-nopasswd"
+
+run_test "Show sudo rule users-nopasswd" \
+    ssh_dc "sudo samba-sudorule.sh show users-nopasswd | grep -q 'sudoUser: %Domain Users'"
+
+run_test "Show sudo rule includes sudoHost ALL" \
+    ssh_dc "sudo samba-sudorule.sh show users-nopasswd | grep -q 'sudoHost: ALL'"
+
+run_test "Show sudo rule includes sudoCommand ALL" \
+    ssh_dc "sudo samba-sudorule.sh show users-nopasswd | grep -q 'sudoCommand: ALL'"
+
+run_test "Modify sudo rule add option" \
+    ssh_dc 'sudo samba-sudorule.sh modify users-nopasswd --option="syslog=auth"'
+
+run_test "Show modified sudo rule has new option" \
+    ssh_dc 'sudo samba-sudorule.sh show users-nopasswd | grep -q "sudoOption: syslog=auth"'
+
+run_test "Flush SSSD cache for sudo rules" \
+    ssh_client sudo sss_cache -E
+
+sleep 2
+
+run_test "Client retrieves sudo rules via SSSD" \
+    ssh_client "echo 'Wr1terPass!' | kinit perm_writer@SAMBA.TEST && sudo whoami 2>/dev/null | grep -q root ; kdestroy"
+
+run_test "Verify sudo works for AD user on client" \
+    ssh_client "echo 'Wr1terPass!' | kinit perm_writer@SAMBA.TEST && sudo id 2>/dev/null | grep -q 'uid=0' ; kdestroy"
+
+run_test "Delete sudo rule users-nopasswd" \
+    ssh_dc 'sudo samba-sudorule.sh delete users-nopasswd --force'
+
+run_test "Delete sudo rule admin-all" \
+    ssh_dc 'sudo samba-sudorule.sh delete admin-all --force'
+
+run_test "Verify sudo rules deleted" \
+    ssh_dc "! sudo samba-sudorule.sh list | grep -q users-nopasswd"
+
 # --- Cleanup ---
 echo ""
 echo "--- Cleanup ---"

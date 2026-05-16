@@ -6,7 +6,7 @@
 [sssd]
 domains = {{ sssd_domain }}
 config_file_version = 2
-services = nss, pam{% if sssd_enable_ssh | bool %}, ssh{% endif %}
+services = nss, pam{% if sssd_enable_ssh | bool %}, ssh{% endif %}{% if sssd_enable_sudo | bool %}, sudo{% endif %}
 
 [domain/{{ sssd_domain }}]
 default_shell = {{ sssd_default_shell }}
@@ -36,6 +36,14 @@ ad_gpo_access_control = permissive
 ldap_user_ssh_public_key = altSecurityIdentities
 ldap_user_extra_attrs = altSecurityIdentities
 {% endif %}
+{% if sssd_enable_sudo | bool %}
+sudo_provider = ldap
+ldap_sudo_search_base = ou=Sudoers,{{ sssd_domain | regex_replace('\\.', ',DC=') | regex_replace('^', 'DC=') }}
+ldap_search_base = {{ sssd_domain | regex_replace('\\.', ',DC=') | regex_replace('^', 'DC=') }}
+ldap_uri = ldap://{{ sssd_dc_hostname }}.{{ sssd_domain }}
+ldap_sasl_mech = GSSAPI
+ldap_sasl_authid = {{ ansible_hostname | upper }}$@{{ sssd_realm | upper }}
+{% endif %}
 
 [ssh]
 {# ssh service section is required even if empty for SSSD to enable key caching #}
@@ -43,3 +51,5 @@ ldap_user_extra_attrs = altSecurityIdentities
 [nss]
 
 [pam]
+
+[sudo]

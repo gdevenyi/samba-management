@@ -205,6 +205,14 @@ All scripts run **as root on the DC**. They source `lib/common.sh` then `lib/con
 ./bin/samba-user.sh add-sshkey jsmith --key-file=/path/to/id_ed25519.pub
 ./bin/samba-user.sh list-sshkeys jsmith
 ./bin/samba-user.sh remove-sshkey jsmith --key="ssh-ed25519 AAAA... jsmith@laptop"
+
+# Sudo rule management
+./bin/samba-sudorule.sh add admin-all --user="%Domain Admins" --command=ALL
+./bin/samba-sudorule.sh add dev-restart --user="%DevOps" --command="/usr/bin/systemctl restart" --host=ALL
+./bin/samba-sudorule.sh list
+./bin/samba-sudorule.sh show admin-all
+./bin/samba-sudorule.sh modify dev-restart --option="!authenticate"
+./bin/samba-sudorule.sh delete dev-restart --force
 ```
 
 ### Group Management (`bin/samba-group.sh`)

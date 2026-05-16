@@ -51,3 +51,5 @@ sssd_shares: []
 sssd_nfs_sec: "krb5p"
 
 sssd_enable_ssh: true
+
+sssd_enable_sudo: true

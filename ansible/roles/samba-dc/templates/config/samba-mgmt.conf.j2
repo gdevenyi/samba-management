@@ -1,0 +1,40 @@
+# samba-mgmt.conf - Site-specific configuration for the Samba AD DC management scripts.
+#
+# Format: KEY=VALUE (no quotes required unless the value contains spaces).
+# Lines starting with # are comments.  This file is read by lib/config.sh
+# and the values are exported as environment variables.
+#
+# SECURITY: Do NOT store passwords here.  All admin/user passwords are
+# prompted interactively by the management scripts.
+#
+# --- Domain identity ---
+REALM={{ samba_realm }}
+DOMAIN={{ samba_domain }}
+NETBIOS={{ samba_netbios }}
+
+# --- Domain controller ---
+DC_HOSTNAME={{ ansible_hostname }}
+
+# --- Samba paths ---
+SAMBA_CONF=/etc/samba/smb.conf
+SHARE_BASE={{ samba_share_base }}
+HOME_BASE=/home
+
+# --- User defaults ---
+DEFAULT_SHELL=/bin/bash
+DEFAULT_GROUP="Domain Users"
+
+# --- Logging ---
+LOG_FILE=/var/log/samba-management.log
+
+# --- Linux client automount ---
+AUTOMOUNT_BASE=/mnt/shares
+
+# --- DNS forwarder used by the Samba INTERNAL_DNS backend ---
+DNS_FORWARDER={{ samba_dns_forwarder }}
+
+# --- NTP pool for time synchronisation (critical for Kerberos) ---
+NTP_SERVERS="{{ samba_ntp_servers }}"
+
+# --- TLS: set to true only when proper certs are deployed to the DC ---
+TLS_ENABLED=false

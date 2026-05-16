@@ -49,8 +49,12 @@ die() { log_error "$*"; exit 1; }
 # Prerequisites
 # ---------------------------------------------------------------------------
 check_prereqs() {
-    if ! groups | grep -qw libvirt; then
-        die "Not in libvirt group. Run: sudo usermod -aG libvirt \$USER  then log out/in"
+    # When invoked with sudo (the documented invocation) `groups` reports
+    # root's groups.  Check the invoking user where possible; root always
+    # has libvirt access via the unix-sock-group anyway.
+    local check_user="${SUDO_USER:-$USER}"
+    if [[ "$EUID" -ne 0 ]] && ! id -nG "$check_user" 2>/dev/null | grep -qw libvirt; then
+        die "User '${check_user}' not in libvirt group. Run: sudo usermod -aG libvirt ${check_user}  then log out/in"
     fi
     for cmd in virsh virt-install qemu-img wget cloud-localds; do
         command -v "$cmd" &>/dev/null || die "Missing: $cmd (install: apt install libvirt-clients qemu-utils cloud-image-utils)"
@@ -84,7 +88,7 @@ download_base_image() {
 # ---------------------------------------------------------------------------
 generate_config() {
     local password
-    password=$(openssl rand -base64 18 | tr -d '/+=+' | head -c 24)
+    password=$(openssl rand -base64 18 | tr -d '/+=' | head -c 24)
     cat > "$CONFIG_FILE" <<EOF
 SMB_TEST_ADMIN_PASSWORD="${password}"
 SMB_TEST_DC_IP="${DC_IP}"
@@ -97,6 +101,11 @@ SMB_TEST_SSH_KEY="${SSH_KEY_FILE}"
 SMB_TEST_SSH_USER="ubuntu"
 EOF
     chmod 600 "$CONFIG_FILE"
+    # When invoked with sudo, hand the file back to the invoking user so
+    # the un-privileged provision.sh / run-tests.sh can read it.
+    if [[ -n "${SUDO_USER:-}" ]]; then
+        chown "${SUDO_USER}:" "$CONFIG_FILE"
+    fi
     log_info "Admin password: ${password}"
 }
 
@@ -199,12 +208,16 @@ create_vm() {
 wait_for_ssh() {
     local ip="$1"
     local name="$2"
-    local max_wait=180
+    # 10 minutes overall; cloud-init on a fresh image can take a few minutes.
+    local max_wait=600
     local elapsed=0
+    # Cap each remote call so a hung SSH/cloud-init session can't blow
+    # past max_wait silently (elapsed only ticks when the SSH call returns).
+    local per_try=30
 
     log_info "Waiting for ${name} (${ip}) to become ready..."
     while [[ $elapsed -lt $max_wait ]]; do
-        if ssh -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null \
+        if timeout "$per_try" ssh -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null \
                -o ConnectTimeout=5 -o BatchMode=yes \
                -i "$SSH_KEY_FILE" "ubuntu@${ip}" \
                "sudo cloud-init status --wait" &>/dev/null; then
@@ -212,7 +225,7 @@ wait_for_ssh() {
             return 0
         fi
         sleep 5
-        elapsed=$((elapsed + 5))
+        elapsed=$((elapsed + per_try + 5))
     done
     die "Timed out waiting for ${name} after ${max_wait}s."
 }
@@ -264,6 +277,14 @@ healthcheck_dc_hostname: "dc01"
 sssd_shares:
   - public
 EOF
+
+    # Hand generated files back to the invoking user so the un-privileged
+    # provision.sh / run-tests.sh can read them.
+    if [[ -n "${SUDO_USER:-}" ]]; then
+        chown -R "${SUDO_USER}:" \
+            "${SCRIPT_DIR}/inventory.yml" \
+            "${SCRIPT_DIR}/group_vars"
+    fi
 
     log_info "Generated Ansible inventory and group_vars."
 }

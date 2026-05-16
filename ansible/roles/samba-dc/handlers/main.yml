@@ -49,7 +49,18 @@
     state: restarted
   listen: Restart rpc-gssd
 
+- name: Restart nfs-mountd
+  ansible.builtin.systemd:
+    name: nfs-mountd
+    state: restarted
+  listen: Restart nfs-mountd
+
+- name: Restart sssd
+  ansible.builtin.systemd:
+    name: sssd
+    state: restarted
+  listen: Restart sssd
+
 - name: Reload systemd
   ansible.builtin.systemd:
     daemon_reload: true
-

@@ -1,24 +1,7 @@
-# Configure NSS and PAM so the DC resolves its own AD users locally.
-# Winbind is used on the DC (not SSSD) because samba-ad-dc provides
-# winbind functionality natively.
+# Configure PAM session hooks for the DC.
+# NSS configuration (nsswitch.conf) is handled in sssd.yml so it lands
+# before SSSD's group cache is queried by downstream tasks.
 ---
-- name: Install winbind and libnss-winbind
-  ansible.builtin.apt:
-    name:
-      - winbind
-      - libnss-winbind
-      - libpam-winbind
-    state: present
-
-- name: Configure nsswitch to use winbind
-  ansible.builtin.template:
-    src: nsswitch.conf.j2
-    dest: /etc/nsswitch.conf
-    owner: root
-    group: root
-    mode: "0644"
-    backup: true
-
 - name: Configure pam_mkhomedir for automatic home creation
   ansible.builtin.lineinfile:
     path: /etc/pam.d/common-session

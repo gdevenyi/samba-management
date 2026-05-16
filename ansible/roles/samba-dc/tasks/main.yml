@@ -19,6 +19,10 @@
 - name: Configure password and lockout policies
   ansible.builtin.include_tasks: password_policy.yml
 
+- name: Install and configure SSSD on the DC (for full NSS group resolution)
+  ansible.builtin.include_tasks: sssd.yml
+  when: _samba_domain_exists | default(false)
+
 - name: Configure NSS/PAM for DC-as-client
   ansible.builtin.include_tasks: nss_pam.yml
 

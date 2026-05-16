@@ -1,0 +1,126 @@
+# sssd.yml - Install and configure SSSD on the DC itself.
+#
+# This exists because samba-ad-dc's internal winbind doesn't return AD
+# secondary-group memberships through the kernel's NSS getgrouplist()
+# path, which breaks NFS server-side POSIX access checks for files
+# owned by AD groups.  SSSD's id_provider=ad reads the membership
+# directly via LDAP and exposes it correctly.
+---
+- name: Install SSSD on the DC
+  ansible.builtin.apt:
+    name:
+      - sssd-ad
+      - sssd-tools
+      - libnss-sss
+      - libpam-sss
+      - krb5-user
+    state: present
+    update_cache: false
+
+# SSSD authenticates to LDAP via GSSAPI using the DC's machine-account
+# keys.  Export them to /etc/krb5.keytab if they're not already there.
+- name: Check if machine principal is in keytab
+  ansible.builtin.command: klist -k /etc/krb5.keytab
+  register: _samba_keytab_check
+  changed_when: false
+  failed_when: false
+
+- name: Export machine principal to system keytab
+  ansible.builtin.command:
+    argv:
+      - samba-tool
+      - domain
+      - exportkeytab
+      - /etc/krb5.keytab
+      - "--principal={{ ansible_hostname }}$"
+  when: ansible_hostname + '$@' not in _samba_keytab_check.stdout
+  changed_when: true
+
+- name: Deploy SSSD configuration for the DC
+  ansible.builtin.template:
+    src: sssd.conf.j2
+    dest: /etc/sssd/sssd.conf
+    mode: "0600"
+    owner: root
+    group: root
+  notify: Restart sssd
+
+- name: Enable and start sssd
+  ansible.builtin.systemd:
+    name: sssd
+    enabled: true
+    state: started
+
+- name: Flush handlers so SSSD picks up the new config before NSS uses it
+  ansible.builtin.meta: flush_handlers
+
+# Deploy the SSSD-using nsswitch.conf NOW, before the resolution-warmup
+# checks below.  Otherwise libnss-winbind (pulled in by samba-ad-dc as a
+# dependency and auto-registered into nsswitch.conf at install time) would
+# answer NSS queries with bogus `SAMBA\<name>:x:100` entries from its tdb,
+# masking SSSD's correct answers.
+- name: Configure nsswitch to use SSSD
+  ansible.builtin.template:
+    src: nsswitch.conf.j2
+    dest: /etc/nsswitch.conf
+    owner: root
+    group: root
+    mode: "0644"
+    backup: true
+
+# Wait until SSSD can resolve domain users AND groups via NSS.  Both must
+# warm up before downstream tasks chown to AD group names.  Checking only
+# user resolution is not enough -- group lookups have a separate cache and
+# may still return ENOENT (causing the file module to silently fall back to
+# the local `users` group with GID 100).
+- name: Verify SSSD resolves a domain user
+  ansible.builtin.command: getent passwd Administrator
+  register: _sssd_user_resolve
+  changed_when: false
+  retries: 5
+  delay: 3
+  until: _sssd_user_resolve.rc == 0
+
+- name: Verify SSSD resolves the 'domain users' group
+  ansible.builtin.command:
+    cmd: getent group "domain users"
+  register: _sssd_group_resolve
+  changed_when: false
+  retries: 10
+  delay: 3
+  until:
+    - _sssd_group_resolve.rc == 0
+    # Reject the local `users` group (GID 100) -- we want the AD-mapped one.
+    - "'domain users:' in _sssd_group_resolve.stdout"
+    - "_sssd_group_resolve.stdout.split(':')[2] | int != 100"
+
+# Re-apply ownership on share directories now that SSSD can resolve AD
+# group names.  configure.yml creates these directories before SSSD is up,
+# at which point "domain users" only resolves to the local `users` group
+# (GID 100).  Without this fix-up, AD users can't read/write the shares.
+- name: Re-apply share base ownership with resolved AD group
+  ansible.builtin.file:
+    path: "{{ samba_share_base }}"
+    state: directory
+    mode: "0755"
+    owner: root
+    group: "domain users"
+
+- name: Re-apply share directory ownership with resolved AD group
+  ansible.builtin.file:
+    path: "{{ item.path | default(samba_share_base ~ '/' ~ item.name) }}"
+    state: directory
+    mode: "0770"
+    owner: root
+    group: "domain users"
+  loop: "{{ samba_shares }}"
+
+# The NFS server caches uid->gid mappings.  Force a flush so authentication
+# checks use the new AD-resolved GIDs rather than the stale numeric values.
+- name: Flush kernel NFS auth caches after group resolution change
+  ansible.builtin.shell: |
+    set -e
+    for f in /proc/net/rpc/auth.unix.gid /proc/net/rpc/nfs4.nametoid /proc/net/rpc/nfs4.idtoname; do
+      [ -e "$f/flush" ] && date +%s > "$f/flush"
+    done
+  changed_when: false

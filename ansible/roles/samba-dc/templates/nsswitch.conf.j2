@@ -1,8 +1,11 @@
 {# nsswitch.conf.j2 - Name service switch configuration for DC-as-client. #}
-{# winbind resolves AD users/groups on the DC itself. #}
-passwd:         files winbind
-group:          files winbind
-shadow:         files
+{# SSSD (configured in sssd.yml) resolves AD users/groups on the DC. #}
+{# Winbind is intentionally not used here because samba-ad-dc's internal #}
+{# winbind doesn't return secondary AD group memberships through #}
+{# getgrouplist(), which breaks NFS server-side access checks. #}
+passwd:         files sss
+group:          files sss
+shadow:         files sss
 
 hosts:          files dns
 networks:       files

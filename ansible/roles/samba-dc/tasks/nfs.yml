@@ -68,6 +68,31 @@
     create: true
     mode: "0644"
 
+# When users authenticate via Kerberos NFS, the kernel needs to know each
+# user's full group list to enforce POSIX permissions correctly.  With
+# --manage-gids the NFS server queries getgrouplist() locally rather than
+# trusting the (limited, possibly stale) GID list the client sends.
+# The /etc/nfs.conf [mountd] manage-gids key is read by rpc.mountd but the
+# packaged systemd unit on Ubuntu 24.04 ignores it, so we force the flag via
+# a drop-in.
+- name: Ensure nfs-mountd drop-in directory exists
+  ansible.builtin.file:
+    path: /etc/systemd/system/nfs-mountd.service.d
+    state: directory
+    mode: "0755"
+
+- name: Enable manage-gids on rpc.mountd
+  ansible.builtin.copy:
+    dest: /etc/systemd/system/nfs-mountd.service.d/manage-gids.conf
+    mode: "0644"
+    content: |
+      [Service]
+      ExecStart=
+      ExecStart=/usr/sbin/rpc.mountd --manage-gids
+  notify:
+    - Reload systemd
+    - Restart nfs-mountd
+
 - name: Remove package-level mask symlink for nfs-common (Ubuntu 24.04)
   ansible.builtin.file:
     path: /usr/lib/systemd/system/nfs-common.service

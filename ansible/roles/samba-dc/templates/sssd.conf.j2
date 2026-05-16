@@ -1,0 +1,45 @@
+{# sssd.conf.j2 - SSSD on the AD Domain Controller itself. #}
+{# #}
+{# Why SSSD on the DC: #}
+{#   samba-ad-dc ships its own winbind, but that winbind doesn't return AD #}
+{#   secondary-group memberships through the kernel's NSS getgrouplist() #}
+{#   path.  That breaks NFS server-side POSIX access checks for files owned #}
+{#   by AD groups.  SSSD's id_provider=ad queries LDAP directly and returns #}
+{#   full membership lists, fixing the gap. #}
+{# #}
+{# How it works: #}
+{#   SSSD points its LDAP/Kerberos requests at the local DC, authenticating #}
+{#   via the DC's machine-account keytab (already in /etc/krb5.keytab). #}
+{#   The same algorithmic SID->UID mapping (ldap_id_mapping=true) is used #}
+{#   on clients, so UIDs are consistent. #}
+
+[sssd]
+domains = {{ samba_realm }}
+config_file_version = 2
+services = nss, pam
+
+[domain/{{ samba_realm }}]
+id_provider = ad
+ad_domain = {{ samba_realm | lower }}
+ad_server = {{ ansible_fqdn }}
+krb5_realm = {{ samba_realm | upper }}
+ldap_uri = ldap://{{ ansible_fqdn }}
+ldap_sasl_authid = {{ ansible_hostname | upper }}$@{{ samba_realm | upper }}
+ldap_id_mapping = true
+{# Use bare usernames so NFSv4 idmap (perm_writer@samba.test) resolves to #}
+{# the correct local UID.  With prefix names (SAMBA\perm_writer) the NFS #}
+{# idmap upcall fails and the user is mapped to nobody. #}
+use_fully_qualified_names = false
+fallback_homedir = {{ samba_home_base }}/%u
+default_shell = {{ samba_default_shell }}
+access_provider = ad
+{# Don't enforce GPOs on the DC -- they may not be configured for it. #}
+ad_gpo_access_control = permissive
+{# We're the DC, don't let SSSD rotate our own machine account password #}
+{# or update DNS records (samba-ad-dc handles both). #}
+ad_maximum_machine_account_password_age = 0
+dyndns_update = false
+
+[nss]
+
+[pam]

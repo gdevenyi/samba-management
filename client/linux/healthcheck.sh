@@ -16,6 +16,9 @@ NC='\033[0m'
 # --- Configurable via environment or auto-detected ---
 REALM="${REALM:-}"
 DC_HOST="${DC_HOST:-}"
+# User to test NSS resolution with -- override for sites that renamed the
+# default Administrator account.
+HEALTHCHECK_TEST_USER="${HEALTHCHECK_TEST_USER:-Administrator}"
 
 # --- Counters for summary ---
 PASS=0
@@ -131,9 +134,8 @@ echo "--- Authentication ---"
 # so this is a soft warning rather than a hard failure.
 check_warn "Kerberos ticket" test "$(klist 2>/dev/null | grep -c 'Default principal')" -gt 0
 if [[ -n "$REALM" ]]; then
-    realm_lower=$(echo "${REALM}" | tr '[:upper:]' '[:lower:]')
     # getent verification proves NSS can resolve AD users through SSSD.
-    check "User lookup (getent)" test "$(getent passwd "Administrator" 2>/dev/null | wc -l)" -gt 0
+    check "User lookup (${HEALTHCHECK_TEST_USER})" test "$(getent passwd "${HEALTHCHECK_TEST_USER}" 2>/dev/null | wc -l)" -gt 0
 fi
 
 # ---------------------------------------------------------------------------

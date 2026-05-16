@@ -1,44 +1,20 @@
 #!/usr/bin/env bash
-# user-session.sh - Per-session initialisation script for domain users on Linux.
+# user-session.sh - Per-session initialisation for domain users on Linux.
 #
-# Intended to be run from /etc/profile.d/ or as a PAM session hook.
-# Ensures the user has a valid Kerberos ticket (required for NFSv4
-# mounts) and that the autofs base directory exists.
+# Intended to run from /etc/profile.d/.  The user's TGT is obtained by
+# pam_sss/pam_krb5 at PAM-auth time; this script does NOT call kinit
+# (kinit -k would need root access to /etc/krb5.keytab anyway).
 #
-# SECURITY NOTE: kinit -k attempts silent keytab-based authentication.
-# This only works if a proper keytab or ccache is already configured;
-# it will NOT prompt for a password (no credential exposure risk).
+# Currently does two things:
+#   1. Audit-logs the session start.
+#   2. Ensures the autofs base directory exists (no-op except for root).
 set -euo pipefail
-
-REALM=""
-
-# --- Detect the AD realm from realmd or sssd.conf ---
-detect_realm() {
-    if command -v realm &>/dev/null; then
-        REALM=$(realm list 2>/dev/null | grep "realm-name" | head -1 | awk '{print $NF}')
-    fi
-    if [[ -z "$REALM" && -f /etc/sssd/sssd.conf ]]; then
-        REALM=$(grep "krb5_realm" /etc/sssd/sssd.conf 2>/dev/null | awk '{print $NF}')
-    fi
-}
-
-detect_realm
 
 # Log session start to syslog for audit trail.
 logger -t "samba-session" "User session started: $(whoami) at $(date)"
 
-# Attempt to obtain a Kerberos TGT silently.
-# klist -s returns 0 if a valid ticket exists; if not, try kinit -k
-# (keytab-based) which succeeds when a host or user keytab is installed.
-if command -v klist &>/dev/null; then
-    if ! klist -s 2>/dev/null; then
-        if command -v kinit &>/dev/null; then
-            kinit -k 2>/dev/null || true
-        fi
-    fi
-fi
-
 # Ensure the autofs base mount point directory exists so autofs can work.
+# This only succeeds when run as root; for normal users it's a silent no-op.
 mkdir -p "${AUTOMOUNT_BASE:-/mnt/shares}" 2>/dev/null || true
 
 exit 0

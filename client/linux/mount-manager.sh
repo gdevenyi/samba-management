@@ -26,6 +26,16 @@ log_info() { printf "${GREEN}[INFO]${NC} %s\n" "$*"; }
 log_warn() { printf "${YELLOW}[WARN]${NC} %s\n" "$*"; }
 log_error() { printf "${RED}[ERROR]${NC} %s\n" "$*"; }
 
+# Reject share names that would break the autofs map format or be ambiguous
+# in the regex-based map lookups below.
+validate_share_name() {
+    local name="$1"
+    if [[ ! "$name" =~ ^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$ ]]; then
+        log_error "Invalid share name: '${name}'. Use letters, digits, ., _, - (1-64 chars)."
+        exit 2
+    fi
+}
+
 # ---------------------------------------------------------------------------
 # DC auto-detection - tries multiple sources to find the AD domain name
 # and DC hostname without requiring manual configuration.
@@ -71,13 +81,17 @@ EOF
 # ---------------------------------------------------------------------------
 cmd_setup() {
     local base="${AUTOMOUNT_BASE}"
-    local server=""
 
+    # --server has no effect at setup time -- per-share servers are set when
+    # shares are added with `add --server=...`.  Accept-and-ignore for
+    # backwards compatibility, but warn so the caller isn't misled.
     while [[ $# -gt 0 ]]; do
         case "$1" in
             --base=*) base="${1#*=}"; shift ;;
-            --server=*) server="${1#*=}"; shift ;;
-            *) shift ;;
+            --server=*)
+                log_warn "--server has no effect on 'setup'; pass it to 'add' instead"
+                shift ;;
+            *) log_error "Unknown option: $1"; exit 2 ;;
         esac
     done
 
@@ -108,10 +122,12 @@ cmd_add() {
     local name="$1"; shift
     local server=""
 
+    validate_share_name "$name"
+
     while [[ $# -gt 0 ]]; do
         case "$1" in
             --server=*) server="${1#*=}"; shift ;;
-            *) shift ;;
+            *) log_error "Unknown option: $1"; exit 2 ;;
         esac
     done
 
@@ -124,7 +140,8 @@ cmd_add() {
         exit 1
     fi
 
-    if grep -q "^${name}" "$AUTO_MAP" 2>/dev/null; then
+    # Anchor to whitespace boundary so e.g. share "data" doesn't match "data2".
+    if grep -q "^${name}[[:space:]]" "$AUTO_MAP" 2>/dev/null; then
         log_error "Share '${name}' already exists in ${AUTO_MAP}"
         exit 1
     fi
@@ -134,7 +151,10 @@ cmd_add() {
     echo "${name} -fstype=nfs4,sec=${NFS_SEC} ${server}:/data/${name}" >> "$AUTO_MAP"
 
     # Signal autofs to re-read its maps without a full restart.
-    automount -c 2>/dev/null || systemctl restart autofs
+    # `systemctl reload autofs` sends SIGHUP so maps are re-read without
+    # tearing down active mounts.  Falls back to restart if the unit can't
+    # reload (e.g. older autofs).
+    systemctl reload autofs 2>/dev/null || systemctl restart autofs
 
     log_info "Added share '${name}' -> ${server}:/data/${name}"
     log_info "Access at: ${AUTOMOUNT_BASE}/${name}"
@@ -146,13 +166,18 @@ cmd_add() {
 cmd_remove() {
     local name="$1"
 
-    if ! grep -q "^${name}" "$AUTO_MAP" 2>/dev/null; then
+    validate_share_name "$name"
+
+    if ! grep -q "^${name}[[:space:]]" "$AUTO_MAP" 2>/dev/null; then
         log_error "Share '${name}' not found in ${AUTO_MAP}"
         exit 3
     fi
 
     grep -v "^${name}[[:space:]]" "$AUTO_MAP" > "${AUTO_MAP}.tmp" || true ; mv "${AUTO_MAP}.tmp" "$AUTO_MAP"
-    automount -c 2>/dev/null || systemctl restart autofs
+    # `systemctl reload autofs` sends SIGHUP so maps are re-read without
+    # tearing down active mounts.  Falls back to restart if the unit can't
+    # reload (e.g. older autofs).
+    systemctl reload autofs 2>/dev/null || systemctl restart autofs
 
     log_info "Removed share '${name}'"
 }
@@ -182,7 +207,9 @@ cmd_test() {
     local name="$1"
     local mount_point="${AUTOMOUNT_BASE}/${name}"
 
-    if ! grep -q "^${name}" "$AUTO_MAP" 2>/dev/null; then
+    validate_share_name "$name"
+
+    if ! grep -q "^${name}[[:space:]]" "$AUTO_MAP" 2>/dev/null; then
         log_error "Share '${name}' not configured"
         exit 3
     fi
@@ -202,7 +229,10 @@ cmd_test() {
 # Force autofs to re-read map files.
 # ---------------------------------------------------------------------------
 cmd_refresh() {
-    automount -c 2>/dev/null || systemctl restart autofs
+    # `systemctl reload autofs` sends SIGHUP so maps are re-read without
+    # tearing down active mounts.  Falls back to restart if the unit can't
+    # reload (e.g. older autofs).
+    systemctl reload autofs 2>/dev/null || systemctl restart autofs
     log_info "Autofs maps reloaded"
 }
 

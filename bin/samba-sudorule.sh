@@ -26,11 +26,11 @@ Usage: $(basename "$0") <subcommand> [options]
 Subcommands:
   add <rulename>                        Create a new sudo rule
     --user=USER                         User or %group (may be repeated)
-    --host=HOST                         Host or ALL (default: ALL)
-    --command=CMD                       Command or ALL (default: ALL)
-    --runas-user=USER                   Run as user (optional)
-    --runas-group=GROUP                 Run as group (optional)
-    --option=OPT                        Sudo option, e.g. !authenticate (optional)
+    --host=HOST                         Host or ALL (default: ALL, may be repeated)
+    --command=CMD                       Command or ALL (default: ALL, may be repeated)
+    --runas-user=USER                   Run as user (may be repeated)
+    --runas-group=GROUP                 Run as group (may be repeated)
+    --option=OPT                        Sudo option, e.g. !authenticate (may be repeated)
     --order=N                           Rule priority order (optional)
 
   delete <rulename>                     Delete a sudo rule
@@ -40,13 +40,15 @@ Subcommands:
   show <rulename>                       Show sudo rule details
 
   modify <rulename>                     Modify sudo rule attributes
+                                        (Multi-valued attributes are APPENDED,
+                                        not replaced.  --order is replaced.)
     --user=USER                         Add user/group (may be repeated)
-    --host=HOST                         Set host
-    --command=CMD                       Set command
-    --runas-user=USER                   Set run as user
-    --runas-group=GROUP                 Set run as group
-    --option=OPT                        Add sudo option
-    --order=N                           Set rule priority order
+    --host=HOST                         Add host (may be repeated)
+    --command=CMD                       Add command (may be repeated)
+    --runas-user=USER                   Add run-as user (may be repeated)
+    --runas-group=GROUP                 Add run-as group (may be repeated)
+    --option=OPT                        Add sudo option (may be repeated)
+    --order=N                           Replace rule priority order
 
 Global options:
   --force        Skip confirmation prompts
@@ -55,30 +57,19 @@ Global options:
 EOF
 }
 
-_ldif_unfold() {
-    local line buf=""
-    while IFS= read -r line || [[ -n "$line" ]]; do
-        case "$line" in
-            " "*)
-                buf="${buf}${line# }"
-                ;;
-            *)
-                if [[ -n "$buf" ]]; then
-                    printf '%s\n' "$buf"
-                fi
-                buf="$line"
-                ;;
-        esac
-    done
-    if [[ -n "$buf" ]]; then
-        printf '%s\n' "$buf"
+# Allow letters, digits, dot, underscore, dash; 1-64 chars; no leading dash.
+# This is what we interpolate into a DN, so it must not contain LDAP-DN-meta
+# characters (comma, equals, plus, etc.) or LDIF line-break characters.
+validate_sudo_rulename() {
+    local name="$1"
+    if [[ ! "$name" =~ ^[A-Za-z0-9_][A-Za-z0-9._-]{0,63}$ ]]; then
+        log_error "Invalid rule name: ${name}. Use letters, digits, ., _, - (1-64 chars, no leading dash)."
+        return 1
     fi
 }
 
 _sudo_base_dn() {
-    local realm_dc
-    realm_dc=$(echo "$REALM" | sed 's/\./,DC=/g; s/^/DC=/')
-    echo "${SUDO_OU},${realm_dc}"
+    echo "${SUDO_OU},$(realm_to_dn "$REALM")"
 }
 
 _rule_dn() {
@@ -105,6 +96,8 @@ cmd_add() {
 
     rulename="$1"; shift
 
+    validate_sudo_rulename "$rulename" || exit 2
+
     if _rule_exists "$rulename"; then
         log_error "Sudo rule '${rulename}' already exists"
         exit 1
@@ -125,6 +118,17 @@ cmd_add() {
 
     if [[ ${#users[@]} -eq 0 ]]; then
         log_error "Must specify at least one --user"
+        exit 2
+    fi
+
+    # Reject newlines/control chars before interpolating into LDIF.
+    local v
+    for v in "${users[@]}" "${hosts[@]}" "${commands[@]}" \
+             "${runas_users[@]}" "${runas_groups[@]}" "${options[@]}"; do
+        validate_ldif_value "$v" "sudo rule attribute" || exit 2
+    done
+    if [[ -n "$order" && ! "$order" =~ ^[0-9]+$ ]]; then
+        log_error "Invalid --order value: must be a non-negative integer"
         exit 2
     fi
 
@@ -187,16 +191,18 @@ cn: ${rulename}
 cmd_delete() {
     local rulename="$1"
 
+    validate_sudo_rulename "$rulename" || exit 2
+
     if ! _rule_exists "$rulename"; then
         log_error "Sudo rule '${rulename}' not found"
         exit 3
     fi
 
-    confirm_action "Delete sudo rule '${rulename}'?" || exit 0
-
     if dry_run "Would delete sudo rule: ${rulename}"; then
         return
     fi
+
+    confirm_action "Delete sudo rule '${rulename}'?" || exit 0
 
     local dn
     dn=$(_rule_dn "$rulename")
@@ -219,13 +225,15 @@ cmd_list() {
     base_dn=$(_sudo_base_dn)
     ldbsearch -H /var/lib/samba/private/sam.ldb \
         -b "$base_dn" -s one "(objectClass=sudoRole)" cn 2>/dev/null \
-        | _ldif_unfold \
+        | ldif_unfold \
         | grep '^cn:' \
         | sed 's/^cn: //'
 }
 
 cmd_show() {
     local rulename="$1"
+
+    validate_sudo_rulename "$rulename" || exit 2
 
     if ! _rule_exists "$rulename"; then
         log_error "Sudo rule '${rulename}' not found"
@@ -236,7 +244,7 @@ cmd_show() {
     dn=$(_rule_dn "$rulename")
     ldbsearch -H /var/lib/samba/private/sam.ldb \
         -b "$dn" -s base 2>/dev/null \
-        | _ldif_unfold \
+        | ldif_unfold \
         | grep -v '^#' \
         | grep -v '^$' \
         | grep -v '^dn:' \
@@ -266,6 +274,8 @@ cmd_modify() {
 
     rulename="$1"; shift
 
+    validate_sudo_rulename "$rulename" || exit 2
+
     if ! _rule_exists "$rulename"; then
         log_error "Sudo rule '${rulename}' not found"
         exit 3
@@ -286,6 +296,16 @@ cmd_modify() {
 
     if [[ $has_changes -eq 0 ]]; then
         log_error "Must specify at least one attribute to modify"
+        exit 2
+    fi
+
+    local v
+    for v in "${users[@]}" "${hosts[@]}" "${commands[@]}" \
+             "${runas_users[@]}" "${runas_groups[@]}" "${options[@]}"; do
+        validate_ldif_value "$v" "sudo rule attribute" || exit 2
+    done
+    if [[ -n "$order" && ! "$order" =~ ^[0-9]+$ ]]; then
+        log_error "Invalid --order value: must be a non-negative integer"
         exit 2
     fi
 

@@ -39,7 +39,8 @@ Subcommands:
                                        Remove users from a group
 
   list-members <groupname>             List group members
-    --recursive                         Include nested group members
+    --recursive                         Also list members of immediately-nested
+                                        groups (one level deep, not transitive)
 
 Global options:
   --force        Skip confirmation prompts
@@ -130,12 +131,13 @@ cmd_list() {
     while [[ $# -gt 0 ]]; do
         case "$1" in
             --pattern=*) pattern="${1#*=}"; shift ;;
-            *) shift ;;
+            *) log_error "Unknown option: $1"; exit 2 ;;
         esac
     done
 
     if [[ -n "$pattern" ]]; then
-        samba-tool group list | grep -i "$pattern" || true
+        # -F: treat pattern as fixed substring (not regex) -- matches user intent.
+        samba-tool group list | grep -iF -- "$pattern" || true
     else
         samba-tool group list
     fi
@@ -174,7 +176,7 @@ cmd_add_members() {
     # Split the CSV string into a bash array; xargs trims whitespace.
     IFS=',' read -ra member_array <<< "$members"
     for member in "${member_array[@]}"; do
-        member="$(echo "$member" | xargs)"
+        member="$(trim_ws "$member")"
         if ! user_exists "$member"; then
             log_warn "User '${member}' not found, skipping"
             continue
@@ -188,6 +190,10 @@ cmd_add_members() {
             log_warn "Failed to add '${member}' to '${groupname}' (may already be a member)"
         fi
     done
+
+    # Group memberships are cached by winbind; flush so local NSS lookups
+    # (and NFS-server access checks on this DC) see the change immediately.
+    flush_winbind_cache
 }
 
 cmd_remove_members() {
@@ -206,7 +212,7 @@ cmd_remove_members() {
 
     IFS=',' read -ra member_array <<< "$members"
     for member in "${member_array[@]}"; do
-        member="$(echo "$member" | xargs)"
+        member="$(trim_ws "$member")"
         if dry_run "Would remove '${member}' from '${groupname}'"; then
             continue
         fi
@@ -216,6 +222,8 @@ cmd_remove_members() {
             log_warn "Failed to remove '${member}' from '${groupname}'"
         fi
     done
+
+    flush_winbind_cache
 }
 
 # ---------------------------------------------------------------------------
@@ -231,7 +239,7 @@ cmd_list_members() {
     while [[ $# -gt 0 ]]; do
         case "$1" in
             --recursive) recursive=1; shift ;;
-            *) shift ;;
+            *) log_error "Unknown option: $1"; exit 2 ;;
         esac
     done
 

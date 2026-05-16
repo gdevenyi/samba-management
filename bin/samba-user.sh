@@ -119,8 +119,10 @@ cmd_add() {
     fi
 
     # Build the samba-tool command dynamically, appending only the flags
-    # the caller actually provided.
-    local -a cmd=(samba-tool user create "$username")
+    # the caller actually provided.  --random-password lets us avoid placing
+    # the real password on the command line; the real password is then set
+    # via setpassword with stdin (see below) so it stays out of /proc/cmdline.
+    local -a cmd=(samba-tool user create "$username" --random-password)
     [[ -n "$given_name" ]] && cmd+=(--given-name="$given_name")
     [[ -n "$surname" ]] && cmd+=(--surname="$surname")
     [[ -n "$email" ]] && cmd+=(--mail-address="$email")
@@ -132,12 +134,20 @@ cmd_add() {
     fi
 
     log_info "Creating user '${username}'..."
-    if "${cmd[@]}" "$password"; then
-        log_info "User '${username}' created successfully"
-    else
+    if ! "${cmd[@]}"; then
         log_error "Failed to create user '${username}'"
         exit 1
     fi
+
+    # Set the real password via stdin to keep it out of /proc/<pid>/cmdline.
+    # samba-tool setpassword prompts twice (New + Retype) when stdin isn't a
+    # tty, so feed the password twice.
+    if ! printf '%s\n%s\n' "$password" "$password" \
+        | samba-tool user setpassword "$username" &>/dev/null; then
+        log_error "Failed to set password for '${username}' (user was created)"
+        exit 1
+    fi
+    log_info "User '${username}' created successfully"
 
     # Provision a local home directory on the DC.  In a setup where home
     # dirs are served via NFS from the DC, this directory IS the
@@ -146,7 +156,7 @@ cmd_add() {
     if [[ ! -d "$home_dir" ]]; then
         mkdir -p "$home_dir"
         chmod 0770 "$home_dir"
-        chown root:"domain users" "$home_dir"
+        chown "root:${DEFAULT_GROUP}" "$home_dir"
         log_info "Created home directory: ${home_dir}"
     fi
 
@@ -154,6 +164,7 @@ cmd_add() {
     if [[ -n "$group" ]]; then
         log_info "Adding '${username}' to group '${group}'..."
         samba-tool group addmembers "$group" "$username" || log_warn "Failed to add to group '${group}'"
+        flush_winbind_cache
     fi
 
     if [[ -n "$ssh_key" ]]; then
@@ -182,6 +193,13 @@ cmd_delete() {
         exit 3
     fi
 
+    # Dry-run short-circuits before prompting or touching the filesystem.
+    local dry_msg="Would delete user: ${username}"
+    [[ "$archive_home" -eq 1 ]] && dry_msg+=" (with home archive)"
+    if dry_run "$dry_msg"; then
+        return
+    fi
+
     confirm_action "Delete user '${username}'?" || exit 0
 
     # Archive the home directory before deletion so data can be recovered
@@ -193,10 +211,6 @@ cmd_delete() {
             tar -czf "$archive" -C "${HOME_BASE}" "$username"
             log_info "Archived home directory to ${archive}"
         fi
-    fi
-
-    if dry_run "Would delete user: ${username}"; then
-        return
     fi
 
     log_info "Deleting user '${username}'..."
@@ -243,18 +257,18 @@ cmd_modify() {
 
     log_info "Modifying user '${username}'..."
 
-    # Convert the dotted REALM (e.g. EXAMPLE.INTERNAL) into an LDAP DN suffix
-    # (DC=EXAMPLE,DC=INTERNAL) for use with ldbmodify.
-    local realm_dc
-    realm_dc=$(echo "$REALM" | sed 's/\./,DC=/g; s/^/DC=/')
-    local user_dn="CN=${username},CN=Users,${realm_dc}"
+    # Resolve the actual DN via LDAP search so users in non-default OUs work.
+    local target_dn
+    target_dn=$(user_dn "$username")
+    [[ -n "$target_dn" ]] || { log_error "Could not resolve DN for '${username}'"; exit 3; }
 
     # Only givenName is applied via ldbmodify; all other attributes are
     # flagged as requiring ADUC because samba-tool lacks fine-grained
     # attribute setters and direct LDAP LDIF modification is fragile.
     if [[ -n "$given_name" ]]; then
+        validate_ldif_value "$given_name" "given name" || exit 2
         ldbmodify -H /var/lib/samba/private/sam.ldb <<EOF 2>/dev/null || log_warn "Could not set givenName (use ADUC for full attribute management)"
-dn: ${user_dn}
+dn: ${target_dn}
 changetype: modify
 replace: givenName
 givenName: ${given_name}
@@ -276,12 +290,13 @@ cmd_list() {
     while [[ $# -gt 0 ]]; do
         case "$1" in
             --pattern=*) pattern="${1#*=}"; shift ;;
-            *) shift ;;
+            *) log_error "Unknown option: $1"; exit 2 ;;
         esac
     done
 
     if [[ -n "$pattern" ]]; then
-        samba-tool user list | grep -i "$pattern" || true
+        # -F: treat pattern as fixed substring (not regex) -- matches user intent.
+        samba-tool user list | grep -iF -- "$pattern" || true
     else
         samba-tool user list
     fi
@@ -342,7 +357,7 @@ cmd_set_password() {
     while [[ $# -gt 0 ]]; do
         case "$1" in
             --password=*) password="${1#*=}"; shift ;;
-            *) shift ;;
+            *) log_error "Unknown option: $1"; exit 2 ;;
         esac
     done
 
@@ -352,8 +367,14 @@ cmd_set_password() {
     fi
 
     dry_run "Would set password for: ${username}" && return
-    # Pipe password via stdin to keep it out of the process table.
-    samba-tool user setpassword "$username" --newpassword="$password"
+    # Pipe password via stdin so it never appears in /proc/<pid>/cmdline.
+    # samba-tool setpassword prompts twice (New + Retype) when stdin isn't a
+    # tty, so feed the password twice.
+    if ! printf '%s\n%s\n' "$password" "$password" \
+        | samba-tool user setpassword "$username" &>/dev/null; then
+        log_error "Failed to set password for '${username}'"
+        exit 1
+    fi
     log_info "Password set for '${username}'"
 }
 
@@ -390,6 +411,13 @@ cmd_password_policy_set() {
     [[ -n "$min_age" ]] && cmd+=(--min-pwd-age="$min_age")
     [[ -n "$history" ]] && cmd+=(--history-length="$history")
 
+    # Require at least one policy flag; otherwise samba-tool would print help
+    # and the script would falsely report "Password policy updated".
+    if [[ ${#cmd[@]} -eq 4 ]]; then
+        log_error "Must specify at least one policy option (--complexity, --min-length, --max-age, --min-age, --history)"
+        exit 2
+    fi
+
     dry_run "Would set password policy" && return
     "${cmd[@]}"
     log_info "Password policy updated"
@@ -399,46 +427,19 @@ cmd_password_policy_set() {
 # SSH key management
 # SSH public keys are stored in the altSecurityIdentities attribute using
 # the "ssh:" prefix convention.  This avoids AD schema extensions.
-# _user_dn and _ldap_prefix are helpers shared by all SSH key operations.
+# Shared helpers (user_dn, ldif_unfold, validate_ldif_value) live in
+# lib/common.sh and are used here.
 # ---------------------------------------------------------------------------
-_ldif_unfold() {
-    local line buf=""
-    while IFS= read -r line || [[ -n "$line" ]]; do
-        case "$line" in
-            " "*)
-                buf="${buf}${line# }"
-                ;;
-            *)
-                if [[ -n "$buf" ]]; then
-                    printf '%s\n' "$buf"
-                fi
-                buf="$line"
-                ;;
-        esac
-    done
-    if [[ -n "$buf" ]]; then
-        printf '%s\n' "$buf"
-    fi
-}
-
-_user_dn() {
-    local username="$1"
-    ldbsearch -H /var/lib/samba/private/sam.ldb \
-        -s sub "(sAMAccountName=${username})" dn 2>/dev/null \
-        | _ldif_unfold \
-        | grep '^dn:' \
-        | sed 's/^dn: //'
-}
 
 _list_sshkeys() {
     local username="$1"
-    local user_dn
-    user_dn=$(_user_dn "$username")
-    [[ -n "$user_dn" ]] || return 0
+    local target_dn
+    target_dn=$(user_dn "$username")
+    [[ -n "$target_dn" ]] || return 0
     local lines
     lines=$(ldbsearch -H /var/lib/samba/private/sam.ldb \
-        -b "$user_dn" altSecurityIdentities 2>/dev/null \
-        | _ldif_unfold \
+        -b "$target_dn" altSecurityIdentities 2>/dev/null \
+        | ldif_unfold \
         | grep '^altSecurityIdentities: ' || true)
     if [[ -n "$lines" ]]; then
         printf '%s\n' "$lines" \
@@ -455,15 +456,16 @@ _list_sshkeys() {
 _add_sshkey() {
     local username="$1"
     local key="$2"
-    local user_dn
-    user_dn=$(_user_dn "$username")
-    [[ -n "$user_dn" ]] || { log_error "Could not resolve DN for '${username}'"; exit 3; }
+    validate_ldif_value "$key" "SSH key" || exit 2
+    local target_dn
+    target_dn=$(user_dn "$username")
+    [[ -n "$target_dn" ]] || { log_error "Could not resolve DN for '${username}'"; exit 3; }
 
     dry_run "Would add SSH key to '${username}'" && return
 
     local rc=0
     ldbmodify -H /var/lib/samba/private/sam.ldb <<EOF 2>/dev/null || rc=$?
-dn: ${user_dn}
+dn: ${target_dn}
 changetype: modify
 add: altSecurityIdentities
 altSecurityIdentities: ssh: ${key}
@@ -501,7 +503,10 @@ cmd_add_sshkey() {
             log_error "Key file not found: ${key_file}"
             exit 2
         fi
-        key=$(tr -d '\n\r' < "$key_file" | xargs)
+        # Read entire file then strip CR/LF and trim surrounding whitespace.
+        # xargs would mangle keys that contain quotes/backticks in the comment.
+        key="$(tr -d '\n\r' < "$key_file")"
+        key="$(trim_ws "$key")"
     fi
 
     if [[ -z "$key" ]]; then
@@ -535,15 +540,16 @@ cmd_remove_sshkey() {
         exit 2
     fi
 
-    local user_dn
-    user_dn=$(_user_dn "$username")
-    [[ -n "$user_dn" ]] || { log_error "Could not resolve DN for '${username}'"; exit 3; }
+    validate_ldif_value "$key" "SSH key" || exit 2
+    local target_dn
+    target_dn=$(user_dn "$username")
+    [[ -n "$target_dn" ]] || { log_error "Could not resolve DN for '${username}'"; exit 3; }
 
     dry_run "Would remove SSH key from '${username}'" && return
 
     local rc=0
     ldbmodify -H /var/lib/samba/private/sam.ldb <<EOF 2>/dev/null || rc=$?
-dn: ${user_dn}
+dn: ${target_dn}
 changetype: modify
 delete: altSecurityIdentities
 altSecurityIdentities: ssh: ${key}

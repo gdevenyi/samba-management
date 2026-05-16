@@ -43,13 +43,13 @@ log_info() {
 
 log_warn() {
     local msg="$*"
-    printf "${YELLOW}[WARN]${NC} %s\n" "$msg"
+    printf "${YELLOW}[WARN]${NC} %s\n" "$msg" >&2
     [[ -n "${LOG_FILE:-}" && -f "${LOG_FILE:-}" ]] && printf "[WARN] %s\n" "$msg" >> "$LOG_FILE" 2>/dev/null || true
 }
 
 log_error() {
     local msg="$*"
-    printf "${RED}[ERROR]${NC} %s\n" "$msg"
+    printf "${RED}[ERROR]${NC} %s\n" "$msg" >&2
     [[ -n "${LOG_FILE:-}" && -f "${LOG_FILE:-}" ]] && printf "[ERROR] %s\n" "$msg" >> "$LOG_FILE" 2>/dev/null || true
 }
 
@@ -122,6 +122,81 @@ validate_groupname() {
     if [[ ! "$groupname" =~ $re ]]; then
         log_error "Invalid groupname: ${groupname}"
         return 1
+    fi
+}
+
+# Reject values that would break LDIF parsing or allow line-level injection.
+# Refuses LF/CR; refuses values starting with space, "<", or ":" (those
+# require base64 per RFC 2849 and we don't generate base64 here).
+# NUL bytes are not checked because bash variables cannot contain them --
+# stdin input is truncated at the first NUL before reaching us.
+validate_ldif_value() {
+    local value="$1"
+    local label="${2:-value}"
+    if [[ "$value" == *$'\n'* || "$value" == *$'\r'* ]]; then
+        log_error "Invalid ${label}: contains newline or carriage return"
+        return 1
+    fi
+    case "$value" in
+        " "*|"<"*|":"*)
+            log_error "Invalid ${label}: leading space/<\\>/colon (would require base64 LDIF encoding)"
+            return 1
+            ;;
+    esac
+}
+
+# Invalidate winbind's user/group/membership caches.  Group membership
+# changes via samba-tool are persisted in the LDB immediately but winbind
+# serves NSS from a cached view; without a flush, local `id` / `getent` /
+# NFS-server group checks return stale data until the cache TTL expires.
+# Best-effort: ignored on hosts without winbind.
+flush_winbind_cache() {
+    net cache flush 2>/dev/null || true
+}
+
+# Bash-only whitespace trim (no xargs — xargs is fragile with quotes/backticks).
+trim_ws() {
+    local s="$1"
+    s="${s#"${s%%[![:space:]]*}"}"
+    s="${s%"${s##*[![:space:]]}"}"
+    printf '%s' "$s"
+}
+
+# Convert dotted realm (EXAMPLE.INTERNAL) into LDAP DN suffix (DC=EXAMPLE,DC=INTERNAL).
+realm_to_dn() {
+    local realm="$1"
+    echo "$realm" | sed 's/\./,DC=/g; s/^/DC=/'
+}
+
+# Resolve a user's actual DN by sAMAccountName (handles users in any OU).
+user_dn() {
+    local username="$1"
+    ldbsearch -H /var/lib/samba/private/sam.ldb \
+        -s sub "(sAMAccountName=${username})" dn 2>/dev/null \
+        | ldif_unfold \
+        | grep '^dn:' \
+        | sed 's/^dn: //'
+}
+
+# Unfold an LDIF stream: continuation lines start with a single space and
+# should be joined to the previous logical line. Reads stdin, writes stdout.
+ldif_unfold() {
+    local line buf=""
+    while IFS= read -r line || [[ -n "$line" ]]; do
+        case "$line" in
+            " "*)
+                buf="${buf}${line# }"
+                ;;
+            *)
+                if [[ -n "$buf" ]]; then
+                    printf '%s\n' "$buf"
+                fi
+                buf="$line"
+                ;;
+        esac
+    done
+    if [[ -n "$buf" ]]; then
+        printf '%s\n' "$buf"
     fi
 }
 

@@ -49,8 +49,8 @@ samba_nfs_sec: "krb5p"
 samba_nfs_export_homes: true
 
 # --- Domain password policy ---
-samba_password_complexity: "on"
-samba_password_min_length: 7
+samba_password_complexity: "off"
+samba_password_min_length: 15
 samba_password_max_age: 42
 samba_password_min_age: 1
 samba_password_history: 24

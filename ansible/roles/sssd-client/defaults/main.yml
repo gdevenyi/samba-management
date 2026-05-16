@@ -29,9 +29,6 @@ sssd_default_shell: "/bin/bash"
 sssd_use_fully_qualified_names: false
 # Cache credentials for offline authentication (e.g., laptop on WiFi).
 sssd_cache_credentials: true
-# ldap_id_mapping uses SSSD's automatic SID-to-UID mapping instead of
-# requiring rfc2307 uidNumber/gidNumber attributes in AD.
-sssd_ldap_id_mapping: true
 # Access provider "ad" respects AD userAccountControl flags (disabled,
 # locked, etc.) and optionally GPO-based access control.
 sssd_access_provider: "ad"

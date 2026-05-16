@@ -34,7 +34,7 @@ samba_ous:
   - "Groups"
   - "Computers"
   - "Shares"
-  - "Sudoers"
+  - "SUDOers"
 
 # --- File shares (empty by default; define in group_vars) ---
 # Each share creates a directory under samba_share_base and an NFS export

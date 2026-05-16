@@ -15,17 +15,14 @@
 
 [sssd]
 domains = {{ samba_realm }}
-config_file_version = 2
 services = nss, pam
 
 [domain/{{ samba_realm }}]
 id_provider = ad
 ad_domain = {{ samba_realm | lower }}
 ad_server = {{ ansible_fqdn }}
-krb5_realm = {{ samba_realm | upper }}
 ldap_uri = ldap://{{ ansible_fqdn }}
 ldap_sasl_authid = {{ ansible_hostname | upper }}$@{{ samba_realm | upper }}
-ldap_id_mapping = true
 {# Use bare usernames so NFSv4 idmap (perm_writer@samba.test) resolves to #}
 {# the correct local UID.  With prefix names (SAMBA\perm_writer) the NFS #}
 {# idmap upcall fails and the user is mapped to nobody. #}
@@ -39,7 +36,3 @@ ad_gpo_access_control = permissive
 {# or update DNS records (samba-ad-dc handles both). #}
 ad_maximum_machine_account_password_age = 0
 dyndns_update = false
-
-[nss]
-
-[pam]

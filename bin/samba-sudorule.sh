@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # samba-sudorule.sh - CLI tool for managing sudo rules in Samba AD.
 #
-# Creates, lists, shows, and deletes sudoRole objects in OU=Sudoers.
+# Creates, lists, shows, and deletes sudoRole objects in OU=SUDOers.
 # These rules are consumed by SSSD's sudo service on Linux clients.
 # Must run on the DC as root.
 set -euo pipefail
@@ -17,7 +17,7 @@ require_root
 parse_global_args "$@"
 set -- "${GLOBAL_REMAINING_ARGS[@]}"
 
-SUDO_OU="OU=Sudoers"
+SUDO_OU="OU=SUDOers"
 
 cmd_usage() {
     cat <<EOF

@@ -101,10 +101,10 @@ There is no lint, typecheck, or CI pipeline. Always run `bash -n` and YAML valid
 
 ## Sudo Rule Management
 
-- **Sudo rules** are stored as `sudoRole` objects in `OU=Sudoers` in AD. This requires the sudo LDAP schema extension, applied during DC provisioning (`samba_enable_sudo_schema: true`).
+- **Sudo rules** are stored as `sudoRole` objects in `OU=SUDOers` in AD (the sudo project's `sudoers.ldap(5)` convention; SSSD's default `ldap_sudo_search_base` covers the whole domain DN, so no override is needed). This requires the sudo LDAP schema extension, applied during DC provisioning (`samba_enable_sudo_schema: true`).
 - `bin/samba-sudorule.sh` provides `add`, `delete`, `list`, `show`, `modify` subcommands using `ldbmodify`/`ldbsearch` on the DC's `sam.ldb`.
 - **`sudoUser` values**: bare username (`jsmith`), `%groupname` for Unix groups (`%wheel`, `%Domain Users`), `#uid` for UIDs, `+netgroup` for netgroups. SSSD handles group name spaces without escaping.
-- The `sssd-client` role configures SSSD's `sudo` service with `sudo_provider = ad`, `ldap_sudo_search_base`, deploys `nsswitch.conf` with `sudoers: files sss`, and installs `libsss-sudo`.
+- The `sssd-client` role configures SSSD's `sudo` service (which inherits `sudo_provider` from `id_provider = ad`), deploys `nsswitch.conf` with `sudoers: files sss`, and installs `libsss-sudo`.
 - **`sssd_enable_sudo`** (default: `true`) controls whether the client configures sudo rule retrieval.
 - SSSD caches sudo rules with three refresh mechanisms: full refresh (every 6 hours), smart refresh (incremental, every 15 minutes), and rules refresh (on each sudo invocation).
 - **`sudoHost` filtering**: SSSD only downloads rules matching the client host (`ALL`, hostname, FQDN, IP address, netgroup, or network). Rules with `sudoHost: ALL` apply everywhere.

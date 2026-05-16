@@ -5,7 +5,6 @@
 
 [sssd]
 domains = {{ sssd_domain }}
-config_file_version = 2
 services = nss, pam{% if sssd_enable_ssh | bool %}, ssh{% endif %}{% if sssd_enable_sudo | bool %}, sudo{% endif %}
 
 [domain/{{ sssd_domain }}]
@@ -13,7 +12,6 @@ default_shell = {{ sssd_default_shell }}
 {# Store credentials for offline authentication when the DC is unreachable #}
 krb5_store_password_if_offline = True
 cache_credentials = {{ 'True' if sssd_cache_credentials else 'False' }}
-krb5_realm = {{ sssd_realm | upper }}
 {# realmd_tags are set by realm join; keeping them prevents realm from #}
 {# overwriting our config on subsequent realm operations #}
 realmd_tags = manages-system joined-with-adcli
@@ -21,9 +19,6 @@ id_provider = ad
 fallback_homedir = {{ sssd_effective_fallback_homedir }}
 ad_domain = {{ sssd_domain }}
 use_fully_qualified_names = {{ 'True' if sssd_use_fully_qualified_names else 'False' }}
-{# ldap_id_mapping=true uses SSSD's algorithmic SID-to-UID mapping #}
-{# instead of requiring rfc2307 uidNumber/gidNumber in AD #}
-ldap_id_mapping = {{ 'True' if sssd_ldap_id_mapping else 'False' }}
 access_provider = {{ sssd_access_provider }}
 {% if sssd_access_provider == 'ad' %}
 {# permissive mode: log GPO denials but don't enforce them, avoiding #}
@@ -36,19 +31,3 @@ ad_gpo_access_control = permissive
 ldap_user_ssh_public_key = altSecurityIdentities
 ldap_user_extra_attrs = altSecurityIdentities
 {% endif %}
-{% if sssd_enable_sudo | bool %}
-{# sudo_provider = ad lets SSSD auto-discover URIs and use the machine #}
-{# Kerberos credentials.  We override ldap_sudo_search_base because our #}
-{# rules live in OU=Sudoers rather than the SSSD default (CN=sudoers). #}
-sudo_provider = ad
-ldap_sudo_search_base = ou=Sudoers,{{ sssd_domain | regex_replace('\\.', ',DC=') | regex_replace('^', 'DC=') }}
-{% endif %}
-
-[ssh]
-{# ssh service section is required even if empty for SSSD to enable key caching #}
-
-[nss]
-
-[pam]
-
-[sudo]

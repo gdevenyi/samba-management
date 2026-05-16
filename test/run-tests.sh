@@ -170,7 +170,7 @@ run_test "Add perm_both to ShareReaders" \
 run_test "Add perm_both to ShareWriters" \
     ssh_dc sudo samba-group.sh add-members ShareWriters perm_both
 
-# Create perm_rw_share with POSIX group permissions for readers/writers
+# Create perm_rw_share with POSIX group permissions for writers
 run_test "Create perm_rw_share directory with group permissions" \
     ssh_dc "sudo mkdir -p /data/perm_rw_share && sudo chmod 2770 /data/perm_rw_share && sudo chown root:ShareWriters /data/perm_rw_share"
 
@@ -191,21 +191,30 @@ run_test "Create test file on DC" \
 echo ""
 echo "--- NFS Share Permissions ---"
 
-# With NFS, permissions are enforced by POSIX ACLs on the server.
-# ShareReaders have no access to perm_rw_share (owned by ShareWriters).
-# This is fundamentally different from the Samba valid_users model.
+# These tests run via Kerberos+NFS from the *client* so that NSS (via SSSD)
+# correctly resolves the user's secondary AD groups.  On the DC itself the
+# built-in winbind doesn't return secondary group memberships, so `sudo -u
+# perm_writer` there fails to honour ShareWriters membership.
+# The shares were added to the autofs map below at provision time; we add
+# them dynamically here so the test is self-contained.
+
+run_test "Add perm_rw_share to client autofs map" \
+    ssh_client "sudo bash -c \"echo 'perm_rw_share -fstype=nfs4,sec=krb5p dc01.samba.test:/data/perm_rw_share' >> /etc/auto.shares && (systemctl reload autofs || systemctl restart autofs)\""
+
+run_test "Add perm_admin_share to client autofs map" \
+    ssh_client "sudo bash -c \"echo 'perm_admin_share -fstype=nfs4,sec=krb5p dc01.samba.test:/data/perm_admin_share' >> /etc/auto.shares && (systemctl reload autofs || systemctl restart autofs)\""
 
 run_test "perm_writer can write to perm_rw_share via NFS" \
-    ssh_dc "echo 'writer test' | sudo -u perm_writer tee /data/perm_rw_share/writer_file.txt"
+    ssh_client "echo 'Wr1terPass!' | kinit perm_writer@SAMBA.TEST && echo 'writer test' > /mnt/shares/perm_rw_share/writer_file.txt; rc=\$?; kdestroy; exit \$rc"
 
 run_test "perm_writer can read from perm_rw_share via NFS" \
-    ssh_dc "sudo -u perm_writer cat /data/perm_rw_share/writer_file.txt"
+    ssh_client "echo 'Wr1terPass!' | kinit perm_writer@SAMBA.TEST && cat /mnt/shares/perm_rw_share/writer_file.txt; rc=\$?; kdestroy; exit \$rc"
 
 run_test "perm_both can write to perm_rw_share via NFS" \
-    ssh_dc "echo 'both test' | sudo -u perm_both tee /data/perm_rw_share/both_file.txt"
+    ssh_client "echo 'B0thPass!1' | kinit perm_both@SAMBA.TEST && echo 'both test' > /mnt/shares/perm_rw_share/both_file.txt; rc=\$?; kdestroy; exit \$rc"
 
 run_test "perm_writer can write to perm_admin_share via NFS" \
-    ssh_dc "echo 'admin test' | sudo -u perm_writer tee /data/perm_admin_share/admin_file.txt"
+    ssh_client "echo 'Wr1terPass!' | kinit perm_writer@SAMBA.TEST && echo 'admin test' > /mnt/shares/perm_admin_share/admin_file.txt; rc=\$?; kdestroy; exit \$rc"
 
 # --- Autofs + Kerberos Mount Tests ---
 echo ""
@@ -353,6 +362,9 @@ run_test "Verify sudo rules deleted" \
 # --- Cleanup ---
 echo ""
 echo "--- Cleanup ---"
+run_test "Remove perm_rw_share/perm_admin_share from client autofs" \
+    ssh_client "sudo bash -c \"sed -i '/^perm_rw_share /d; /^perm_admin_share /d' /etc/auto.shares && (systemctl reload autofs || systemctl restart autofs)\""
+
 run_test "Remove perm_admin_share NFS export" \
     ssh_dc "sudo rm -f /etc/exports.d/perm_admin_share.exports && sudo exportfs -ra"
 

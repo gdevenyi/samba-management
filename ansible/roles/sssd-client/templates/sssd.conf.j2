@@ -37,12 +37,11 @@ ldap_user_ssh_public_key = altSecurityIdentities
 ldap_user_extra_attrs = altSecurityIdentities
 {% endif %}
 {% if sssd_enable_sudo | bool %}
-sudo_provider = ldap
+{# sudo_provider = ad lets SSSD auto-discover URIs and use the machine #}
+{# Kerberos credentials.  We override ldap_sudo_search_base because our #}
+{# rules live in OU=Sudoers rather than the SSSD default (CN=sudoers). #}
+sudo_provider = ad
 ldap_sudo_search_base = ou=Sudoers,{{ sssd_domain | regex_replace('\\.', ',DC=') | regex_replace('^', 'DC=') }}
-ldap_search_base = {{ sssd_domain | regex_replace('\\.', ',DC=') | regex_replace('^', 'DC=') }}
-ldap_uri = ldap://{{ sssd_dc_hostname }}.{{ sssd_domain }}
-ldap_sasl_mech = GSSAPI
-ldap_sasl_authid = {{ ansible_hostname | upper }}$@{{ sssd_realm | upper }}
 {% endif %}
 
 [ssh]

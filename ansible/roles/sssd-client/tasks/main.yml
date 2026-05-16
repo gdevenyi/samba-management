@@ -60,14 +60,12 @@
   changed_when: false
 
 # realm join creates the computer object in AD and configures SSSD.
-# The expect module provides the password non-interactively.
-# no_log: true prevents the password from appearing in Ansible output.
+# Password is fed via stdin so it never appears in /proc/<pid>/cmdline.
+# no_log: true also redacts the value from Ansible output.
 - name: Join the AD domain
-  ansible.builtin.shell: >-
-    set -o pipefail;
-    echo '{{ sssd_admin_password }}' | realm join -v -U {{ sssd_admin_user }} {{ sssd_domain }}
-  args:
-    executable: /bin/bash
+  ansible.builtin.command:
+    cmd: "realm join -v -U {{ sssd_admin_user }} {{ sssd_domain }}"
+    stdin: "{{ sssd_admin_password }}"
   when: sssd_domain not in realm_list.stdout
   changed_when: true
   no_log: true
@@ -102,15 +100,27 @@
 # pam_mkhomedir automatically creates a local home directory skeleton
 # on first login.  Only enable for local mode; in mounted mode the home
 # dir comes from the DC via NFS.
+# Check whether pam_mkhomedir is currently active in common-session so
+# changed_when reflects reality rather than masking it as `false`.
+- name: Check if pam_mkhomedir is currently active
+  ansible.builtin.command: grep -q pam_mkhomedir /etc/pam.d/common-session
+  register: _pam_mkhomedir_state
+  changed_when: false
+  failed_when: false
+
 - name: Enable pam_mkhomedir (local homedirs only)
   ansible.builtin.command: pam-auth-update --enable mkhomedir
-  when: sssd_homedir_mode == 'local'
-  changed_when: false
+  when:
+    - sssd_homedir_mode == 'local'
+    - _pam_mkhomedir_state.rc != 0
+  changed_when: true
 
 - name: Disable pam_mkhomedir (mounted homedirs)
   ansible.builtin.command: pam-auth-update --disable mkhomedir
-  when: sssd_homedir_mode == 'mounted'
-  changed_when: false
+  when:
+    - sssd_homedir_mode == 'mounted'
+    - _pam_mkhomedir_state.rc == 0
+  changed_when: true
 
 # --- idmapd configuration ---
 # Required for NFSv4 UID/GID name mapping.  The domain must match the
@@ -156,12 +166,10 @@
 
       [Install]
       WantedBy=multi-user.target
-  register: _nfs_common_unit
+  notify: Reload systemd
 
-- name: Reload systemd after unit change
-  ansible.builtin.systemd:
-    daemon_reload: true
-  when: _nfs_common_unit.changed
+- name: Flush handlers so daemon-reload runs before we start the unit
+  ansible.builtin.meta: flush_handlers
 
 - name: Enable and start rpc-gssd (Kerberos NFS)
   ansible.builtin.systemd:

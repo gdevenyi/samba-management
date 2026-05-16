@@ -48,3 +48,8 @@
     name: rpc-gssd
     state: restarted
   listen: Restart rpc-gssd
+
+- name: Reload systemd
+  ansible.builtin.systemd:
+    daemon_reload: true
+

@@ -8,23 +8,26 @@
 # --- DNS checks ---
 # SRV records are the primary service discovery mechanism in AD.  Without
 # them, clients cannot locate domain controllers automatically.
+# DNS tasks must not fail the play -- the summary task below renders the
+# pass/fail matrix and that should always run, even when individual checks
+# detect a problem.
 - name: Check DNS SRV _ldap._tcp
   ansible.builtin.command: "host -t SRV _ldap._tcp.{{ healthcheck_realm | lower }}"
   register: dns_ldap
   changed_when: false
-  failed_when: "'has SRV record' not in dns_ldap.stdout"
+  failed_when: false
 
 - name: Check DNS SRV _kerberos._tcp
   ansible.builtin.command: "host -t SRV _kerberos._tcp.{{ healthcheck_realm | lower }}"
   register: dns_krb
   changed_when: false
-  failed_when: "'has SRV record' not in dns_krb.stdout"
+  failed_when: false
 
 - name: Check A record for DC
   ansible.builtin.command: "host -t A {{ healthcheck_dc_hostname }}.{{ healthcheck_realm | lower }}"
   register: dns_a
   changed_when: false
-  failed_when: "'has address' not in dns_a.stdout"
+  failed_when: false
 
 # --- Kerberos check ---
 - name: Check Kerberos ticket

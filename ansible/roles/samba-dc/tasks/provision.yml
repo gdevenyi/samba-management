@@ -59,6 +59,13 @@
     _samba_just_provisioned: true
   when: not _samba_provisioned.stat.exists
 
-- name: Set fact that domain exists (always true once marker is present)
+# Verify both the marker file AND the underlying sam.ldb -- the marker
+# alone could be stale (e.g. /var/lib/samba wiped but marker recreated).
+- name: Confirm sam.ldb is present
+  ansible.builtin.stat:
+    path: /var/lib/samba/private/sam.ldb
+  register: _samdb_stat
+
+- name: Set fact that domain exists
   ansible.builtin.set_fact:
-    _samba_domain_exists: true
+    _samba_domain_exists: "{{ _samdb_stat.stat.exists | bool }}"

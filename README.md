@@ -2,7 +2,7 @@
 
 A complete toolkit for provisioning and managing a Samba Active Directory Domain Controller on Ubuntu LTS, with client provisioning for Linux (SSSD) and Windows machines.
 
-**Ansible** handles one-time provisioning. **Bash scripts** handle ongoing user and group management. **PowerShell** scripts handle Windows client tasks. File shares are served via NFSv4 with Kerberos encryption.
+**Ansible** handles one-time provisioning. **Bash scripts** handle ongoing user and group management. **PowerShell** scripts handle Windows client tasks. File shares are served via NFSv4 with Kerberos encryption, either from the DC or from separate NFS storage servers.
 
 ## Prerequisites
 
@@ -40,10 +40,15 @@ all:
     dc:
       hosts:
         dc01.example.internal:
-    linux_clients:
-      hosts:
-        workstation01.example.internal:
-        workstation02.example.internal:
+    domain_members:
+      children:
+        nfs_servers:
+          hosts: {}
+          # storage01.example.internal:   # uncomment for separate NFS server
+        linux_clients:
+          hosts:
+            workstation01.example.internal:
+            workstation02.example.internal:
     windows_clients:
       hosts:
         win01.example.internal:
@@ -67,10 +72,8 @@ samba_shares:
 
 **`ansible/inventory/group_vars/linux_clients.yml`:**
 ```yaml
-sssd_realm: "YOURDOMAIN.INTERNAL"
-sssd_domain: "yourdomain.internal"
-sssd_admin_password: "your-strong-password-here"
-sssd_dc_hostname: "dc01"
+# SSSD join credentials are inherited from domain_members.yml.
+# Only client-specific overrides go here.
 ```
 
 (Autofs maps no longer need to be enumerated here — clients pull them from
@@ -111,6 +114,27 @@ kinit Administrator        # test Kerberos
 host -t SRV _ldap._tcp.yourdomain.internal   # test DNS
 showmount -e localhost      # test NFS exports
 ```
+
+### Step 3b (Optional): Provision a Separate NFS Storage Server
+
+To offload NFS storage from the DC to a dedicated server:
+
+1. Add the host to the `nfs_servers` group in `hosts.yml`
+2. Create `ansible/inventory/group_vars/nfs_servers.yml`:
+```yaml
+nfs_server_shares:
+  - name: public
+    comment: "Public share"
+nfs_server_export_homes: true
+```
+3. Set `samba_nfs_server: "storage01"` in `group_vars/dc.yml`
+4. Provision:
+```bash
+cd ansible
+ansible-playbook playbooks/provision-nfs-server.yml
+```
+
+This joins the server to the domain and configures NFSv4+Kerberos exports.
 
 ### Step 4: Join Linux Clients
 
@@ -259,15 +283,20 @@ share creates a directory under `/data`, an NFS export file in
 permissions on the directory (chown/chmod). All joined Linux clients see
 the share automatically via SSSD; no per-client configuration is needed.
 
+When using a separate NFS server (`samba_nfs_server` set), the DC only
+seeds the autofs map entries in AD; share directories and NFS exports live
+on the storage server, managed by the `nfs-server` role.
+
 To add a new share after initial provisioning, you have two options:
 
 **One-off (no Ansible run needed):**
 ```bash
-# On the DC: create the directory + NFS export, then publish to autofs in AD
+# On the NFS server (DC in colocated mode, or the dedicated storage server):
 sudo mkdir -p /data/engineering && sudo chmod 0770 /data/engineering
 sudo chown root:'domain users' /data/engineering
 echo "/data/engineering *(rw,sec=krb5p,sync,no_subtree_check)" | \
     sudo tee /etc/exports.d/engineering.exports && sudo exportfs -ra
+# On the DC: publish to autofs in AD
 sudo samba-automount.sh add-share engineering
 ```
 Clients pick it up after the SSSD cache refresh (or `sudo sss_cache -A`).
@@ -412,4 +441,4 @@ Key variables in role defaults (overridden by `group_vars/`):
 - **The DC's `/etc/hosts` must resolve its FQDN to its LAN IP**, not `127.0.0.1`.
 - **For multiple DCs**, do not re-provision. Join additional DCs with `samba-tool domain join`.
 - **Passwords are never stored in config files.** All scripts prompt interactively or pipe via stdin.
-- **NFS share permissions are POSIX-based.** Use `chown`/`chmod`/`setfacl` on the DC to control access.
+- **NFS share permissions are POSIX-based.** Use `chown`/`chmod`/`setfacl` on the NFS server (DC or storage server) to control access.

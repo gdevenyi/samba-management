@@ -12,8 +12,12 @@
 - name: Set autofs DN facts
   ansible.builtin.set_fact:
     _autofs_base_dn: "OU=automount,{{ _autofs_domain_dn }}"
-    _autofs_dc_fqdn: "{{ ansible_fqdn }}"
-    _autofs_homes_target: "{{ ansible_fqdn }}:{{ samba_home_base }}/&"
+    _autofs_nfs_server: "{{ samba_nfs_server if samba_nfs_server else ansible_fqdn }}"
+    _autofs_homes_nfs_server: "{{ samba_nfs_homes_server if samba_nfs_homes_server else (samba_nfs_server if samba_nfs_server else ansible_fqdn) }}"
+
+- name: Set autofs homes target fact
+  ansible.builtin.set_fact:
+    _autofs_homes_target: "{{ _autofs_homes_nfs_server }}:{{ samba_home_base }}/&"
 
 # --- OU=automount container ---
 - name: Check if OU=automount exists
@@ -68,7 +72,9 @@
 - name: Check if auto.master has /mnt/shares pointer
   ansible.builtin.shell: |
     set -o pipefail
-    ldbsearch -H /var/lib/samba/private/sam.ldb -b "CN={{ samba_autofs_shares_mount }},CN=auto.master,{{ _autofs_base_dn }}" -s base dn 2>/dev/null | grep -c '^dn:' || true
+    ldbsearch -H /var/lib/samba/private/sam.ldb \
+      -b "CN={{ samba_autofs_shares_mount }},CN=auto.master,{{ _autofs_base_dn }}" \
+      -s base dn 2>/dev/null | grep -c '^dn:' || true
   args:
     executable: /bin/bash
   register: _autofs_master_shares_check
@@ -94,7 +100,9 @@
 - name: Check if auto.master has /home/ad pointer
   ansible.builtin.shell: |
     set -o pipefail
-    ldbsearch -H /var/lib/samba/private/sam.ldb -b "CN={{ samba_autofs_homes_mount }},CN=auto.master,{{ _autofs_base_dn }}" -s base dn 2>/dev/null | grep -c '^dn:' || true
+    ldbsearch -H /var/lib/samba/private/sam.ldb \
+      -b "CN={{ samba_autofs_homes_mount }},CN=auto.master,{{ _autofs_base_dn }}" \
+      -s base dn 2>/dev/null | grep -c '^dn:' || true
   args:
     executable: /bin/bash
   register: _autofs_master_homes_check
@@ -223,7 +231,7 @@
     objectClass: nisObject
     cn: {{ item.item.name }}
     nisMapName: auto.shares
-    nisMapEntry: -fstype=nfs4,sec={{ samba_nfs_sec }} {{ _autofs_dc_fqdn }}:{{ samba_share_base }}/{{ item.item.name }}
+    nisMapEntry: -fstype=nfs4,sec={{ samba_nfs_sec }} {{ _autofs_nfs_server }}:{{ samba_share_base }}/{{ item.item.name }}
     LDIF
   args:
     executable: /bin/bash

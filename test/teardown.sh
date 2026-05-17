@@ -12,6 +12,8 @@ fi
 
 DC_NAME="${SMB_TEST_DC_NAME:-samba-dc}"
 CLIENT_NAME="${SMB_TEST_CLIENT_NAME:-samba-client}"
+STORAGE_NAME="${SMB_TEST_STORAGE_NAME:-samba-storage}"
+TEST_MODE="${SMB_TEST_MODE:-colocated}"
 
 GREEN='\033[0;32m'
 YELLOW='\033[1;33m'
@@ -35,6 +37,9 @@ destroy_vm() {
 log_info "=== Tearing Down Test Environment ==="
 
 destroy_vm "$DC_NAME"
+if [[ "$TEST_MODE" == "separate" ]]; then
+    destroy_vm "$STORAGE_NAME"
+fi
 destroy_vm "$CLIENT_NAME"
 
 rm -f "${SCRIPT_DIR}/inventory.yml"

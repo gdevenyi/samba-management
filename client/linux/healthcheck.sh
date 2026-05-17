@@ -16,6 +16,8 @@ NC='\033[0m'
 # --- Configurable via environment or auto-detected ---
 REALM="${REALM:-}"
 DC_HOST="${DC_HOST:-}"
+# NFS server hostname (defaults to DC_HOST for backward compatibility).
+NFS_HOST="${NFS_HOST:-}"
 # User to test NSS resolution with -- override for sites that renamed the
 # default Administrator account.
 HEALTHCHECK_TEST_USER="${HEALTHCHECK_TEST_USER:-Administrator}"
@@ -93,9 +95,15 @@ echo ""
 detect_realm
 detect_dc
 
+# Default NFS_HOST to DC_HOST for backward compatibility.
+if [[ -z "$NFS_HOST" ]]; then
+    NFS_HOST="$DC_HOST"
+fi
+
 echo "--- Configuration ---"
 printf "  Realm:     %s\n" "${REALM:-<not detected>}"
 printf "  DC Host:   %s\n" "${DC_HOST:-<not detected>}"
+printf "  NFS Host:  %s\n" "${NFS_HOST:-<not detected>}"
 echo ""
 
 # ---------------------------------------------------------------------------
@@ -146,10 +154,12 @@ fi
 echo ""
 echo "--- Network ---"
 if [[ -n "$DC_HOST" ]]; then
-    check "DC port 2049 (NFS)" bash -c "echo >/dev/tcp/${DC_HOST}/2049"
     check "DC port 88 (Kerberos)" bash -c "echo >/dev/tcp/${DC_HOST}/88"
     check "DC port 53 (DNS)" bash -c "echo >/dev/tcp/${DC_HOST}/53"
     check "DC port 389 (LDAP)" bash -c "echo >/dev/tcp/${DC_HOST}/389"
+fi
+if [[ -n "$NFS_HOST" ]]; then
+    check "NFS port 2049 (${NFS_HOST})" bash -c "echo >/dev/tcp/${NFS_HOST}/2049"
 fi
 
 # ---------------------------------------------------------------------------

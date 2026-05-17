@@ -1,0 +1,338 @@
+# nfs-server tasks - Configure a domain-joined machine as an NFSv4+Kerberos storage server.
+#
+# Prerequisites: the sssd-client role must have been applied first (the
+# machine must already be domain-joined with a valid computer account and
+# SSSD resolving AD users and groups).
+---
+- name: Validate required variables
+  ansible.builtin.assert:
+    that:
+      - sssd_domain | length > 0
+      - sssd_realm | length > 0
+    fail_msg: "sssd_domain and sssd_realm are required (inherited from domain_members group_vars)"
+
+# --- NFS service principal ---
+# The NFS kernel server needs nfs/<fqdn> in its keytab for sec=krb5p.
+# `adcli update --add-service=nfs` only adds a bare `nfs@REALM` entry and
+# does NOT register the host-based `nfs/<fqdn>` SPN that rpc.svcgssd / the
+# kernel GSS layer require.  Register the SPN on the DC instead, then
+# export and merge the resulting key into the storage host's keytab.
+- name: Check if NFS principal exists in keytab
+  ansible.builtin.command: klist -k /etc/krb5.keytab
+  register: _nfs_keytab_check
+  changed_when: false
+  failed_when: false
+
+- name: Register nfs/<fqdn> SPN on the storage host's machine account
+  ansible.builtin.command: >-
+    samba-tool spn add nfs/{{ ansible_fqdn }} {{ ansible_hostname }}$
+  delegate_to: "{{ groups['dc'][0] }}"
+  become: true
+  register: _nfs_spn_add
+  # samba-tool returns non-zero (and prints "already exists") if the SPN
+  # is already on the object -- idempotent, so swallow that case.
+  failed_when:
+    - _nfs_spn_add.rc != 0
+    - "'already' not in _nfs_spn_add.stderr"
+  changed_when: _nfs_spn_add.rc == 0
+  when: >-
+    _nfs_keytab_check.rc != 0 or
+    'nfs/' + ansible_fqdn not in _nfs_keytab_check.stdout
+
+- name: Export NFS key from DC
+  ansible.builtin.command: >-
+    samba-tool domain exportkeytab {{ _nfs_keytab_remote }}
+    --principal=nfs/{{ ansible_fqdn }}
+  vars:
+    _nfs_keytab_remote: /tmp/nfs-{{ ansible_hostname }}.keytab
+  delegate_to: "{{ groups['dc'][0] }}"
+  become: true
+  when: >-
+    _nfs_keytab_check.rc != 0 or
+    'nfs/' + ansible_fqdn not in _nfs_keytab_check.stdout
+  changed_when: true
+
+- name: Fetch NFS keytab from DC to control node
+  ansible.builtin.fetch:
+    src: "/tmp/nfs-{{ ansible_hostname }}.keytab"
+    dest: "/tmp/nfs-{{ ansible_hostname }}.keytab"
+    flat: true
+  delegate_to: "{{ groups['dc'][0] }}"
+  become: true
+  when: >-
+    _nfs_keytab_check.rc != 0 or
+    'nfs/' + ansible_fqdn not in _nfs_keytab_check.stdout
+  changed_when: false
+
+# Push the keytab to the storage host.  fetch+copy beats a single
+# synchronize/scp because both legs run through the same SSH transport
+# Ansible already has open to each host.
+- name: Push NFS keytab to storage host
+  ansible.builtin.copy:
+    src: "/tmp/nfs-{{ ansible_hostname }}.keytab"
+    dest: "/tmp/nfs-{{ ansible_hostname }}.keytab"
+    mode: "0600"
+    owner: root
+    group: root
+  when: >-
+    _nfs_keytab_check.rc != 0 or
+    'nfs/' + ansible_fqdn not in _nfs_keytab_check.stdout
+
+- name: Merge NFS keytab into local keytab
+  ansible.builtin.shell: |
+    ktutil <<EOF
+    read_kt {{ _nfs_keytab_local }}
+    write_kt /etc/krb5.keytab
+    quit
+    EOF
+  vars:
+    _nfs_keytab_local: "/tmp/nfs-{{ ansible_hostname }}.keytab"
+  when: >-
+    _nfs_keytab_check.rc != 0 or
+    'nfs/' + ansible_fqdn not in _nfs_keytab_check.stdout
+  changed_when: true
+  notify: Restart rpc-svcgssd
+
+- name: Flush keytab handlers
+  ansible.builtin.meta: flush_handlers
+
+- name: Clean up temporary NFS keytab (storage host)
+  ansible.builtin.file:
+    path: "/tmp/nfs-{{ ansible_hostname }}.keytab"
+    state: absent
+  when: >-
+    _nfs_keytab_check.rc != 0 or
+    'nfs/' + ansible_fqdn not in _nfs_keytab_check.stdout
+  changed_when: false
+
+- name: Clean up temporary NFS keytab (DC)
+  ansible.builtin.file:
+    path: "/tmp/nfs-{{ ansible_hostname }}.keytab"
+    state: absent
+  delegate_to: "{{ groups['dc'][0] }}"
+  become: true
+  when: >-
+    _nfs_keytab_check.rc != 0 or
+    'nfs/' + ansible_fqdn not in _nfs_keytab_check.stdout
+  changed_when: false
+
+- name: Clean up temporary NFS keytab (control node)
+  ansible.builtin.file:
+    path: "/tmp/nfs-{{ ansible_hostname }}.keytab"
+    state: absent
+  delegate_to: localhost
+  become: false
+  when: >-
+    _nfs_keytab_check.rc != 0 or
+    'nfs/' + ansible_fqdn not in _nfs_keytab_check.stdout
+  changed_when: false
+
+# --- Cross-host management access ---
+# The DC's samba-user.sh manages /home/<user> over SSH when the homes
+# server is not colocated.  The DC's root pubkey is slurped by the
+# preflight play in provision-nfs-server.yml and installed here.
+- name: Ensure /root/.ssh exists on storage host
+  ansible.builtin.file:
+    path: /root/.ssh
+    state: directory
+    mode: "0700"
+    owner: root
+    group: root
+
+- name: Authorize DC root SSH key for home directory management
+  ansible.builtin.lineinfile:
+    path: /root/.ssh/authorized_keys
+    line: "{{ hostvars[groups['dc'][0]]._samba_dc_root_pubkey.content | b64decode | trim }}"
+    create: true
+    mode: "0600"
+    owner: root
+    group: root
+
+# --- Share directories ---
+- name: Create share base directory
+  ansible.builtin.file:
+    path: "{{ nfs_server_share_base }}"
+    state: directory
+    mode: "0755"
+    owner: root
+    group: "domain users"
+
+- name: Create share directories
+  ansible.builtin.file:
+    path: "{{ item.path | default(nfs_server_share_base ~ '/' ~ item.name) }}"
+    state: directory
+    mode: "0770"
+    owner: root
+    group: "domain users"
+  loop: "{{ nfs_server_shares }}"
+
+# --- NFS exports ---
+- name: Create /etc/exports.d directory
+  ansible.builtin.file:
+    path: /etc/exports.d
+    state: directory
+    mode: "0755"
+
+- name: Deploy per-share NFS export files
+  ansible.builtin.template:
+    src: share.exports.j2
+    dest: "/etc/exports.d/{{ item.name }}.exports"
+    mode: "0644"
+  loop: "{{ nfs_server_shares }}"
+  notify: Reload NFS exports
+
+- name: Deploy NFS home directories export
+  ansible.builtin.template:
+    src: homes.exports.j2
+    dest: /etc/exports.d/homes.exports
+    mode: "0644"
+  when: nfs_server_export_homes | bool
+  notify: Reload NFS exports
+
+# --- NFS services ---
+- name: Install NFS server packages
+  ansible.builtin.apt:
+    name:
+      - nfs-kernel-server
+      - nfs-common
+    state: present
+    update_cache: false
+
+- name: Deploy idmapd.conf
+  ansible.builtin.template:
+    src: idmapd.conf.j2
+    dest: /etc/idmapd.conf
+    mode: "0644"
+  notify:
+    - Restart nfs-idmapd
+    - Restart rpc-gssd
+
+- name: Enable GSSD for Kerberos NFS
+  ansible.builtin.lineinfile:
+    path: /etc/default/nfs-common
+    regexp: "^NEED_GSSD="
+    line: "NEED_GSSD=yes"
+    create: true
+    mode: "0644"
+
+- name: Ensure nfs-mountd drop-in directory exists
+  ansible.builtin.file:
+    path: /etc/systemd/system/nfs-mountd.service.d
+    state: directory
+    mode: "0755"
+
+- name: Enable manage-gids on rpc.mountd
+  ansible.builtin.copy:
+    dest: /etc/systemd/system/nfs-mountd.service.d/manage-gids.conf
+    mode: "0644"
+    content: |
+      [Service]
+      ExecStart=
+      ExecStart=/usr/sbin/rpc.mountd --manage-gids
+  notify:
+    - Reload systemd
+    - Restart nfs-mountd
+
+- name: Remove package-level mask symlink for nfs-common (Ubuntu 24.04)
+  ansible.builtin.file:
+    path: /usr/lib/systemd/system/nfs-common.service
+    state: absent
+  when: >-
+    ansible_facts['distribution'] == "Ubuntu" and
+    ansible_facts['distribution_major_version'] == "24"
+
+- name: Create real nfs-common service unit
+  ansible.builtin.copy:
+    dest: /etc/systemd/system/nfs-common.service
+    mode: "0644"
+    content: |
+      [Unit]
+      Description=NFS Common daemons and services
+      DefaultDependencies=no
+      After=local-fs.target network.target
+      Wants=nfs-client.target
+
+      [Service]
+      Type=oneshot
+      RemainAfterExit=yes
+      ExecStart=/bin/true
+
+      [Install]
+      WantedBy=multi-user.target
+  notify: Reload systemd
+
+- name: Flush handlers so daemon-reload runs before we start the unit
+  ansible.builtin.meta: flush_handlers
+
+- name: Enable and start nfs-common
+  ansible.builtin.systemd:
+    name: nfs-common
+    enabled: true
+    state: started
+
+- name: Enable and start rpc-gssd (Kerberos NFS)
+  ansible.builtin.systemd:
+    name: rpc-gssd
+    enabled: true
+    state: started
+
+- name: Enable and start nfs-idmapd
+  ansible.builtin.systemd:
+    name: nfs-idmapd
+    enabled: true
+    state: started
+
+- name: Enable and start NFS server
+  ansible.builtin.systemd:
+    name: nfs-server
+    enabled: true
+    state: started
+
+# rpc-svcgssd is absent on some distros (e.g. Ubuntu 24.04 ships it merged
+# into nfs-server.service).  Tolerate a missing unit rather than aborting.
+- name: Enable and start rpc-svcgssd (server-side Kerberos NFS)
+  ansible.builtin.systemd:
+    name: rpc-svcgssd
+    enabled: true
+    state: started
+  failed_when: false
+
+# --- Verify group resolution ---
+# NFS manage-gids requires SSSD to resolve AD groups to local GIDs.
+- name: Verify SSSD resolves the 'domain users' group
+  ansible.builtin.command:
+    cmd: getent group "domain users"
+  register: _nfs_group_resolve
+  changed_when: false
+  retries: 10
+  delay: 3
+  until:
+    - _nfs_group_resolve.rc == 0
+    - "'domain users:' in _nfs_group_resolve.stdout"
+    - "_nfs_group_resolve.stdout.split(':')[2] | int != 100"
+
+# Re-apply ownership now that SSSD can resolve AD group names.
+- name: Re-apply share base ownership with resolved AD group
+  ansible.builtin.file:
+    path: "{{ nfs_server_share_base }}"
+    state: directory
+    mode: "0755"
+    owner: root
+    group: "domain users"
+
+- name: Re-apply share directory ownership with resolved AD group
+  ansible.builtin.file:
+    path: "{{ item.path | default(nfs_server_share_base ~ '/' ~ item.name) }}"
+    state: directory
+    mode: "0770"
+    owner: root
+    group: "domain users"
+  loop: "{{ nfs_server_shares }}"
+
+- name: Flush kernel NFS auth caches after group resolution change
+  ansible.builtin.shell: |
+    set -e
+    for f in /proc/net/rpc/auth.unix.gid /proc/net/rpc/nfs4.nametoid /proc/net/rpc/nfs4.idtoname; do
+      [ -e "$f/flush" ] && date +%s > "$f/flush"
+    done
+  changed_when: false

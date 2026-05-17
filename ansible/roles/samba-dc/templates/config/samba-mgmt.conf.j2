@@ -30,6 +30,10 @@ LOG_FILE=/var/log/samba-management.log
 # --- Linux client automount ---
 AUTOMOUNT_BASE=/mnt/shares
 NFS_SEC={{ samba_nfs_sec }}
+NFS_SERVER={{ samba_nfs_server if samba_nfs_server else ansible_fqdn }}
+# Host that serves user home directories over NFS.  When this is not the
+# DC, samba-user.sh SSHes here as root to manage /home/<user>.
+NFS_HOMES_SERVER={{ samba_nfs_homes_server if samba_nfs_homes_server else (samba_nfs_server if samba_nfs_server else ansible_fqdn) }}
 
 # --- DNS forwarder used by the Samba INTERNAL_DNS backend ---
 DNS_FORWARDER={{ samba_dns_forwarder }}

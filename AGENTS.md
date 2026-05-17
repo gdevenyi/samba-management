@@ -2,7 +2,7 @@
 
 ## What This Is
 
-A Samba Active Directory Domain Controller management suite. Ansible provisions the DC and joins clients. Bash scripts handle day-to-day user and group operations on the DC. PowerShell scripts handle Windows client tasks. File shares are served via NFSv4 with Kerberos encryption.
+A Samba Active Directory Domain Controller management suite. Ansible provisions the DC, optionally provisions dedicated NFS storage servers, and joins clients. Bash scripts handle day-to-day user and group operations on the DC. PowerShell scripts handle Windows client tasks. File shares are served via NFSv4 with Kerberos encryption, either from the DC or from separate NFS servers.
 
 ## Where Things Run
 
@@ -13,6 +13,7 @@ A Samba Active Directory Domain Controller management suite. Ansible provisions 
 | `config/` | DC (read by lib/config.sh) | Sourced |
 | `client/linux/` | Linux clients | Direct execution |
 | `client/windows/` | Windows clients | PowerShell |
+| `ansible/roles/nfs-server/` | **NFS storage servers** (dedicated machines in `nfs_servers` inventory group) | `ansible-playbook` |
 
 ## Validation Commands
 
@@ -70,18 +71,20 @@ There is no lint, typecheck, or CI pipeline. Always run `bash -n` and YAML valid
 - **`bin/*` scripts source `lib/common.sh` then `lib/config.sh`** in that order. `common.sh` provides logging, validation, dry-run, and Samba helpers. `config.sh` reads `config/samba-mgmt.conf` into exported variables (using `export` so child processes see them). Values may be quoted (`KEY="value with spaces"`) — quotes are stripped during parsing.
 - **`client/linux/*` scripts are standalone** — they define their own logging because they run on client machines without access to `lib/`.
 - **`sssd-client` role embeds autofs logic inline** for on-demand NFSv4 share and home directory mounting.
+- **`nfs-server` role** provisions dedicated NFS storage servers. Hosts in the `nfs_servers` inventory group (a child of `domain_members`) get NFS server packages, Kerberos principals, export directories, and idmapd configuration. This is used when the `samba_nfs_server` variable is set to point to a separate server rather than the DC.
+- **Inventory groups**: `domain_members` is a parent group containing `nfs_servers` and `linux_clients`. Shared SSSD join credentials go in `group_vars/domain_members.yml`. The DC is not a member of `domain_members`.
 - **Home directory modes**: `sssd_homedir_mode` controls where AD users get homedirs. `"mounted"` (default) uses autofs NFS mounts at `/home/ad/<user>`. `"local"` uses `pam_mkhomedir` at `/home/<user>`. These are mutually exclusive — `pam_mkhomedir` is disabled when using mounted mode.
-- **Share management** is done via Ansible at provisioning time: `samba_shares` in group_vars defines shares, Ansible creates directories under `/data` and per-share NFS export files in `/etc/exports.d/`. Access control is via POSIX permissions on the directory.
+- **Share management** is done via Ansible at provisioning time: `samba_shares` in group_vars defines shares. When NFS is colocated on the DC (`samba_nfs_server` not set or empty), the `samba-dc` role creates directories and exports. When a separate NFS server is used (`samba_nfs_server` set to a host in `nfs_servers`), the `nfs-server` role handles share directories under `/data` and per-share NFS export files in `/etc/exports.d/`. Access control is via POSIX permissions on the directory in both cases.
 
 ## NFSv4 Server Setup
 
-- The DC runs `nfs-kernel-server` alongside Samba AD DC. Shares are exported via NFSv4 with `sec=krb5p` (Kerberos authentication + integrity + encryption).
-- **NFS Kerberos principal**: `nfs/<fqdn>` SPN is added to the DC machine account and exported to `/etc/krb5.keytab` during provisioning. This is done by the `nfs.yml` task file in the `samba-dc` role.
+- NFS can run either **colocated on the DC** or on a **separate NFS server**. Set `samba_nfs_server` to the NFS server's hostname to use a dedicated server (must be in the `nfs_servers` inventory group). When unset, NFS runs on the DC as before. Shares are exported via NFSv4 with `sec=krb5p` (Kerberos authentication + integrity + encryption).
+- **NFS Kerberos principal**: `nfs/<fqdn>` SPN is added to the machine account of the NFS host and exported to `/etc/krb5.keytab` during provisioning. On the DC this is done by the `nfs.yml` task file in the `samba-dc` role. On a separate NFS server this is done by the `nfs-server` role via `adcli update`.
 - **Export files**: Each share gets `/etc/exports.d/<name>.exports`. Home directories get `/etc/exports.d/homes.exports`. The NFS server reads all `*.exports` files in addition to `/etc/exports`.
 - **idmapd.conf** must be deployed on both DC and clients with matching `Domain = <realm>` for consistent UID/GID mapping.
-- **NEED_GSSD=yes** must be set in `/etc/default/nfs-common` on the DC for Kerberos NFS to function.
+- **NEED_GSSD=yes** must be set in `/etc/default/nfs-common` on the NFS server (whether DC or separate) for Kerberos NFS to function.
 - **Port 2049** (NFS) must be accessible from clients in addition to the standard AD ports (88 Kerberos, 53 DNS, 389 LDAP).
-- **Client mount syntax**: `mount -t nfs4 -o sec=krb5p dc01:/data/<share> /mnt/shares/<share>`. Autofs handles this automatically.
+- **Client mount syntax**: `mount -t nfs4 -o sec=krb5p <nfs_host>:/data/<share> /mnt/shares/<share>` where `<nfs_host>` is the DC or the dedicated NFS server. Autofs handles this automatically.
 
 ## Samba AD DC Gotchas
 
@@ -90,7 +93,7 @@ There is no lint, typecheck, or CI pipeline. Always run `bash -n` and YAML valid
 - **`/etc/hosts` must resolve FQDN to LAN IP, not 127.0.0.1** — Kerberos breaks otherwise.
 - **NTP requires `ntpsigndsocket /var/lib/samba/ntp_signd`** for AD-aware time signing.
 - **`samba-tool` creates Samba/AD users, not local Linux users.** Do not confuse with `useradd`.
-- **Share permissions are POSIX-based** (chown/chmod). NFS exports use `sec=krb5p` for authentication but access control is determined by file system permissions on the DC.
+- **Share permissions are POSIX-based** (chown/chmod). NFS exports use `sec=krb5p` for authentication but access control is determined by file system permissions on the NFS host (DC or separate server).
 
 ## SSH Key Management
 

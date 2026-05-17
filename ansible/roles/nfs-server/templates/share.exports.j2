@@ -1,0 +1,11 @@
+{# share.exports.j2 - Per-share NFSv4 export entry for /etc/exports.d/. #}
+{# #}
+{# Each share gets its own .exports file for independent management. #}
+{# NFSv4 clients use the full server path when no pseudo-root is defined. #}
+{# #}
+{# Export options: #}
+{#   rw              Read-write access #}
+{#   sec=krb5p       Kerberos authentication + integrity + privacy (encryption) #}
+{#   sync            Commit writes to disk before replying (safe but slower) #}
+{#   no_subtree_check Skip subtree checking (recommended for single-directory exports) #}
+{{ item.path | default(nfs_server_share_base ~ '/' ~ item.name) }} *(rw,sec={{ nfs_server_nfs_sec }},sync,no_subtree_check)

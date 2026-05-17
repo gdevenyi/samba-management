@@ -138,6 +138,7 @@
     mode: "0755"
     owner: root
     group: "domain users"
+  when: samba_nfs_server == ""
 
 - name: Create share directories
   ansible.builtin.file:
@@ -147,9 +148,45 @@
     owner: root
     group: "domain users"
   loop: "{{ samba_shares }}"
+  when: samba_nfs_server == ""
 
-- name: Configure NFS server
+- name: Configure NFS server (DC-local)
   ansible.builtin.include_tasks: nfs.yml
+  when: samba_nfs_server == ""
+
+# When the NFS homes server is a separate host, samba-user.sh has to
+# manage /home on that host over SSH.  Generate a passwordless root
+# keypair on the DC; the nfs-server role copies the public half into the
+# storage host's authorized_keys at provision time.
+- name: Ensure /root/.ssh exists
+  ansible.builtin.file:
+    path: /root/.ssh
+    state: directory
+    mode: "0700"
+    owner: root
+    group: root
+  when: samba_nfs_server != "" or samba_nfs_homes_server != ""
+
+- name: Generate DC root SSH keypair for cross-host home directory management
+  ansible.builtin.command:
+    cmd: ssh-keygen -t ed25519 -N "" -f /root/.ssh/id_ed25519 -C "samba-dc home-dir mgmt"
+    creates: /root/.ssh/id_ed25519
+  when: samba_nfs_server != "" or samba_nfs_homes_server != ""
+
+# accept-new lets the DC trust the storage host's host key on first use
+# instead of failing the non-interactive ssh from samba-user.sh.
+- name: Configure ssh client to accept new storage host keys
+  ansible.builtin.copy:
+    dest: /root/.ssh/config
+    mode: "0600"
+    owner: root
+    group: root
+    content: |
+      # Deployed by samba-dc role for samba-user.sh cross-host operations.
+      Host *
+          StrictHostKeyChecking accept-new
+          UserKnownHostsFile /root/.ssh/known_hosts
+  when: samba_nfs_server != "" or samba_nfs_homes_server != ""
 
 - name: Deploy management scripts
   block:

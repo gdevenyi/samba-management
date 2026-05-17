@@ -1,0 +1,21 @@
+# nfs-server defaults - Default variables for the nfs-server Ansible role.
+#
+# Configures a domain-joined Linux machine as a dedicated NFSv4+Kerberos
+# storage server.  The sssd-client role must be applied first (via the
+# provision-nfs-server playbook) so the machine has a valid AD computer
+# account and SSSD can resolve AD users and groups.
+---
+# --- File system paths ---
+nfs_server_share_base: "/data"
+nfs_server_home_base: "/home"
+
+# --- File shares ---
+# Each share creates a directory under nfs_server_share_base and an NFS
+# export file in /etc/exports.d/<name>.exports.  Access control is via
+# POSIX permissions on the directory.
+nfs_server_shares: []
+
+# --- NFS options ---
+nfs_server_nfs_sec: "krb5p"
+# Whether to export nfs_server_home_base via NFS for home directory mounts.
+nfs_server_export_homes: true

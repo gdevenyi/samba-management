@@ -1,0 +1,4 @@
+{# homes.exports.j2 - NFSv4 export for user home directories. #}
+{# #}
+{# root_squash (default) maps root to nobody for security. #}
+{{ nfs_server_home_base }} *(rw,sec={{ nfs_server_nfs_sec }},sync,no_subtree_check)

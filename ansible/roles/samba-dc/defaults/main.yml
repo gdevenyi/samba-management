@@ -47,10 +47,21 @@ samba_shares: []
 samba_nfs_sec: "krb5p"
 # Whether to export /home via NFS for home directory mounts.
 samba_nfs_export_homes: true
+# Hostname of the NFS server for autofs map entries stored in AD.
+# Empty string (default) means the DC serves NFS — backward compatible.
+# Set to a hostname (e.g. "storage01") to offload NFS to a dedicated
+# storage server provisioned via the nfs-server role.
+samba_nfs_server: ""
+# Separate override for the NFS server used for home directories.
+# Falls back to samba_nfs_server, then to the DC.
+samba_nfs_homes_server: ""
 
 # --- Domain password policy ---
 samba_password_complexity: "off"
-samba_password_min_length: 15
+# samba-tool domain passwordsettings caps min-pwd-length at 14
+# (the underlying AD attribute is a uint8 with a hardcoded ceiling).
+# Going higher requires editing the policy via LDAP directly.
+samba_password_min_length: 14
 samba_password_max_age: 42
 samba_password_min_age: 1
 samba_password_history: 24

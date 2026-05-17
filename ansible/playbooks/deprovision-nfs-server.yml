@@ -1,0 +1,72 @@
+# deprovision-nfs-server.yml - Remove an NFS storage server from the domain.
+#
+# Stops NFS server services, removes export files, then leaves the AD domain.
+# failed_when:false / state=absent are used so the playbook is idempotent
+# even on partially-provisioned servers.
+---
+- name: Deprovision NFS storage server
+  hosts: nfs_servers
+  become: true
+  tasks:
+    - name: Stop and disable NFS server
+      ansible.builtin.systemd:
+        name: nfs-server
+        state: stopped
+        enabled: false
+      failed_when: false
+
+    - name: Stop and disable rpc-svcgssd
+      ansible.builtin.systemd:
+        name: rpc-svcgssd
+        state: stopped
+        enabled: false
+      failed_when: false
+
+    - name: Stop and disable autofs
+      ansible.builtin.systemd:
+        name: autofs
+        state: stopped
+        enabled: false
+      failed_when: false
+
+    - name: Stop and disable SSSD
+      ansible.builtin.systemd:
+        name: sssd
+        state: stopped
+        enabled: false
+      failed_when: false
+
+    - name: Remove NFS export files
+      ansible.builtin.file:
+        path: "{{ item }}"
+        state: absent
+      loop:
+        - /etc/exports.d
+      failed_when: false
+
+    - name: Remove sssd.conf
+      ansible.builtin.file:
+        path: /etc/sssd/sssd.conf
+        state: absent
+
+    - name: Remove SSSD autofs nsswitch routing
+      ansible.builtin.lineinfile:
+        path: /etc/nsswitch.conf
+        regexp: '^automount:'
+        state: absent
+      failed_when: false
+
+    - name: Remove local autofs map files
+      ansible.builtin.file:
+        path: "{{ item }}"
+        state: absent
+      loop:
+        - /etc/auto.master.d/shares.autofs
+        - /etc/auto.master.d/home.autofs
+        - /etc/auto.shares
+        - /etc/auto.home
+
+    - name: Leave the domain
+      ansible.builtin.command: "realm leave {{ sssd_domain }}"
+      failed_when: false
+      changed_when: false

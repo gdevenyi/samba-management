@@ -7,5 +7,8 @@
 healthcheck_realm: "EXAMPLE.INTERNAL"
 # DC hostname for connectivity checks.
 healthcheck_dc_hostname: "dc01"
+# NFS server hostname for port 2049 check.  Empty falls back to
+# healthcheck_dc_hostname (backward compatible with DC-as-NFS setups).
+healthcheck_nfs_server: ""
 # Test user for getent verification (must exist in AD).
 healthcheck_test_user: "Administrator"

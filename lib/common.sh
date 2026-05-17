@@ -154,6 +154,32 @@ flush_winbind_cache() {
     net cache flush 2>/dev/null || true
 }
 
+# Returns true when NFS_HOMES_SERVER points at this host (or is unset).
+# Used by home_op to decide local-vs-SSH for home-directory operations.
+is_local_homes_server() {
+    local target="${NFS_HOMES_SERVER:-}"
+    [[ -z "$target" ]] && return 0
+    local self_fqdn self_short
+    self_fqdn="$(hostname -f 2>/dev/null || hostname)"
+    self_short="$(hostname -s 2>/dev/null || hostname)"
+    [[ "$target" == "$self_fqdn" || "$target" == "$self_short" ]]
+}
+
+# Run a command either locally (homes colocated on this host) or via SSH
+# to NFS_HOMES_SERVER (homes on a separate storage host).  The Ansible
+# provisioning installs the DC's root pubkey in the storage host's
+# authorized_keys so this is non-interactive.  All args are shell-quoted
+# with %q before being forwarded.
+home_op() {
+    if is_local_homes_server; then
+        "$@"
+    else
+        local quoted=""
+        printf -v quoted '%q ' "$@"
+        ssh -o BatchMode=yes -o ConnectTimeout=5 "root@${NFS_HOMES_SERVER}" "${quoted}"
+    fi
+}
+
 # Bash-only whitespace trim (no xargs — xargs is fragile with quotes/backticks).
 trim_ws() {
     local s="$1"

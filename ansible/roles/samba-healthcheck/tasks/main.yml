@@ -78,18 +78,17 @@
 
 # --- Network connectivity to DC ---
 # These ports must be open for AD clients to function:
-#   2049 - NFS file sharing (replaces SMB/CIFS for file access)
 #   88   - Kerberos authentication
 #   53   - DNS resolution
-# Note: Port 445 (SMB) is no longer checked since file shares are NFS-only,
-# but it remains open on the DC for sysvol/netlogon and domain join ops.
-- name: Check connectivity to DC (port 2049)
+# Port 2049 (NFS) is checked against the NFS server (which may be the DC
+# or a dedicated storage server).
+- name: Check connectivity to NFS server (port 2049)
   ansible.builtin.wait_for:
-    host: "{{ healthcheck_dc_hostname }}.{{ healthcheck_realm | lower }}"
+    host: "{{ (healthcheck_nfs_server if healthcheck_nfs_server else healthcheck_dc_hostname) }}.{{ healthcheck_realm | lower }}"
     port: 2049
     timeout: 5
   failed_when: false
-  register: dc_port_2049
+  register: nfs_port_2049
 
 - name: Check connectivity to DC (port 88)
   ansible.builtin.wait_for:
@@ -123,7 +122,7 @@
       Autofs service:        {{ 'RUNNING' if autofs_status.status.ActiveState | default('') == 'active' else 'NOT RUNNING' }}
       NFS server:            {{ 'RUNNING' if nfs_server_status.status.ActiveState | default('') == 'active' else 'NOT RUNNING' }}
       User lookup:           {{ 'PASS' if getent_user.rc == 0 else 'FAIL' }}
-      DC port 2049 (NFS):    {{ 'OPEN' if dc_port_2049 is not failed else 'CLOSED' }}
+      NFS port 2049:         {{ 'OPEN' if nfs_port_2049 is not failed else 'CLOSED' }}
       DC port 88 (Kerberos): {{ 'OPEN' if dc_port_88 is not failed else 'CLOSED' }}
       DC port 53 (DNS):      {{ 'OPEN' if dc_port_53 is not failed else 'CLOSED' }}
       NFS mounts:            {{ nfs_mounts.stdout_lines | default([]) | length }} active

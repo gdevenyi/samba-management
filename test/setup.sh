@@ -1,12 +1,16 @@
 #!/usr/bin/env bash
 # setup.sh - Create libvirt test VMs for Samba AD DC testing.
 #
-# Creates two Ubuntu 24.04 cloud-image VMs (DC + client) on the default
-# libvirt NAT network with static IPs, SSH key injection, and generates
-# an Ansible inventory + group_vars for running the provisioning playbooks.
+# Supports two modes via TEST_MODE env var:
+#   colocated (default) - 2 VMs: DC serves NFS
+#   separate            - 3 VMs: DC + dedicated storage server + client
+#
+# Creates Ubuntu 24.04 cloud-image VMs on the default libvirt NAT network
+# with static IPs, SSH key injection, and generates Ansible inventory +
+# group_vars for running the provisioning playbooks.
 #
 # Requires libvirt group membership (usermod -aG libvirt $USER).
-# Usage: ./test/setup.sh
+# Usage: sudo [TEST_MODE=separate] ./test/setup.sh
 set -euo pipefail
 
 # Use a dedicated test key (passwordless ed25519, generated on first run).
@@ -19,12 +23,21 @@ SSH_KEY_DIR="${SCRIPT_DIR}/.ssh"
 SSH_KEY_FILE="${SSH_KEY_DIR}/id_ed25519"
 SSH_PUB_KEY="${SSH_KEY_FILE}.pub"
 
+# Test mode: "colocated" (2 VMs) or "separate" (3 VMs with storage server).
+TEST_MODE="${TEST_MODE:-colocated}"
+
 # VM settings
 DC_NAME="samba-dc"
 DC_IP="192.168.122.10"
 DC_RAM=2048
 DC_VCPU=2
 DC_DISK="20G"
+
+STORAGE_NAME="samba-storage"
+STORAGE_IP="192.168.122.12"
+STORAGE_RAM=2048
+STORAGE_VCPU=2
+STORAGE_DISK="20G"
 
 CLIENT_NAME="samba-client"
 CLIENT_IP="192.168.122.11"
@@ -64,7 +77,11 @@ check_prereqs() {
         ssh-keygen -t ed25519 -f "$SSH_KEY_FILE" -N "" -C "samba-test"
         log_info "Generated test SSH key: ${SSH_KEY_FILE}"
     fi
-    for vm in "$DC_NAME" "$CLIENT_NAME"; do
+    local vms_to_check=("$DC_NAME" "$CLIENT_NAME")
+    if [[ "$TEST_MODE" == "separate" ]]; then
+        vms_to_check+=("$STORAGE_NAME")
+    fi
+    for vm in "${vms_to_check[@]}"; do
         if virsh dominfo "$vm" &>/dev/null; then
             die "VM '${vm}' already exists. Run test/teardown.sh first."
         fi
@@ -88,13 +105,16 @@ download_base_image() {
 # ---------------------------------------------------------------------------
 generate_config() {
     local password upper lower digit symbol
-    # Password policy has complexity off with min length 15.  Build a
-    # 24-char alphabetic password that round-trips safely through
-    # test-config.env and group_vars.
+    # samba-tool domain provision validates against the built-in password
+    # policy (complexity on, min 7) regardless of what we set later.
+    # Build a 24-char password with guaranteed coverage of all 4 classes.
     # NOTE: The '|| true' prevents set -euo pipefail from aborting when
     # SIGPIPE kills tr after head closes the pipe early.
-    lower=$(LC_ALL=C tr -dc 'a-z' </dev/urandom | head -c 24) || true
-    password="$lower"
+    upper=$(LC_ALL=C tr -dc 'A-Z' </dev/urandom | head -c 6) || true
+    lower=$(LC_ALL=C tr -dc 'a-z' </dev/urandom | head -c 6) || true
+    digit=$(LC_ALL=C tr -dc '0-9' </dev/urandom | head -c 6) || true
+    symbol=$(LC_ALL=C tr -dc '!@#%^*_=+-' </dev/urandom | head -c 6) || true
+    password=$(printf '%s' "${upper}${lower}${digit}${symbol}" | fold -w1 | shuf | tr -d '\n')
     cat > "$CONFIG_FILE" <<EOF
 SMB_TEST_ADMIN_PASSWORD="${password}"
 SMB_TEST_DC_IP="${DC_IP}"
@@ -105,6 +125,9 @@ SMB_TEST_DC_NAME="${DC_NAME}"
 SMB_TEST_CLIENT_NAME="${CLIENT_NAME}"
 SMB_TEST_SSH_KEY="${SSH_KEY_FILE}"
 SMB_TEST_SSH_USER="ubuntu"
+SMB_TEST_MODE="${TEST_MODE}"
+SMB_TEST_STORAGE_IP="${STORAGE_IP}"
+SMB_TEST_STORAGE_NAME="${STORAGE_NAME}"
 EOF
     chmod 600 "$CONFIG_FILE"
     # When invoked with sudo, hand the file back to the invoking user so
@@ -243,21 +266,54 @@ generate_ansible_config() {
     # shellcheck source=test-config.env
     source "$CONFIG_FILE"
 
-    cat > "${SCRIPT_DIR}/inventory.yml" <<EOF
+    if [[ "$TEST_MODE" == "separate" ]]; then
+        cat > "${SCRIPT_DIR}/inventory.yml" <<EOF
 all:
   children:
     dc:
       hosts:
         ${DC_IP}:
           ansible_hostname: dc01
-    linux_clients:
-      hosts:
-        ${CLIENT_IP}:
-          ansible_hostname: client01
+    domain_members:
+      children:
+        nfs_servers:
+          hosts:
+            ${STORAGE_IP}:
+              ansible_hostname: storage01
+        linux_clients:
+          hosts:
+            ${CLIENT_IP}:
+              ansible_hostname: client01
 EOF
+    else
+        cat > "${SCRIPT_DIR}/inventory.yml" <<EOF
+all:
+  children:
+    dc:
+      hosts:
+        ${DC_IP}:
+          ansible_hostname: dc01
+    domain_members:
+      children:
+        nfs_servers:
+          hosts: {}
+        linux_clients:
+          hosts:
+            ${CLIENT_IP}:
+              ansible_hostname: client01
+EOF
+    fi
 
     mkdir -p "${SCRIPT_DIR}/group_vars"
 
+    # DC group_vars.  In separate mode we point autofs maps and healthcheck
+    # at storage01; in colocated mode both default to the DC itself.
+    local dc_extra=""
+    local members_extra=""
+    if [[ "$TEST_MODE" == "separate" ]]; then
+        dc_extra=$'samba_nfs_server: "storage01"\nhealthcheck_nfs_server: "storage01"'
+        members_extra='healthcheck_nfs_server: "storage01"'
+    fi
     cat > "${SCRIPT_DIR}/group_vars/dc.yml" <<EOF
 samba_realm: "${TEST_REALM}"
 samba_domain: "SAMBA"
@@ -267,12 +323,14 @@ samba_dns_forwarder: "8.8.8.8"
 samba_tls_enabled: false
 healthcheck_realm: "${TEST_REALM}"
 healthcheck_dc_hostname: "dc01"
+${dc_extra}
 samba_shares:
   - name: public
     comment: "Public share for all domain users"
 EOF
 
-    cat > "${SCRIPT_DIR}/group_vars/linux_clients.yml" <<EOF
+    # Shared domain_members group_vars
+    cat > "${SCRIPT_DIR}/group_vars/domain_members.yml" <<EOF
 sssd_realm: "${TEST_REALM}"
 sssd_domain: "${TEST_DOMAIN}"
 sssd_domain_short: "SAMBA"
@@ -280,7 +338,24 @@ sssd_admin_password: "${SMB_TEST_ADMIN_PASSWORD}"
 sssd_dc_hostname: "dc01"
 healthcheck_realm: "${TEST_REALM}"
 healthcheck_dc_hostname: "dc01"
+${members_extra}
 EOF
+
+    # Linux clients group_vars (client-specific only)
+    cat > "${SCRIPT_DIR}/group_vars/linux_clients.yml" <<EOF
+{}
+EOF
+
+    # NFS servers group_vars (separate mode only)
+    if [[ "$TEST_MODE" == "separate" ]]; then
+        cat > "${SCRIPT_DIR}/group_vars/nfs_servers.yml" <<EOF
+nfs_server_shares:
+  - name: public
+    comment: "Public share for all domain users"
+nfs_server_export_homes: true
+healthcheck_nfs_server: "storage01"
+EOF
+    fi
 
     # Hand generated files back to the invoking user so the un-privileged
     # provision.sh / run-tests.sh can read them.
@@ -298,7 +373,7 @@ EOF
 # ---------------------------------------------------------------------------
 check_prereqs
 
-log_info "=== Samba AD DC Test Environment Setup ==="
+log_info "=== Samba AD DC Test Environment Setup (mode=${TEST_MODE}) ==="
 echo ""
 
 download_base_image
@@ -310,18 +385,31 @@ log_info "Creating DC (${DC_NAME}, ${DC_IP})..."
 create_seed_iso "$DC_NAME" "dc01" "$DC_IP"
 create_vm "$DC_NAME" "$DC_DISK" "$DC_RAM" "$DC_VCPU"
 
+if [[ "$TEST_MODE" == "separate" ]]; then
+    log_info "Creating Storage Server (${STORAGE_NAME}, ${STORAGE_IP})..."
+    create_seed_iso "$STORAGE_NAME" "storage01" "$STORAGE_IP"
+    create_vm "$STORAGE_NAME" "$STORAGE_DISK" "$STORAGE_RAM" "$STORAGE_VCPU"
+fi
+
 log_info "Creating Client (${CLIENT_NAME}, ${CLIENT_IP})..."
 create_seed_iso "$CLIENT_NAME" "client01" "$CLIENT_IP"
 create_vm "$CLIENT_NAME" "$CLIENT_DISK" "$CLIENT_RAM" "$CLIENT_VCPU"
 
 wait_for_ssh "$DC_IP" "DC"
+if [[ "$TEST_MODE" == "separate" ]]; then
+    wait_for_ssh "$STORAGE_IP" "Storage"
+fi
 wait_for_ssh "$CLIENT_IP" "Client"
 
 generate_ansible_config
 
 echo ""
 log_info "=== Setup Complete ==="
+log_info "Mode:     ${TEST_MODE}"
 log_info "DC:       ${DC_IP} (${DC_NAME})"
+if [[ "$TEST_MODE" == "separate" ]]; then
+    log_info "Storage:  ${STORAGE_IP} (${STORAGE_NAME})"
+fi
 log_info "Client:   ${CLIENT_IP} (${CLIENT_NAME})"
 log_info "Domain:   ${TEST_REALM}"
 log_info "Password: ${SMB_TEST_ADMIN_PASSWORD}"

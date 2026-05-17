@@ -149,15 +149,16 @@ cmd_add() {
     fi
     log_info "User '${username}' created successfully"
 
-    # Provision a local home directory on the DC.  In a setup where home
-    # dirs are served via NFS from the DC, this directory IS the
-    # network home and will be exported via NFS (homes.exports).
+    # Provision the network home directory on the NFS homes server.  When
+    # the DC also serves NFS (colocated), home_op runs locally; in
+    # separate mode it SSHes to NFS_HOMES_SERVER as root using the keypair
+    # the samba-dc role generates at provision time.
     local home_dir="${HOME_BASE}/${username}"
-    if [[ ! -d "$home_dir" ]]; then
-        mkdir -p "$home_dir"
-        chmod 0770 "$home_dir"
-        chown "root:${DEFAULT_GROUP}" "$home_dir"
-        log_info "Created home directory: ${home_dir}"
+    if ! home_op test -d "$home_dir"; then
+        home_op mkdir -p "$home_dir"
+        home_op chmod 0770 "$home_dir"
+        home_op chown "root:${DEFAULT_GROUP}" "$home_dir"
+        log_info "Created home directory: ${NFS_HOMES_SERVER:-localhost}:${home_dir}"
     fi
 
     # Optionally add the user to an AD group immediately after creation.
@@ -203,13 +204,14 @@ cmd_delete() {
     confirm_action "Delete user '${username}'?" || exit 0
 
     # Archive the home directory before deletion so data can be recovered
-    # if the account was removed by mistake.
+    # if the account was removed by mistake.  Runs on the NFS homes
+    # server (may be remote in separate mode).
     if [[ "$archive_home" -eq 1 ]]; then
         local home_dir="${HOME_BASE}/${username}"
-        if [[ -d "$home_dir" ]]; then
+        if home_op test -d "$home_dir"; then
             local archive="${HOME_BASE}/${username}.tar.gz"
-            tar -czf "$archive" -C "${HOME_BASE}" "$username"
-            log_info "Archived home directory to ${archive}"
+            home_op tar -czf "$archive" -C "${HOME_BASE}" "$username"
+            log_info "Archived home directory to ${NFS_HOMES_SERVER:-localhost}:${archive}"
         fi
     fi
 

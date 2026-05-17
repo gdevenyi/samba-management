@@ -1,3 +1,10 @@
 ---
 exclude_paths:
   - playbooks/provision-windows.yml
+
+# Project convention: all roles are kebab-case (samba-dc, sssd-client,
+# samba-healthcheck, nfs-server) rather than snake_case.  ansible-lint's
+# default role-name rule requires snake_case; we skip it project-wide
+# rather than rename four roles' worth of references.
+skip_list:
+  - role-name

@@ -1,8 +1,9 @@
 #!/usr/bin/env bash
 # provision.sh - Run Ansible playbooks against the test VMs.
 #
-# Sources test-config.env for the admin password, then provisions
-# the DC and joins the Linux client. Must run AFTER setup.sh.
+# Sources test-config.env for the admin password and mode, then provisions
+# the DC, optionally the storage server, and joins the Linux client.
+# Must run AFTER setup.sh.
 set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
@@ -26,6 +27,15 @@ ansible-playbook "${INVENTORY[@]}" "${ANSIBLE_DIR}/playbooks/provision-dc.yml" |
     exit 1
 }
 
+if [[ "${SMB_TEST_MODE:-colocated}" == "separate" ]]; then
+    echo ""
+    log_info "=== Provisioning NFS Storage Server (${SMB_TEST_STORAGE_IP}) ==="
+    ansible-playbook "${INVENTORY[@]}" "${ANSIBLE_DIR}/playbooks/provision-nfs-server.yml" || {
+        log_error "Storage server provisioning failed."
+        exit 1
+    }
+fi
+
 echo ""
 log_info "=== Joining Linux Client (${SMB_TEST_CLIENT_IP}) ==="
 ansible-playbook "${INVENTORY[@]}" "${ANSIBLE_DIR}/playbooks/provision-linux-sssd.yml" || {
@@ -39,8 +49,12 @@ ansible-playbook "${INVENTORY[@]}" "${ANSIBLE_DIR}/playbooks/healthcheck.yml" ||
 
 echo ""
 log_info "=== Provisioning Complete ==="
-log_info "DC:     ${SMB_TEST_DC_IP}"
-log_info "Client: ${SMB_TEST_CLIENT_IP}"
-log_info "Domain: ${SMB_TEST_REALM}"
+log_info "Mode:     ${SMB_TEST_MODE:-colocated}"
+log_info "DC:       ${SMB_TEST_DC_IP}"
+if [[ "${SMB_TEST_MODE:-colocated}" == "separate" ]]; then
+    log_info "Storage:  ${SMB_TEST_STORAGE_IP}"
+fi
+log_info "Client:   ${SMB_TEST_CLIENT_IP}"
+log_info "Domain:   ${SMB_TEST_REALM}"
 echo ""
 log_info "Run './run-tests.sh' to exercise the management scripts."

@@ -1,0 +1,16 @@
+# domain_members.yml - Shared group variables for all domain-joined hosts.
+#
+# Both linux_clients and nfs_servers inherit these via the domain_members
+# parent group.  SECURITY: sssd_admin_password MUST be changed before running
+# playbooks.  Consider using Ansible Vault for production deployments.
+---
+# Kerberos realm (uppercase).
+sssd_realm: "EXAMPLE.INTERNAL"
+# AD DNS domain name (lowercase - used in SSSD config and DNS lookups).
+sssd_domain: "example.internal"
+# NetBIOS domain short name (uppercase - used for Windows interop).
+sssd_domain_short: "EXAMPLE"
+# Domain admin credentials for `realm join`.  CHANGE THIS.
+sssd_admin_password: "CHANGE_ME_STRONG_PASSWORD"
+# DC hostname for DNS and domain operations.
+sssd_dc_hostname: "dc01"

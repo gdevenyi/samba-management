@@ -5,7 +5,7 @@
 # samba-healthcheck role which performs non-destructive read-only checks.
 ---
 - name: Run domain healthcheck
-  hosts: linux_clients:dc
+  hosts: linux_clients:dc:nfs_servers
   become: true
   roles:
     - samba-healthcheck

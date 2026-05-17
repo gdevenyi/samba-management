@@ -23,6 +23,16 @@ ssh_dc()    { ssh "${SSH_OPTS[@]}" "${SMB_TEST_SSH_USER}@${SMB_TEST_DC_IP}" "$*"
 # shellcheck disable=SC2029
 ssh_client() { ssh "${SSH_OPTS[@]}" "${SMB_TEST_SSH_USER}@${SMB_TEST_CLIENT_IP}" "$*"; }
 
+# ssh_nfs targets the NFS server: DC in colocated mode, storage server in
+# separate mode.  Used for share directory and NFS export operations.
+if [[ "${SMB_TEST_MODE:-colocated}" == "separate" ]]; then
+    # shellcheck disable=SC2029
+    ssh_nfs() { ssh "${SSH_OPTS[@]}" "${SMB_TEST_SSH_USER}@${SMB_TEST_STORAGE_IP}" "$*"; }
+else
+    # shellcheck disable=SC2029
+    ssh_nfs() { ssh "${SSH_OPTS[@]}" "${SMB_TEST_SSH_USER}@${SMB_TEST_DC_IP}" "$*"; }
+fi
+
 run_test() {
     local desc="$1"
     shift
@@ -48,7 +58,7 @@ echo "--- User Management ---"
 run_test "Create user testuser1" \
     ssh_dc sudo samba-user.sh add testuser1 \
         --given-name=Test --surname=User1 \
-        --password=TestPass123 --must-change-pw --force
+        --password=TestPass123456 --must-change-pw --force
 
 run_test "List users contains testuser1" \
     ssh_dc "sudo samba-user.sh list | grep -q testuser1"
@@ -63,12 +73,12 @@ run_test "Enable user testuser1" \
     ssh_dc sudo samba-user.sh enable testuser1 --force
 
 run_test "Set password for testuser1" \
-    ssh_dc sudo samba-user.sh set-password testuser1 --password=NewPass456 --force
+    ssh_dc sudo samba-user.sh set-password testuser1 --password=NewPass4567890 --force
 
 run_test "Create user testuser2" \
     ssh_dc sudo samba-user.sh add testuser2 \
         --given-name=Second --surname=User \
-        --password=TestPass456 --force
+        --password=TestPass456789 --force
 
 run_test "List users contains testuser2" \
     ssh_dc "sudo samba-user.sh list | grep -q testuser2"
@@ -104,19 +114,19 @@ echo "--- Share Management ---"
 # Create a test share by provisioning the directory and NFS export file
 # directly (samba-share.sh has been removed; shares are NFS-only now).
 run_test "Create testshare directory" \
-    ssh_dc "sudo mkdir -p /data/testshare && sudo chmod 0770 /data/testshare && sudo chown root:'domain users' /data/testshare"
+    ssh_nfs "sudo mkdir -p /data/testshare && sudo chmod 0770 /data/testshare && sudo chown root:'domain users' /data/testshare"
 
 run_test "Create testshare NFS export file" \
-    ssh_dc 'echo "/data/testshare *(rw,sec=krb5p,sync,no_subtree_check)" | sudo tee /etc/exports.d/testshare.exports && sudo exportfs -ra'
+    ssh_nfs 'echo "/data/testshare *(rw,sec=krb5p,sync,no_subtree_check)" | sudo tee /etc/exports.d/testshare.exports && sudo exportfs -ra'
 
 run_test "Verify testshare is exported" \
-    ssh_dc "sudo exportfs -v | grep -q testshare"
+    ssh_nfs "sudo exportfs -v | grep -q testshare"
 
 run_test "Remove testshare NFS export" \
-    ssh_dc "sudo rm -f /etc/exports.d/testshare.exports && sudo exportfs -ra"
+    ssh_nfs "sudo rm -f /etc/exports.d/testshare.exports && sudo exportfs -ra"
 
 run_test "Remove testshare directory" \
-    ssh_dc "sudo rm -rf /data/testshare"
+    ssh_nfs "sudo rm -rf /data/testshare"
 
 # --- Permission Test Setup ---
 echo ""
@@ -125,32 +135,32 @@ echo "--- Permission Test Setup ---"
 run_test "Create user homeuser1" \
     ssh_dc sudo samba-user.sh add homeuser1 \
         --given-name=Home --surname=User1 \
-        --password=H0mePass1! --force
+        --password=H0mePass1!2345 --force
 
 run_test "Create user homeuser2" \
     ssh_dc sudo samba-user.sh add homeuser2 \
         --given-name=Home --surname=User2 \
-        --password=H0mePass2! --force
+        --password=H0mePass2!3456 --force
 
 run_test "Create user perm_reader" \
     ssh_dc sudo samba-user.sh add perm_reader \
         --given-name=Perm --surname=Reader \
-        --password=Read3rPass! --force
+        --password=Read3rPass!234 --force
 
 run_test "Create user perm_writer" \
     ssh_dc sudo samba-user.sh add perm_writer \
         --given-name=Perm --surname=Writer \
-        --password=Wr1terPass! --force
+        --password=Wr1terPass!234 --force
 
 run_test "Create user perm_both" \
     ssh_dc sudo samba-user.sh add perm_both \
         --given-name=Perm --surname=Both \
-        --password=B0thPass!1 --force
+        --password=B0thPass!12345 --force
 
 run_test "Create user perm_outsider" \
     ssh_dc sudo samba-user.sh add perm_outsider \
         --given-name=Perm --surname=Outsider \
-        --password=0utside!1 --force
+        --password=0utside!1234567 --force
 
 run_test "Create group ShareReaders" \
     ssh_dc 'sudo samba-group.sh add ShareReaders --description="Share read-only group"'
@@ -172,20 +182,20 @@ run_test "Add perm_both to ShareWriters" \
 
 # Create perm_rw_share with POSIX group permissions for writers
 run_test "Create perm_rw_share directory with group permissions" \
-    ssh_dc "sudo mkdir -p /data/perm_rw_share && sudo chmod 2770 /data/perm_rw_share && sudo chown root:ShareWriters /data/perm_rw_share"
+    ssh_nfs "sudo mkdir -p /data/perm_rw_share && sudo chmod 2770 /data/perm_rw_share && sudo chown root:ShareWriters /data/perm_rw_share"
 
 run_test "Create perm_rw_share NFS export file" \
-    ssh_dc 'echo "/data/perm_rw_share *(rw,sec=krb5p,sync,no_subtree_check)" | sudo tee /etc/exports.d/perm_rw_share.exports && sudo exportfs -ra'
+    ssh_nfs 'echo "/data/perm_rw_share *(rw,sec=krb5p,sync,no_subtree_check)" | sudo tee /etc/exports.d/perm_rw_share.exports && sudo exportfs -ra'
 
 # Create perm_admin_share (writers only)
 run_test "Create perm_admin_share directory" \
-    ssh_dc "sudo mkdir -p /data/perm_admin_share && sudo chmod 2770 /data/perm_admin_share && sudo chown root:ShareWriters /data/perm_admin_share"
+    ssh_nfs "sudo mkdir -p /data/perm_admin_share && sudo chmod 2770 /data/perm_admin_share && sudo chown root:ShareWriters /data/perm_admin_share"
 
 run_test "Create perm_admin_share NFS export file" \
-    ssh_dc 'echo "/data/perm_admin_share *(rw,sec=krb5p,sync,no_subtree_check)" | sudo tee /etc/exports.d/perm_admin_share.exports && sudo exportfs -ra'
+    ssh_nfs 'echo "/data/perm_admin_share *(rw,sec=krb5p,sync,no_subtree_check)" | sudo tee /etc/exports.d/perm_admin_share.exports && sudo exportfs -ra'
 
-run_test "Create test file on DC" \
-    ssh_dc "echo 'permission test content' | sudo tee /tmp/perm-test-file.txt"
+run_test "Create test file on NFS server" \
+    ssh_nfs "echo 'permission test content' | sudo tee /tmp/perm-test-file.txt"
 
 # --- NFS Share Permissions (POSIX-based) ---
 echo ""
@@ -207,17 +217,21 @@ run_test "Add perm_admin_share to auto.shares in AD" \
 run_test "Flush SSSD autofs cache on client" \
     ssh_client "sudo sss_cache -A && sudo systemctl restart autofs"
 
+# These tests run via Kerberos+NFS from the *client* so that NSS (via SSSD)
+# correctly resolves the user's secondary AD groups.  The DC has SSSD
+# installed alongside winbind precisely so manage-gids on rpc.mountd
+# returns secondary groups in both colocated and separate modes.
 run_test "perm_writer can write to perm_rw_share via NFS" \
-    ssh_client "echo 'Wr1terPass!' | kinit perm_writer@SAMBA.TEST && echo 'writer test' > /mnt/shares/perm_rw_share/writer_file.txt; rc=\$?; kdestroy; exit \$rc"
+    ssh_client "echo 'Wr1terPass!234' | kinit perm_writer@SAMBA.TEST && echo 'writer test' > /mnt/shares/perm_rw_share/writer_file.txt; rc=\$?; kdestroy; exit \$rc"
 
 run_test "perm_writer can read from perm_rw_share via NFS" \
-    ssh_client "echo 'Wr1terPass!' | kinit perm_writer@SAMBA.TEST && cat /mnt/shares/perm_rw_share/writer_file.txt; rc=\$?; kdestroy; exit \$rc"
+    ssh_client "echo 'Wr1terPass!234' | kinit perm_writer@SAMBA.TEST && cat /mnt/shares/perm_rw_share/writer_file.txt; rc=\$?; kdestroy; exit \$rc"
 
 run_test "perm_both can write to perm_rw_share via NFS" \
-    ssh_client "echo 'B0thPass!1' | kinit perm_both@SAMBA.TEST && echo 'both test' > /mnt/shares/perm_rw_share/both_file.txt; rc=\$?; kdestroy; exit \$rc"
+    ssh_client "echo 'B0thPass!12345' | kinit perm_both@SAMBA.TEST && echo 'both test' > /mnt/shares/perm_rw_share/both_file.txt; rc=\$?; kdestroy; exit \$rc"
 
 run_test "perm_writer can write to perm_admin_share via NFS" \
-    ssh_client "echo 'Wr1terPass!' | kinit perm_writer@SAMBA.TEST && echo 'admin test' > /mnt/shares/perm_admin_share/admin_file.txt; rc=\$?; kdestroy; exit \$rc"
+    ssh_client "echo 'Wr1terPass!234' | kinit perm_writer@SAMBA.TEST && echo 'admin test' > /mnt/shares/perm_admin_share/admin_file.txt; rc=\$?; kdestroy; exit \$rc"
 
 # --- Autofs + Kerberos Mount Tests ---
 echo ""
@@ -233,7 +247,7 @@ run_test "AD auto.home map exposes wildcard entry (via SSSD)" \
     ssh_client "sudo automount -m | grep -E '^[[:space:]]*\\*[[:space:]]*\\|.*nfs4'"
 
 run_test "kinit as perm_writer on client" \
-    ssh_client "echo 'Wr1terPass!' | kinit perm_writer@SAMBA.TEST"
+    ssh_client "echo 'Wr1terPass!234' | kinit perm_writer@SAMBA.TEST"
 
 run_test "Trigger autofs mount of public share and verify NFS" \
     ssh_client "ls /mnt/shares/public/ && mount | grep 'public.*nfs4'"
@@ -245,7 +259,7 @@ run_test "kdestroy perm_writer ticket" \
     ssh_client "kdestroy"
 
 run_test "kinit as homeuser1 on client" \
-    ssh_client "echo 'H0mePass1!' | kinit homeuser1@SAMBA.TEST"
+    ssh_client "echo 'H0mePass1!2345' | kinit homeuser1@SAMBA.TEST"
 
 run_test "Trigger autofs home mount for homeuser1 and verify NFS" \
     ssh_client "ls /home/ad/homeuser1/ && mount | grep 'homeuser1.*nfs4'"
@@ -257,7 +271,7 @@ run_test "kdestroy homeuser1 ticket" \
     ssh_client "kdestroy"
 
 run_test "Verify pre-provisioned public share is accessible via autofs" \
-    ssh_client "echo 'H0mePass1!' | kinit homeuser1@SAMBA.TEST && ls /mnt/shares/public/ && kdestroy"
+    ssh_client "echo 'H0mePass1!2345' | kinit homeuser1@SAMBA.TEST && ls /mnt/shares/public/ && kdestroy"
 
 # --- Password Policy ---
 echo ""
@@ -348,10 +362,10 @@ run_test "Flush SSSD cache for sudo rules" \
 sleep 2
 
 run_test "Client retrieves sudo rules via SSSD" \
-    ssh_client "echo 'Wr1terPass!' | kinit perm_writer@SAMBA.TEST && sudo whoami 2>/dev/null | grep -q root ; kdestroy"
+    ssh_client "echo 'Wr1terPass!234' | kinit perm_writer@SAMBA.TEST && sudo whoami 2>/dev/null | grep -q root ; kdestroy"
 
 run_test "Verify sudo works for AD user on client" \
-    ssh_client "echo 'Wr1terPass!' | kinit perm_writer@SAMBA.TEST && sudo id 2>/dev/null | grep -q 'uid=0' ; kdestroy"
+    ssh_client "echo 'Wr1terPass!234' | kinit perm_writer@SAMBA.TEST && sudo id 2>/dev/null | grep -q 'uid=0' ; kdestroy"
 
 run_test "Delete sudo rule users-nopasswd" \
     ssh_dc 'sudo samba-sudorule.sh delete users-nopasswd --force'
@@ -391,16 +405,16 @@ run_test "Remove perm_admin_share from auto.shares in AD" \
     ssh_dc sudo samba-automount.sh delete-share perm_admin_share --force
 
 run_test "Remove perm_admin_share NFS export" \
-    ssh_dc "sudo rm -f /etc/exports.d/perm_admin_share.exports && sudo exportfs -ra"
+    ssh_nfs "sudo rm -f /etc/exports.d/perm_admin_share.exports && sudo exportfs -ra"
 
 run_test "Remove perm_rw_share NFS export" \
-    ssh_dc "sudo rm -f /etc/exports.d/perm_rw_share.exports && sudo exportfs -ra"
+    ssh_nfs "sudo rm -f /etc/exports.d/perm_rw_share.exports && sudo exportfs -ra"
 
 run_test "Delete share perm_admin_share directory" \
-    ssh_dc "sudo rm -rf /data/perm_admin_share"
+    ssh_nfs "sudo rm -rf /data/perm_admin_share"
 
 run_test "Delete share perm_rw_share directory" \
-    ssh_dc "sudo rm -rf /data/perm_rw_share"
+    ssh_nfs "sudo rm -rf /data/perm_rw_share"
 
 run_test "Delete group ShareWriters" \
     ssh_dc sudo samba-group.sh delete ShareWriters --force
@@ -426,8 +440,8 @@ run_test "Delete homeuser2" \
 run_test "Delete homeuser1" \
     ssh_dc sudo samba-user.sh delete homeuser1 --force
 
-run_test "Clean up test file on DC" \
-    ssh_dc "sudo rm -f /tmp/perm-test-file.txt"
+run_test "Clean up test file on NFS server" \
+    ssh_nfs "sudo rm -f /tmp/perm-test-file.txt"
 
 run_test "Delete TestGroup" \
     ssh_dc sudo samba-group.sh delete TestGroup --force

@@ -5,6 +5,8 @@
 # These rules are consumed by SSSD's sudo service on Linux clients.
 # Must run on the DC as root.
 set -euo pipefail
+# shellcheck disable=SC2154  # 's' is assigned at trap-firing time
+trap 's=$?; echo >&2 "$0: Error on line "$LINENO": $BASH_COMMAND"; exit $s' ERR
 
 SCRIPT_DIR="$(cd "$(dirname "$(readlink -f "${BASH_SOURCE[0]}")")" && pwd)"
 # shellcheck source=../lib/common.sh

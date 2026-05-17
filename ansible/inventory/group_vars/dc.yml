@@ -15,8 +15,13 @@ samba_admin_password: "CHANGE_ME_STRONG_PASSWORD"
 samba_dns_forwarder: "8.8.8.8"
 # TLS is disabled by default; enable only after deploying proper certificates.
 samba_tls_enabled: false
-# List of shares to provision on the DC.  Each entry creates the directory
-# under /data and an NFS export file in /etc/exports.d/<name>.exports.
+# List of shares published in this domain.  Each entry seeds an autofs
+# map entry under CN=auto.shares,OU=automount in AD.  When NFS is
+# colocated on the DC (samba_nfs_server unset/empty) the DC also creates
+# the directory under /data and an NFS export file in
+# /etc/exports.d/<name>.exports; in split-NFS mode the directory and
+# export file are created on the storage host by the nfs-server role
+# (which reads nfs_server_shares from group_vars/nfs_servers.yml).
 # Access control is managed via POSIX permissions on the directory.
 samba_shares:
   - name: public

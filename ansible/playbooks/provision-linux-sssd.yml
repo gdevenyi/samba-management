@@ -1,8 +1,10 @@
 # provision-linux-sssd.yml - Ansible playbook to join Linux clients to the AD domain.
 #
 # Applies the sssd-client role which installs SSSD/realmd/adcli, joins the
-# domain, deploys sssd.conf, and optionally configures autofs for NFSv4 shares
-# and home directory mounts.
+# domain, deploys sssd.conf, wires up autofs to pull maps from AD (no
+# per-client map files), enables sss_ssh_authorizedkeys for AD-stored SSH
+# keys, configures SSSD as a sudo provider, and optionally sets up home
+# directory mounting via NFS (sssd_homedir_mode=mounted).
 ---
 - name: Provision Linux workstation with SSSD
   hosts: linux_clients

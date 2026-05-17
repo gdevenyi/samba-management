@@ -4,6 +4,8 @@
 # Creates users, groups, and shares on the DC via SSH, verifies them,
 # checks client-side resolution, then cleans up. Must run AFTER provision.sh.
 set -euo pipefail
+# shellcheck disable=SC2154  # 's' is assigned at trap-firing time
+trap 's=$?; echo >&2 "$0: Error on line "$LINENO": $BASH_COMMAND"; exit $s' ERR
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 # shellcheck source=test-config.env

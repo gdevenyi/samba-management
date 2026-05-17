@@ -5,6 +5,8 @@
 # the DC, optionally the storage server, and joins the Linux client.
 # Must run AFTER setup.sh.
 set -euo pipefail
+# shellcheck disable=SC2154  # 's' is assigned at trap-firing time
+trap 's=$?; echo >&2 "$0: Error on line "$LINENO": $BASH_COMMAND"; exit $s' ERR
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 ANSIBLE_DIR="${SCRIPT_DIR}/../ansible"

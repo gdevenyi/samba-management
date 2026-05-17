@@ -127,14 +127,20 @@ nfs_server_shares:
     comment: "Public share"
 nfs_server_export_homes: true
 ```
-3. Set `samba_nfs_server: "storage01"` in `group_vars/dc.yml`
+3. Set `samba_nfs_server: "storage01"` in `group_vars/dc.yml` (and optionally
+   `samba_nfs_homes_server: "storage01"` to put user homes on the same host —
+   defaults to `samba_nfs_server` when unset).
 4. Provision:
 ```bash
 cd ansible
 ansible-playbook playbooks/provision-nfs-server.yml
 ```
 
-This joins the server to the domain and configures NFSv4+Kerberos exports.
+This joins the server to the domain, registers the `nfs/<fqdn>` SPN against
+the storage host's machine account, and configures NFSv4+Kerberos exports.
+A passwordless root SSH keypair is also generated on the DC and installed in
+the storage host's `authorized_keys` so `samba-user.sh` can manage user home
+directories (under `/home/<user>`) on the remote NFS host.
 
 ### Step 4: Join Linux Clients
 
@@ -153,8 +159,8 @@ This configures each Linux client to:
 After joining, verify on a client:
 ```bash
 getent passwd Administrator
-groups john
-ls /mnt/shares/public    # autofs mounts on access
+id Administrator                # confirm AD groups resolve
+ls /mnt/shares/public           # autofs mounts on access
 ```
 
 ### Step 5: Join Windows Clients
@@ -187,7 +193,7 @@ For a standalone check on a Linux client (no Ansible needed):
 
 ## Day-to-Day Management (Bash Scripts)
 
-All scripts run **as root on the DC**. They source `lib/common.sh` then `lib/config.sh`, which reads `config/samba-mgmt.conf` for site-specific settings. Config values support optional quoting for values with spaces (e.g., `DEFAULT_GROUP="Domain Users"`).
+All scripts run **as root on the DC**. They source `lib/common.sh` then `lib/config.sh`, which reads `config/samba-mgmt.conf` for site-specific settings. Config values support optional quoting for values with spaces (e.g., `DEFAULT_GROUP="Domain Users"`). Every script sets `set -euo pipefail` and installs an `ERR` trap that prints the failing line number and command to stderr before exiting non-zero.
 
 ### User Management (`bin/samba-user.sh`)
 
@@ -323,9 +329,12 @@ no per-client tool for adding shares.
 
 ```bash
 ./client/linux/healthcheck.sh
+# Or override auto-detected values:
+REALM=YOURDOMAIN.INTERNAL DC_HOST=dc01 NFS_HOST=storage01 \
+    HEALTHCHECK_TEST_USER=jsmith ./client/linux/healthcheck.sh
 ```
 
-Reports pass/fail for DNS SRV records, A records, Kerberos ticket, SSSD/autofs status, user lookup, DC port connectivity, and NTP sync.
+Reports pass/fail for DNS SRV records, A records, Kerberos ticket, SSSD/autofs status, user lookup, DC port connectivity (88/53/389), NFS port connectivity (2049 on `NFS_HOST`, which defaults to `DC_HOST`), and NTP sync. Non-zero exit when any HARD check fails, suitable for cron/monitoring integration.
 
 ### User Session (`client/linux/user-session.sh`)
 
@@ -394,10 +403,15 @@ The test environment uses domain `samba.test` (RFC 2606 reserved TLD) on the def
 | Users | create, list, show, disable, enable, set-password, delete |
 | Groups | create, add-members, list-members, show, remove-members, delete |
 | Shares | directory creation, NFS export deployment, export verification |
-| NFS Permissions | POSIX-based read/write access via group membership |
-| Client | getent user lookup, getent group lookup, autofs NFS mounts |
+| NFS Permissions | POSIX-based read/write access via Kerberos+NFS from the client (group resolution via SSSD secondary groups) |
+| Autofs Maps | `samba-automount.sh` list/add-share/delete-share against AD-stored maps |
+| Autofs Mounts | client triggers `auto.shares` and `auto.home` via Kerberos NFS, verifies actual mount |
+| Password Policy | `password-policy show` |
+| SSH Keys | add/list/remove via `samba-user.sh`, retrieval from client via `sss_ssh_authorizedkeys` |
+| Sudo Rules | create/list/show/modify/delete; verify enforcement on client via SSSD |
+| Client | getent user/group lookup, autofs NFS mounts (shares + homes) |
 
-All tests clean up after themselves (users, groups, and shares are deleted at the end).
+All tests clean up after themselves (users, groups, shares, sudo rules, and autofs entries are removed at the end). The test harness supports both `colocated` (DC serves NFS) and `separate` (dedicated storage VM) modes via `TEST_MODE=separate ./test/setup.sh`.
 
 ## Configuration Reference
 
@@ -416,6 +430,9 @@ All tests clean up after themselves (users, groups, and shares are deleted at th
 | `DEFAULT_GROUP` | `Domain Users` | Default group for new users |
 | `LOG_FILE` | `/var/log/samba-management.log` | Log file path |
 | `AUTOMOUNT_BASE` | `/mnt/shares` | Autofs mount base on clients |
+| `NFS_SEC` | `krb5p` | Kerberos NFS flavour used by `samba-automount.sh add-share` |
+| `NFS_SERVER` | DC FQDN | Default NFS host baked into autofs entries (set to `samba_nfs_server` when split) |
+| `NFS_HOMES_SERVER` | DC FQDN | Host where `/home/<user>` lives; used by `samba-user.sh` (SSHs there for create/archive when remote) |
 | `DNS_FORWARDER` | `8.8.8.8` | Upstream DNS for SAMBA_INTERNAL |
 | `NTP_SERVERS` | `0-3.pool.ntp.org` | NTP pool (Kerberos requires time sync) |
 | `TLS_ENABLED` | `false` | Enable TLS for LDAP |
@@ -429,9 +446,16 @@ Key variables in role defaults (overridden by `group_vars/`):
 | `sssd_homedir_mode` | `mounted` | sssd-client | `mounted` = NFS autofs at `/home/ad/<user>`, `local` = pam_mkhomedir at `/home/<user>` |
 | `sssd_mounted_homedir_base` | `/home/ad` | sssd-client | Where remote homedirs mount (mounted mode) |
 | `sssd_nfs_sec` | `krb5p` | sssd-client | NFS Kerberos security flavour |
+| `sssd_enable_ssh` | `true` | sssd-client | Configure `sss_ssh_authorizedkeys` for AD-stored SSH keys |
+| `sssd_enable_sudo` | `true` | sssd-client | Configure SSSD sudo provider + nsswitch routing |
+| `sssd_enable_autofs` | `true` | sssd-client | Pull autofs maps from AD via SSSD (no per-client map files) |
 | `samba_nfs_sec` | `krb5p` | samba-dc | NFS Kerberos security flavour (server side) |
-| `samba_password_complexity` | `on` | samba-dc | Password complexity requirement |
-| `samba_password_min_length` | `7` | samba-dc | Minimum password length |
+| `samba_nfs_server` | `""` | samba-dc | If set, NFS exports live on this host; DC only seeds autofs maps in AD |
+| `samba_nfs_homes_server` | `""` | samba-dc | Override host for `/home` exports; falls back to `samba_nfs_server`, then the DC |
+| `samba_enable_autofs_seed` | `true` | samba-dc | Seed `OU=automount` with `auto.master`/`auto.shares`/`auto.home` on provisioning |
+| `samba_enable_sudo_schema` | `true` | samba-dc | Apply the sudo LDAP schema extension (required for `bin/samba-sudorule.sh`) |
+| `samba_password_complexity` | `off` | samba-dc | Password complexity requirement |
+| `samba_password_min_length` | `14` | samba-dc | Minimum password length (capped at 14 by `samba-tool`) |
 
 ## Important Notes
 

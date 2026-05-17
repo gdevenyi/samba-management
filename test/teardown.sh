@@ -1,6 +1,8 @@
 #!/usr/bin/env bash
 # teardown.sh - Destroy the test VMs and clean up generated files.
 set -euo pipefail
+# shellcheck disable=SC2154  # 's' is assigned at trap-firing time
+trap 's=$?; echo >&2 "$0: Error on line "$LINENO": $BASH_COMMAND"; exit $s' ERR
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 CONFIG_FILE="${SCRIPT_DIR}/test-config.env"

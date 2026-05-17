@@ -5,6 +5,7 @@
 # Samba config backup/reload helpers, and global CLI flag parsing.
 # Sourced by all bin/* scripts -- not intended to be run directly.
 set -euo pipefail
+trap 's=$?; echo >&2 "$0: Error on line "$LINENO": $BASH_COMMAND"; exit $s' ERR
 
 # --- ANSI color codes for console output ---
 RED='\033[0;31m'
@@ -14,7 +15,9 @@ BLUE='\033[0;34m'
 NC='\033[0m'
 
 # --- Determine project root from this file's location ---
-# BASH_SOURCE[0] resolves symlinks and works when sourced, unlike $0
+# BASH_SOURCE[0] points at the file we are sourced from, unlike $0 which
+# would name the caller.  lib/common.sh is never symlinked (the symlinks
+# in /usr/local/sbin/ point at bin/* scripts), so plain dirname suffices.
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 # shellcheck disable=SC2034
 BASE_DIR="$(cd "${SCRIPT_DIR}/.." && pwd)"
@@ -145,11 +148,14 @@ validate_ldif_value() {
     esac
 }
 
-# Invalidate winbind's user/group/membership caches.  Group membership
-# changes via samba-tool are persisted in the LDB immediately but winbind
-# serves NSS from a cached view; without a flush, local `id` / `getent` /
-# NFS-server group checks return stale data until the cache TTL expires.
-# Best-effort: ignored on hosts without winbind.
+# Invalidate Samba's gencache.tdb (legacy name: "winbind cache").  Group
+# membership changes via samba-tool are persisted in the LDB immediately,
+# but `net cache flush` drops any locally cached lookups so a follow-up
+# `id` / `getent` / NFS access check sees the new state.
+# Note: on a DC that uses SSSD for NSS (the default since the sssd.yml
+# task file was added), `sss_cache -E` would also be required for full
+# correctness; callers can run it explicitly if they need that guarantee.
+# Best-effort: ignored on hosts without the `net` tool.
 flush_winbind_cache() {
     net cache flush 2>/dev/null || true
 }

@@ -5,6 +5,8 @@
 # OU=automount.  Clients with SSSD's autofs service enabled consume these
 # without any per-client map files.  Must run on the DC as root.
 set -euo pipefail
+# shellcheck disable=SC2154  # 's' is assigned at trap-firing time
+trap 's=$?; echo >&2 "$0: Error on line "$LINENO": $BASH_COMMAND"; exit $s' ERR
 
 SCRIPT_DIR="$(cd "$(dirname "$(readlink -f "${BASH_SOURCE[0]}")")" && pwd)"
 # shellcheck source=../lib/common.sh

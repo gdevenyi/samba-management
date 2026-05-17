@@ -4,6 +4,8 @@
 # Wraps `samba-tool group` subcommands with validation, dry-run, and
 # recursive member listing.  Must run on the DC as root.
 set -euo pipefail
+# shellcheck disable=SC2154  # 's' is assigned at trap-firing time
+trap 's=$?; echo >&2 "$0: Error on line "$LINENO": $BASH_COMMAND"; exit $s' ERR
 
 SCRIPT_DIR="$(cd "$(dirname "$(readlink -f "${BASH_SOURCE[0]}")")" && pwd)"
 # shellcheck source=../lib/common.sh
@@ -173,7 +175,8 @@ cmd_add_members() {
         exit 3
     fi
 
-    # Split the CSV string into a bash array; xargs trims whitespace.
+    # Split the CSV string into a bash array; trim_ws strips surrounding
+    # whitespace per element (xargs would be unsafe with quoted values).
     IFS=',' read -ra member_array <<< "$members"
     for member in "${member_array[@]}"; do
         member="$(trim_ws "$member")"

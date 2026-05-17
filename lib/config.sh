@@ -8,6 +8,9 @@
 # SECURITY NOTE: the config file may contain the Kerberos realm and other
 # site-specific values but NOT passwords.  Passwords are always prompted
 # interactively to avoid credential leakage via the process environment.
+set -euo pipefail
+# shellcheck disable=SC2154  # 's' is assigned at trap-firing time
+trap 's=$?; echo >&2 "$0: Error on line "$LINENO": $BASH_COMMAND"; exit $s' ERR
 
 CONFIG_FILE="${CONFIG_FILE:-${BASE_DIR}/config/samba-mgmt.conf}"
 
@@ -44,7 +47,8 @@ else
     AUTOMOUNT_BASE="${AUTOMOUNT_BASE:-/mnt/shares}"
 fi
 
-# Export everything so child processes (e.g. subshells in command substitution)
-# and the bin/* scripts can all see the configuration.
+# Export the fallback defaults so the bin/* scripts and any child processes
+# see them.  The file-parsing path above already exports each key as it is
+# read; this is the backstop for the no-config-file branch.
 export REALM DOMAIN NETBIOS DC_HOSTNAME SAMBA_CONF SHARE_BASE HOME_BASE
 export DEFAULT_SHELL LOG_FILE DEFAULT_GROUP AUTOMOUNT_BASE

@@ -50,50 +50,61 @@ For integration testing, see `test/` below.
 
 ## Test Environment (`test/`)
 
-A libvirt-based integration test that creates two Ubuntu 24.04 VMs (DC + client), provisions them with Ansible, and exercises the management scripts end-to-end.
+A libvirt-based integration test that creates Ubuntu 24.04 VMs, provisions them with Ansible, and exercises the management scripts end-to-end. Two modes:
 
-**Prerequisites**: libvirt, virsh, virt-install, cloud-image-utils, ~12GB disk, ~4GB RAM.
+- **`colocated`** (default): 2 VMs — DC also serves NFS.
+- **`separate`** (`TEST_MODE=separate`): 3 VMs — DC, dedicated storage server, client.
+
+**Prerequisites**: libvirt, virsh, virt-install, cloud-image-utils, ~12GB disk, ~4-6GB RAM.
 
 ```bash
-sudo ./test/setup.sh       # Download cloud image, create VMs, wait for SSH
-     ./test/provision.sh   # Run Ansible playbooks against the VMs
-     ./test/run-tests.sh   # Exercise bin/* scripts, verify client resolution
-sudo ./test/teardown.sh    # Destroy VMs, clean up
+sudo                      ./test/setup.sh       # Download image, create VMs, wait for SSH
+sudo TEST_MODE=separate   ./test/setup.sh       # Same, with a separate storage VM
+                          ./test/provision.sh   # Run Ansible playbooks against the VMs
+                          ./test/run-tests.sh   # Exercise bin/* scripts, verify client resolution
+sudo                      ./test/teardown.sh    # Destroy VMs, clean up
 ```
 
-The test uses domain `samba.test` (RFC 2606 reserved TLD). A random admin password is generated and stored in `test/test-config.env` (mode 0600). Ansible inventory and group_vars are auto-generated from it. The base cloud image is cached at `/var/lib/libvirt/images/ubuntu-noble-base.qcow2` across runs.
+The test uses domain `samba.test` (RFC 2606 reserved TLD). A random admin password (guaranteed to cover all four character classes so `samba-tool domain provision`'s built-in complexity check passes regardless of the final policy) is generated and stored in `test/test-config.env` (mode 0600, chowned back to the invoking user). Ansible inventory and group_vars are auto-generated from it. The base cloud image is cached at `/var/lib/libvirt/images/ubuntu-noble-base.qcow2` across runs.
 
 There is no lint, typecheck, or CI pipeline. Always run `bash -n` and YAML validation after edits.
 
 ## Architecture Notes
 
 - **Two separate worlds**: Ansible is for one-time provisioning only. Bash scripts are for ongoing operations. Do not blur these boundaries.
-- **`bin/*` scripts source `lib/common.sh` then `lib/config.sh`** in that order. `common.sh` provides logging, validation, dry-run, and Samba helpers. `config.sh` reads `config/samba-mgmt.conf` into exported variables (using `export` so child processes see them). Values may be quoted (`KEY="value with spaces"`) — quotes are stripped during parsing.
+- **`bin/*` scripts source `lib/common.sh` then `lib/config.sh`** in that order. `common.sh` provides logging, validation, dry-run, Samba/winbind cache helpers, LDIF utilities (`user_dn`, `ldif_unfold`, `validate_ldif_value`), and the `home_op` wrapper that runs home-directory commands locally or via SSH to `NFS_HOMES_SERVER`. `config.sh` reads `config/samba-mgmt.conf` into exported variables. Values may be quoted (`KEY="value with spaces"`) — quotes are stripped during parsing.
 - **`client/linux/*` scripts are standalone** — they define their own logging because they run on client machines without access to `lib/`.
-- **`sssd-client` role embeds autofs logic inline** for on-demand NFSv4 share and home directory mounting.
-- **`nfs-server` role** provisions dedicated NFS storage servers. Hosts in the `nfs_servers` inventory group (a child of `domain_members`) get NFS server packages, Kerberos principals, export directories, and idmapd configuration. This is used when the `samba_nfs_server` variable is set to point to a separate server rather than the DC.
+- **DC also runs SSSD as a client** (see `samba-dc/tasks/sssd.yml` + `templates/sssd.conf.j2`). Samba's built-in winbind does not return AD secondary-group memberships through `getgrouplist()`, which breaks NFS server-side POSIX access checks; SSSD with `id_provider=ad` provides the full membership list. `nsswitch.conf` on the DC is `files sss` (no winbind).
+- **rpc.mountd uses `--manage-gids`**, set via a systemd drop-in (`/etc/systemd/system/nfs-mountd.service.d/manage-gids.conf`), because Ubuntu's packaged unit ignores the `[mountd] manage-gids` key in `/etc/nfs.conf`. Without this, NFS access checks rely on the client-supplied group list (max 16 GIDs) instead of the server-resolved one.
+- **`sssd-client` role pulls autofs maps from AD** (`autofs_provider = ad`, `automount: sss files` in nsswitch). The role creates the mount-base directories but writes no per-client map files; maps live in AD under `OU=automount` and are seeded by the `samba-dc` role's `autofs_seed.yml`.
+- **`nfs-server` role** provisions dedicated NFS storage servers. Hosts in the `nfs_servers` inventory group (a child of `domain_members`) get NFS server packages, the `nfs/<fqdn>` SPN added to the host's machine account on the DC (`samba-tool spn add`, then `exportkeytab`/`ktutil` merge), export directories, idmapd config, and the DC's root SSH pubkey in `authorized_keys` for cross-host home directory management.
 - **Inventory groups**: `domain_members` is a parent group containing `nfs_servers` and `linux_clients`. Shared SSSD join credentials go in `group_vars/domain_members.yml`. The DC is not a member of `domain_members`.
 - **Home directory modes**: `sssd_homedir_mode` controls where AD users get homedirs. `"mounted"` (default) uses autofs NFS mounts at `/home/ad/<user>`. `"local"` uses `pam_mkhomedir` at `/home/<user>`. These are mutually exclusive — `pam_mkhomedir` is disabled when using mounted mode.
 - **Share management** is done via Ansible at provisioning time: `samba_shares` in group_vars defines shares. When NFS is colocated on the DC (`samba_nfs_server` not set or empty), the `samba-dc` role creates directories and exports. When a separate NFS server is used (`samba_nfs_server` set to a host in `nfs_servers`), the `nfs-server` role handles share directories under `/data` and per-share NFS export files in `/etc/exports.d/`. Access control is via POSIX permissions on the directory in both cases.
+- **Home directory NFS server can differ from share NFS server**: `samba_nfs_homes_server` overrides where `/home` is exported; falls back to `samba_nfs_server`, then the DC. `samba-user.sh` consults `NFS_HOMES_SERVER` in `samba-mgmt.conf` to decide whether home directory `mkdir`/`tar` runs locally or SSHes to the remote storage host as root (key generated during DC provisioning, installed on the storage host by the `nfs-server` role).
 
 ## NFSv4 Server Setup
 
-- NFS can run either **colocated on the DC** or on a **separate NFS server**. Set `samba_nfs_server` to the NFS server's hostname to use a dedicated server (must be in the `nfs_servers` inventory group). When unset, NFS runs on the DC as before. Shares are exported via NFSv4 with `sec=krb5p` (Kerberos authentication + integrity + encryption).
-- **NFS Kerberos principal**: `nfs/<fqdn>` SPN is added to the machine account of the NFS host and exported to `/etc/krb5.keytab` during provisioning. On the DC this is done by the `nfs.yml` task file in the `samba-dc` role. On a separate NFS server this is done by the `nfs-server` role via `adcli update`.
+- NFS can run either **colocated on the DC** or on a **separate NFS server**. Set `samba_nfs_server` to the NFS server's hostname to use a dedicated server (must be in the `nfs_servers` inventory group). When unset, NFS runs on the DC. Optionally split user homes off to a different host with `samba_nfs_homes_server` (falls back to `samba_nfs_server`, then to the DC). Shares are exported via NFSv4 with `sec=krb5p` (Kerberos authentication + integrity + encryption).
+- **NFS Kerberos principal**: `nfs/<fqdn>` SPN is added to the machine account of the NFS host and exported to `/etc/krb5.keytab` during provisioning. On the DC this is done by the `nfs.yml` task file in the `samba-dc` role. On a separate NFS server the `nfs-server` role registers the SPN on the DC via `samba-tool spn add` (delegate_to dc), `exportkeytab` to a temp file, fetches it via Ansible, copies it to the storage host, and merges it into `/etc/krb5.keytab` with `ktutil`. `adcli update --add-service=nfs` is intentionally not used because it produces a bare `nfs@REALM` entry rather than the host-based `nfs/<fqdn>` SPN that rpc.svcgssd / the kernel GSS layer require.
 - **Export files**: Each share gets `/etc/exports.d/<name>.exports`. Home directories get `/etc/exports.d/homes.exports`. The NFS server reads all `*.exports` files in addition to `/etc/exports`.
-- **idmapd.conf** must be deployed on both DC and clients with matching `Domain = <realm>` for consistent UID/GID mapping.
+- **idmapd.conf** must be deployed on both NFS server and clients with matching `Domain = <realm>` for consistent UID/GID mapping. Both `samba-dc` and `nfs-server` roles ship `idmapd.conf.j2`; `sssd-client` deploys a matching one.
+- **`nfs-common` is a generated systemd unit**, not the packaged one. On Ubuntu 24.04 the role removes `/usr/lib/systemd/system/nfs-common.service` (which masks the service) and writes a real oneshot unit in `/etc/systemd/system/`. `rpc-svcgssd` is tolerated as missing because some distros merge it into `nfs-server.service`.
 - **NEED_GSSD=yes** must be set in `/etc/default/nfs-common` on the NFS server (whether DC or separate) for Kerberos NFS to function.
 - **Port 2049** (NFS) must be accessible from clients in addition to the standard AD ports (88 Kerberos, 53 DNS, 389 LDAP).
-- **Client mount syntax**: `mount -t nfs4 -o sec=krb5p <nfs_host>:/data/<share> /mnt/shares/<share>` where `<nfs_host>` is the DC or the dedicated NFS server. Autofs handles this automatically.
+- **Client mount syntax**: `mount -t nfs4 -o sec=krb5p <nfs_host>:/data/<share> /mnt/shares/<share>` where `<nfs_host>` is the DC or the dedicated NFS server. Autofs handles this automatically via the AD-stored `auto.shares` map; `/home/ad/<user>` is similarly autofs-mounted via `auto.home`'s wildcard entry that expands `&` to the requested username.
 
 ## Samba AD DC Gotchas
 
 - **On a DC, `samba-ad-dc` replaces `smbd`/`nmbd`/`winbind`**. These services must be masked, not just stopped. The `reload_samba()` function in `lib/common.sh` detects which service is running.
-- **krb5.conf must be copied, never symlinked** — `/var/lib/samba/private/` is root-only readable since Samba 4.7.
-- **`/etc/hosts` must resolve FQDN to LAN IP, not 127.0.0.1** — Kerberos breaks otherwise.
-- **NTP requires `ntpsigndsocket /var/lib/samba/ntp_signd`** for AD-aware time signing.
+- **krb5.conf must be copied, never symlinked** — `/var/lib/samba/private/` is root-only readable since Samba 4.7. The role copies `/var/lib/samba/private/krb5.conf` to `/etc/krb5.conf` after `samba-tool domain provision` runs.
+- **`/etc/hosts` must resolve FQDN to LAN IP, not 127.0.0.1** — Kerberos breaks otherwise. The `samba-dc` role asserts this in `assertions.yml`.
+- **Time sync via systemd-timesyncd**, not chrony/ntpd. The role disables `systemd-resolved` (so the Samba DNS backend can bind to 127.0.0.1:53) and configures `systemd-timesyncd` against `samba_ntp_servers`. The historical `ntpsigndsocket` setup for AD-aware time signing is not used.
 - **`samba-tool` creates Samba/AD users, not local Linux users.** Do not confuse with `useradd`.
-- **Share permissions are POSIX-based** (chown/chmod). NFS exports use `sec=krb5p` for authentication but access control is determined by file system permissions on the NFS host (DC or separate server).
+- **`samba-tool domain passwordsettings` caps `--min-pwd-length` at 14** (the underlying AD attribute is a uint8 with a hardcoded ceiling). Going higher requires editing the policy via LDAP directly. The defaults in `samba-dc/defaults/main.yml` use 14.
+- **Share permissions are POSIX-based** (chown/chmod). NFS exports use `sec=krb5p` for authentication but access control is determined by file system permissions on the NFS host (DC or separate server). For group-writable share dirs use `chmod 2770` so new files inherit the group via the setgid bit.
+- **`/var/lib/samba/private/sam.ldb` is the source of truth** for AD objects. All `ldbsearch`/`ldbadd`/`ldbmodify`/`ldbdel` calls in `bin/*` use this path explicitly so they work even when Samba's `ldb_modules_path` is unusual.
+- **Provisioning idempotency** uses both `_samba_domain_provisioned` marker file (under `samba_statedir`) and `sam.ldb` presence — the marker alone could be stale if `/var/lib/samba` was wiped.
 
 ## SSH Key Management
 
@@ -114,18 +125,24 @@ There is no lint, typecheck, or CI pipeline. Always run `bash -n` and YAML valid
 
 ## Bash Script Conventions
 
-- All scripts: `set -euo pipefail`, `require_root`, subcommand dispatch via `case`
-- **Password handling**: pipe via stdin (`printf '%s' "$password" | samba-tool ... --newpassword-file=-`) to avoid `/proc/*/cmdline` exposure. Never pass passwords as CLI args.
+- All scripts: `set -euo pipefail`, `require_root`, subcommand dispatch via `case`.
+- **ERR trap on every script** prints `"$0: Error on line <N>: <command>"` to stderr before exiting with the original status. Carries a `# shellcheck disable=SC2154` annotation because `s=$?` is set at trap-firing time, not at parse time. `lib/common.sh` installs the trap for all sourcing scripts; the standalone `client/linux/*.sh` and `test/*.sh` declare it themselves.
+- **Password handling**: pipe via stdin (`printf '%s\n%s\n' "$password" "$password" | samba-tool user setpassword "$user"`) — `setpassword` prompts twice when stdin isn't a tty. Use `--random-password` on `samba-tool user create` then set the real password via the same stdin idiom. Never pass passwords as CLI args (avoids `/proc/*/cmdline` exposure).
+- **LDIF injection guards**: validate every user-controlled value through `validate_ldif_value` before interpolating it into a here-doc. Rejects LF/CR, leading space/`<`/`:`. Map/share/rule names are further constrained by per-script regex validators (`validate_mapname`, `validate_share_name`, `validate_sudo_rulename`).
+- **DN resolution**: use `user_dn "$username"` (in `lib/common.sh`) rather than hard-coding `CN=...,CN=Users,...`. Users may live in non-default OUs and the helper does an `ldbsearch` by `sAMAccountName`.
+- **Cross-host home directory ops**: route through `home_op <cmd...>` instead of running `mkdir`/`tar`/`chown` directly. The helper falls through to local execution when `NFS_HOMES_SERVER` is empty or self, and SSHes (BatchMode=yes, ConnectTimeout=5) otherwise.
+- **Winbind cache flush**: call `flush_winbind_cache` after any `samba-tool group {add,remove}members` so local NSS/NFS lookups see the change immediately. Best-effort (`net cache flush 2>/dev/null || true`).
 - **Command construction**: use bash arrays (`local -a cmd=(...)`) and `"${cmd[@]}"` execution. Never use `eval` with user input.
-- **Global flags**: `--force` (skip confirms), `--dry-run` (preview only), `--debug` (verbose output)
+- **Global flags**: `--force` (skip confirms), `--dry-run` (preview only), `--debug` (verbose output). Stripped by `parse_global_args` before subcommand dispatch.
 
 ## Ansible Conventions
 
 - FQCN for all modules: `ansible.builtin.apt`, `ansible.builtin.systemd`, etc.
-- **`ansible.windows` collection is required** for `provision-windows.yml`. It is declared in `requirements.yml` at the repo root. Install with `ansible-galaxy collection install -r requirements.yml`.
-- **Idempotency gates**: DC provisioning checks `sam.ldb` existence. Client join checks `realm list` output.
-- **Password quoting**: use `{{ var | quote }}` filter with `ansible.builtin.command`. Never use `ansible.builtin.shell` with interpolated passwords.
-- **`no_log: true`** on every task that touches passwords.
+- **`ansible.windows` collection is required** for `provision-windows.yml`. It is declared in `requirements.yml` at the repo root. Install with `ansible-galaxy collection install -r requirements.yml`. `win_domain_membership` was removed in `ansible.windows` v3.0; `provision-windows.yml` carries a `# noqa: syntax-check[specific]` and a note pointing at `microsoft.ad.membership` as the replacement.
+- **Idempotency gates**: DC provisioning checks the `_samba_domain_provisioned` marker AND `sam.ldb`. Client join checks `realm list` output. Sudo schema is gated by a `.sudo_schema_applied` marker plus a live `ldbsearch` for `cn=sudoRole` in the schema.
+- **Password handling**: feed via `stdin:` on `ansible.builtin.command` (e.g., `kinit`, `realm join`) or `environment.PASSWD:` (e.g., `samba-tool dns`). Never use `ansible.builtin.shell` with interpolated passwords. Add `no_log: true` to every task that touches passwords.
+- **Schema modifications require samba-ad-dc to be stopped** — see `sudo_schema.yml`. Stop the service, apply `attrs` then `class` LDIFs with `--option="dsdb:schema update allowed"=true`, restart, wait for `samba-tool testparm` to succeed, then verify and create the marker file. A `rescue:` block guarantees the service is restarted on failure.
+- **`changed_when: true` is the norm** for `ansible.builtin.command` tasks that intentionally produce side effects but don't have a registered output to inspect.
 
 ## Commit Style
 

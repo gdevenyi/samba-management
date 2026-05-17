@@ -9,6 +9,8 @@
 #   1. Audit-logs the session start.
 #   2. Ensures the autofs base directory exists (no-op except for root).
 set -euo pipefail
+# shellcheck disable=SC2154  # 's' is assigned at trap-firing time
+trap 's=$?; echo >&2 "$0: Error on line "$LINENO": $BASH_COMMAND"; exit $s' ERR
 
 # Log session start to syslog for audit trail.
 logger -t "samba-session" "User session started: $(whoami) at $(date)"

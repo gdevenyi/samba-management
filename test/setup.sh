@@ -12,6 +12,8 @@
 # Requires libvirt group membership (usermod -aG libvirt $USER).
 # Usage: sudo [TEST_MODE=separate] ./test/setup.sh
 set -euo pipefail
+# shellcheck disable=SC2154  # 's' is assigned at trap-firing time
+trap 's=$?; echo >&2 "$0: Error on line "$LINENO": $BASH_COMMAND"; exit $s' ERR
 
 # Use a dedicated test key (passwordless ed25519, generated on first run).
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"

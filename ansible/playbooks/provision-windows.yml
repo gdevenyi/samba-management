@@ -1,8 +1,9 @@
 # provision-windows.yml - Ansible playbook to join Windows clients to the AD domain.
 #
 # Configures DNS to point to the Samba DC, joins the domain using
-# win_domain_membership, and reboots if required.  Requires WinRM
-# connectivity and the ansible.windows collection.
+# microsoft.ad.membership, and lets the module handle the post-join reboot.
+# Requires WinRM connectivity, the ansible.windows collection (for
+# win_dns_client) and the microsoft.ad collection (for membership).
 ---
 - name: Provision Windows client in AD domain
   hosts: windows_clients
@@ -16,19 +17,15 @@
         dns_servers:
           - "{{ windows_dc_ip }}"
 
-    # Join the domain.  The module handles computer account creation in AD
-    # and returns reboot_required when the join succeeds.
-    # NOTE: ansible.windows.win_domain_membership was removed in v3.0.0.
-    # Replace with microsoft.ad.membership if the collection is available.
+    # Join the domain.  microsoft.ad.membership replaces
+    # ansible.windows.win_domain_membership (removed in ansible.windows
+    # v3.0).  reboot: true tells the module to handle the post-join reboot
+    # itself, which Windows requires for the join to take effect; no
+    # separate win_reboot task needed.
     - name: Join the domain
-      ansible.windows.win_domain_membership: # noqa: syntax-check[specific]
+      microsoft.ad.membership:
         dns_domain_name: "{{ windows_domain }}"
         domain_admin_user: "{{ windows_admin_user }}"
         domain_admin_password: "{{ windows_admin_password }}"
         state: domain
-      register: domain_result
-
-    # A reboot is mandatory for the domain join to take effect on Windows.
-    - name: Reboot after domain join
-      ansible.windows.win_reboot:
-      when: domain_result.reboot_required
+        reboot: true

@@ -1,4 +1,8 @@
 ---
 collections:
+  # ansible.windows: win_dns_client / win_reboot.  microsoft.ad: membership
+  # (since win_domain_membership was removed from ansible.windows in v3.0).
   - name: ansible.windows
     version: ">=2.0.0"
+  - name: microsoft.ad
+    version: ">=1.0.0"

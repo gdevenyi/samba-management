@@ -1,0 +1,24 @@
+# ssh-sudo.yml - SSH AuthorizedKeysCommand and sudoers NSS routing.
+---
+- name: Configure sshd for SSSD key lookup
+  when: sssd_enable_ssh | bool
+  block:
+    - name: Deploy sshd_config AuthorizedKeysCommand snippet
+      ansible.builtin.copy:
+        dest: /etc/ssh/sshd_config.d/sssd.conf
+        mode: "0644"
+        content: |
+          AuthorizedKeysCommand /usr/bin/sss_ssh_authorizedkeys
+          AuthorizedKeysCommandUser root
+      notify: Restart sshd
+
+- name: Configure sudo via SSSD
+  when: sssd_enable_sudo | bool
+  block:
+    - name: Configure nsswitch.conf for SSSD sudo
+      ansible.builtin.lineinfile:
+        path: /etc/nsswitch.conf
+        regexp: '^sudoers:'
+        line: "sudoers: files sss"
+        create: true
+        mode: "0644"

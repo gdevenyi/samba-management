@@ -1,0 +1,56 @@
+# dns-register.yml - Register this storage host's A record in the Samba DC's DNS.
+#
+# `realm join` via SSSD/adcli creates the AD computer object but does NOT
+# register a DNS A record for the host (that's a Windows-specific behaviour
+# of the MS join client).  Without an A record, the DC can't `ssh storage01`
+# to manage home directories, and clients can't mount autofs entries that
+# reference the storage host by short name.
+#
+# Idempotent: `samba-tool dns query` succeeds when the record exists and
+# returns non-zero (with "Record does not exist") when it doesn't.
+---
+# `samba-tool dns query/add` defaults to interactive Kerberos auth -- on the
+# DC running as root we don't have a TGT, so without -U Administrator + the
+# PASSWD env var the command sits waiting for a password forever.  Same
+# pattern as the reverse-DNS tasks in the samba-dc role.
+- name: Check if storage host A record already exists in Samba DNS
+  ansible.builtin.command:
+    argv:
+      - samba-tool
+      - dns
+      - query
+      - "{{ groups['dc'][0] }}"
+      - "{{ sssd_domain }}"
+      - "{{ ansible_hostname }}"
+      - A
+      - "-U"
+      - Administrator
+  environment:
+    PASSWD: "{{ sssd_admin_password }}"
+  register: _nfs_dns_check
+  changed_when: false
+  failed_when: false
+  delegate_to: "{{ groups['dc'][0] }}"
+  become: true
+  no_log: true
+
+- name: Register storage host A record in Samba DNS
+  ansible.builtin.command:
+    argv:
+      - samba-tool
+      - dns
+      - add
+      - "{{ groups['dc'][0] }}"
+      - "{{ sssd_domain }}"
+      - "{{ ansible_hostname }}"
+      - A
+      - "{{ ansible_default_ipv4.address }}"
+      - "-U"
+      - Administrator
+  environment:
+    PASSWD: "{{ sssd_admin_password }}"
+  delegate_to: "{{ groups['dc'][0] }}"
+  become: true
+  when: _nfs_dns_check.rc != 0
+  changed_when: true
+  no_log: true

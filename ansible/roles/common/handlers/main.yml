@@ -1,0 +1,42 @@
+# common/handlers/main.yml - Handlers shared by samba-dc, sssd-client, and nfs-server.
+#
+# Loaded into every play that uses one of those roles via the
+# `dependencies: [common]` entry in each role's meta/main.yml.
+# Role-specific handlers (Reload samba-ad-dc, Restart autofs, Restart sshd,
+# Clean Samba runtime files, etc.) remain in the role they belong to.
+---
+- name: Reload systemd
+  ansible.builtin.systemd:
+    daemon_reload: true
+
+- name: Restart sssd
+  ansible.builtin.systemd:
+    name: sssd
+    state: restarted
+
+- name: Reload NFS exports
+  ansible.builtin.command: exportfs -ra
+  changed_when: true
+
+- name: Restart nfs-idmapd
+  ansible.builtin.systemd:
+    name: nfs-idmapd
+    state: restarted
+
+- name: Restart rpc-gssd
+  ansible.builtin.systemd:
+    name: rpc-gssd
+    state: restarted
+
+- name: Restart nfs-mountd
+  ansible.builtin.systemd:
+    name: nfs-mountd
+    state: restarted
+
+# rpc-svcgssd is absent on some distros (e.g. Ubuntu 24.04 ships it merged
+# into nfs-server.service).  Tolerate a missing unit rather than aborting.
+- name: Restart rpc-svcgssd
+  ansible.builtin.systemd:
+    name: rpc-svcgssd
+    state: restarted
+  failed_when: false

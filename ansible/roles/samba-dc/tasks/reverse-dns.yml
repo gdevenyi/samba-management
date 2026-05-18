@@ -1,0 +1,53 @@
+# reverse-dns.yml - Create the in-addr.arpa zone and add a PTR for the DC.
+#
+# First-run only: gated on _samba_just_provisioned so we don't churn the
+# zone every play.  Both samba-tool calls accept that the zone may already
+# exist; failed_when: false swallows the "already exists" error.
+---
+- name: Compute reverse DNS zone name
+  ansible.builtin.set_fact:
+    _rev_octets: "{{ ansible_default_ipv4.address.split('.') }}"
+  when: _samba_just_provisioned | default(false)
+
+- name: Set reverse zone
+  ansible.builtin.set_fact:
+    _reverse_zone: "{{ _rev_octets[2] }}.{{ _rev_octets[1] }}.{{ _rev_octets[0] }}.in-addr.arpa"
+  when: _samba_just_provisioned | default(false)
+
+- name: Create reverse DNS zone
+  ansible.builtin.command:
+    argv:
+      - samba-tool
+      - dns
+      - zonecreate
+      - "{{ ansible_hostname }}.{{ samba_realm | lower }}"
+      - "{{ _reverse_zone }}"
+      - "-U"
+      - Administrator
+  # Pass the password via env var so it never appears in /proc/<pid>/cmdline.
+  environment:
+    PASSWD: "{{ samba_admin_password }}"
+  when: _samba_just_provisioned | default(false)
+  failed_when: false
+  changed_when: true
+  no_log: true
+
+- name: Add PTR record for DC
+  ansible.builtin.command:
+    argv:
+      - samba-tool
+      - dns
+      - add
+      - "{{ ansible_hostname }}.{{ samba_realm | lower }}"
+      - "{{ _reverse_zone }}"
+      - "{{ ansible_default_ipv4.address.split('.')[3] }}"
+      - PTR
+      - "{{ ansible_fqdn }}"
+      - "-U"
+      - Administrator
+  environment:
+    PASSWD: "{{ samba_admin_password }}"
+  when: _samba_just_provisioned | default(false)
+  failed_when: false
+  changed_when: true
+  no_log: true

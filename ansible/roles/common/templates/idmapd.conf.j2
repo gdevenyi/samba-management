@@ -1,0 +1,14 @@
+{# idmapd.conf.j2 - NFSv4 ID mapping configuration shared by all NFS hosts. #}
+{# #}
+{# Maps between NFSv4 string names (user@domain) and local UIDs/GIDs. #}
+{# The domain MUST match between every server and every client; mismatched #}
+{# domains cause file ownership to appear as `nobody:nogroup` to clients. #}
+{# #}
+{# Callers (each role's deploy task) pass `samba_idmap_domain` via vars:. #}
+[General]
+Verbosity = 0
+Domain = {{ samba_idmap_domain }}
+
+[Mapping]
+Nobody-User = nobody
+Nobody-Group = nogroup

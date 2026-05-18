@@ -101,34 +101,20 @@ validate_share_name() {
     fi
 }
 
-_automount_base_dn() {
-    echo "${AUTOMOUNT_OU},$(realm_to_dn "$REALM")"
-}
-
 _map_dn() {
-    local mapname="$1"
-    echo "CN=${mapname},$(_automount_base_dn)"
+    ad_dn "$AUTOMOUNT_OU" "$1"
 }
 
 _entry_dn() {
-    local mapname="$1"
-    local key="$2"
-    echo "CN=${key},$(_map_dn "$mapname")"
+    ad_dn "$AUTOMOUNT_OU" "$1" "$2"
 }
 
 _map_exists() {
-    local mapname="$1"
-    local dn
-    dn=$(_map_dn "$mapname")
-    ldbsearch -H /var/lib/samba/private/sam.ldb -b "$dn" -s base dn 2>/dev/null | grep -q '^dn:' 2>/dev/null
+    ad_dn_exists "$(_map_dn "$1")"
 }
 
 _entry_exists() {
-    local mapname="$1"
-    local key="$2"
-    local dn
-    dn=$(_entry_dn "$mapname" "$key")
-    ldbsearch -H /var/lib/samba/private/sam.ldb -b "$dn" -s base dn 2>/dev/null | grep -q '^dn:' 2>/dev/null
+    ad_dn_exists "$(_entry_dn "$1" "$2")"
 }
 
 _map_has_children() {
@@ -165,14 +151,9 @@ objectClass: nisMap
 cn: ${mapname}
 nisMapName: ${mapname}
 "
-    local rc=0
-    printf '%s' "$ldif" | ldbadd -H /var/lib/samba/private/sam.ldb 2>/dev/null || rc=$?
-    if [[ $rc -eq 0 ]]; then
-        log_info "Map '${mapname}' created"
-    else
-        log_error "Failed to create map '${mapname}'"
-        exit 1
-    fi
+    printf '%s' "$ldif" | ldb_exec add \
+        "Map '${mapname}' created" \
+        "Failed to create map '${mapname}'"
 }
 
 cmd_delete_map() {
@@ -217,20 +198,15 @@ cmd_delete_map() {
 }
 
 cmd_add_entry() {
-    local mapname="" key="" value=""
-
-    mapname="$1"; shift
-    key="$1"; shift
+    local mapname="$1"; shift
+    local key="$1"; shift
 
     validate_mapname "$mapname" || exit 2
     validate_entry_key "$key" || exit 2
 
-    while [[ $# -gt 0 ]]; do
-        case "$1" in
-            --value=*) value="${1#*=}"; shift ;;
-            *) log_error "Unknown option: $1"; exit 2 ;;
-        esac
-    done
+    local -A opts
+    parse_kv_args opts "--value" "$@"
+    local value="${opts[--value]:-}"
 
     if [[ -z "$value" ]]; then
         log_error "Must specify --value"
@@ -262,14 +238,9 @@ cn: ${key}
 nisMapName: ${mapname}
 nisMapEntry: ${value}
 "
-    local rc=0
-    printf '%s' "$ldif" | ldbadd -H /var/lib/samba/private/sam.ldb 2>/dev/null || rc=$?
-    if [[ $rc -eq 0 ]]; then
-        log_info "Entry '${key}' added to map '${mapname}'"
-    else
-        log_error "Failed to add entry '${key}' to map '${mapname}'"
-        exit 1
-    fi
+    printf '%s' "$ldif" | ldb_exec add \
+        "Entry '${key}' added to map '${mapname}'" \
+        "Failed to add entry '${key}' to map '${mapname}'"
 }
 
 cmd_delete_entry() {
@@ -295,31 +266,21 @@ cmd_delete_entry() {
     local ldif="dn: ${dn}
 changetype: delete
 "
-    local rc=0
-    printf '%s' "$ldif" | ldbmodify -H /var/lib/samba/private/sam.ldb 2>/dev/null || rc=$?
-    if [[ $rc -eq 0 ]]; then
-        log_info "Entry '${key}' deleted from map '${mapname}'"
-    else
-        log_error "Failed to delete entry '${key}' from map '${mapname}'"
-        exit 1
-    fi
+    printf '%s' "$ldif" | ldb_exec modify \
+        "Entry '${key}' deleted from map '${mapname}'" \
+        "Failed to delete entry '${key}' from map '${mapname}'"
 }
 
 cmd_modify() {
-    local mapname="" key="" value=""
-
-    mapname="$1"; shift
-    key="$1"; shift
+    local mapname="$1"; shift
+    local key="$1"; shift
 
     validate_mapname "$mapname" || exit 2
     validate_entry_key "$key" || exit 2
 
-    while [[ $# -gt 0 ]]; do
-        case "$1" in
-            --value=*) value="${1#*=}"; shift ;;
-            *) log_error "Unknown option: $1"; exit 2 ;;
-        esac
-    done
+    local -A opts
+    parse_kv_args opts "--value" "$@"
+    local value="${opts[--value]:-}"
 
     if [[ -z "$value" ]]; then
         log_error "Must specify --value"
@@ -345,21 +306,16 @@ replace: nisMapEntry
 nisMapEntry: ${value}
 -
 "
-    local rc=0
-    printf '%s' "$ldif" | ldbmodify -H /var/lib/samba/private/sam.ldb 2>/dev/null || rc=$?
-    if [[ $rc -eq 0 ]]; then
-        log_info "Entry '${key}' in map '${mapname}' updated"
-    else
-        log_error "Failed to update entry '${key}' in map '${mapname}'"
-        exit 1
-    fi
+    printf '%s' "$ldif" | ldb_exec modify \
+        "Entry '${key}' in map '${mapname}' updated" \
+        "Failed to update entry '${key}' in map '${mapname}'"
 }
 
 cmd_list() {
     if [[ $# -eq 0 ]]; then
         # List all maps under the OU
         local base_dn
-        base_dn=$(_automount_base_dn)
+        base_dn=$(ad_dn "$AUTOMOUNT_OU")
         ldbsearch -H /var/lib/samba/private/sam.ldb \
             -b "$base_dn" -s one "(objectClass=nisMap)" cn 2>/dev/null \
             | ldif_unfold \
@@ -404,48 +360,21 @@ cmd_show() {
     ldbsearch -H /var/lib/samba/private/sam.ldb \
         -b "$dn" -s base 2>/dev/null \
         | ldif_unfold \
-        | grep -v '^#' \
-        | grep -v '^$' \
-        | grep -v '^objectClass:' \
-        | grep -v '^instanceType:' \
-        | grep -v '^whenCreated:' \
-        | grep -v '^whenChanged:' \
-        | grep -v '^uSNCreated:' \
-        | grep -v '^uSNChanged:' \
-        | grep -v '^objectGUID:' \
-        | grep -v '^name:' \
-        | grep -v '^objectCategory:' \
-        | grep -v '^distinguishedName:' \
-        | grep -v '^showInAdvancedViewOnly:'
+        | ldif_show_filter
 }
 
 cmd_add_share() {
-    local name=""
-    local server=""
-    local path=""
-    local sec="$DEFAULT_NFS_SEC"
-
-    name="$1"; shift
+    local name="$1"; shift
 
     validate_share_name "$name" || exit 2
 
-    while [[ $# -gt 0 ]]; do
-        case "$1" in
-            --server=*) server="${1#*=}"; shift ;;
-            --path=*) path="${1#*=}"; shift ;;
-            --sec=*) sec="${1#*=}"; shift ;;
-            *) log_error "Unknown option: $1"; exit 2 ;;
-        esac
-    done
-
-    if [[ -z "$server" ]]; then
-        # Default to NFS_SERVER from the config (DC's FQDN in colocated mode,
-        # the dedicated storage host when samba_nfs_server is set).
-        server="$DEFAULT_NFS_SERVER"
-    fi
-    if [[ -z "$path" ]]; then
-        path="${SHARE_BASE:-/data}/${name}"
-    fi
+    local -A opts
+    parse_kv_args opts "--server --path --sec" "$@"
+    # Defaults: NFS_SERVER from config (DC FQDN colocated, dedicated host
+    # when samba_nfs_server is set); SHARE_BASE/<name> for path; krb5p sec.
+    local server="${opts[--server]:-$DEFAULT_NFS_SERVER}"
+    local path="${opts[--path]:-${SHARE_BASE:-/data}/${name}}"
+    local sec="${opts[--sec]:-$DEFAULT_NFS_SEC}"
 
     case "$sec" in
         krb5|krb5i|krb5p) ;;

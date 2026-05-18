@@ -1,0 +1,56 @@
+# nfs-common-unit.yml - Ubuntu 24.04 NFS-client baseline shared by every NFS host.
+#
+# Ubuntu 24.04 ships /usr/lib/systemd/system/nfs-common.service as a symlink
+# to /dev/null (a package-level mask), so `systemctl start nfs-common` is a
+# no-op.  Replace it with a real oneshot unit so dependent services
+# (rpc-gssd, autofs) actually have something to pull in.
+#
+# Also enables NEED_GSSD=yes for Kerberos NFS, and starts rpc-gssd which
+# every consumer (DC, storage host, client) needs.  Roles that need
+# additional NFS services (nfs-common, nfs-idmapd, nfs-server, rpc-svcgssd)
+# start those themselves after including this file.
+---
+- name: Enable GSSD for Kerberos NFS
+  ansible.builtin.lineinfile:
+    path: /etc/default/nfs-common
+    regexp: "^NEED_GSSD="
+    line: "NEED_GSSD=yes"
+    create: true
+    mode: "0644"
+
+- name: Remove package-level mask symlink for nfs-common (Ubuntu 24.04)
+  ansible.builtin.file:
+    path: /usr/lib/systemd/system/nfs-common.service
+    state: absent
+  when: >-
+    ansible_facts['distribution'] == "Ubuntu" and
+    ansible_facts['distribution_major_version'] == "24"
+
+- name: Create real nfs-common service unit
+  ansible.builtin.copy:
+    dest: /etc/systemd/system/nfs-common.service
+    mode: "0644"
+    content: |
+      [Unit]
+      Description=NFS Common daemons and services
+      DefaultDependencies=no
+      After=local-fs.target network.target
+      Wants=nfs-client.target
+
+      [Service]
+      Type=oneshot
+      RemainAfterExit=yes
+      ExecStart=/bin/true
+
+      [Install]
+      WantedBy=multi-user.target
+  notify: Reload systemd
+
+- name: Flush handlers so daemon-reload runs before we start the unit
+  ansible.builtin.meta: flush_handlers
+
+- name: Enable and start rpc-gssd (Kerberos NFS)
+  ansible.builtin.systemd:
+    name: rpc-gssd
+    enabled: true
+    state: started

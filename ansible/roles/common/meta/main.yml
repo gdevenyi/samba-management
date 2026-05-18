@@ -1,0 +1,10 @@
+---
+galaxy_info:
+  author: samba-management contributors
+  description: >-
+    Shared templates, on-demand task files, and handlers for the
+    samba-dc, sssd-client, and nfs-server roles.
+  license: MIT
+  min_ansible_version: "2.14"
+
+dependencies: []

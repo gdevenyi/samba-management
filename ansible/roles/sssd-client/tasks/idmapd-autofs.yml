@@ -1,0 +1,61 @@
+# idmapd-autofs.yml - NFSv4 ID mapping and SSSD-brokered autofs maps.
+---
+# idmapd's Domain= must match the DC's idmapd.conf for consistent NFSv4
+# UID/GID name mapping.
+- name: Deploy idmapd.conf
+  ansible.builtin.template:
+    src: "{{ role_path }}/../common/templates/idmapd.conf.j2"
+    dest: /etc/idmapd.conf
+    mode: "0644"
+  vars:
+    samba_idmap_domain: "{{ sssd_domain }}"
+  notify: Restart autofs
+
+- name: Set up shared NFS-common baseline (NEED_GSSD, unit workaround, rpc-gssd)
+  ansible.builtin.include_tasks: "{{ role_path }}/../common/tasks/nfs-common-unit.yml"
+
+# Maps are stored in AD under OU=automount and consumed by SSSD's autofs
+# service; no per-client map files are written.  We only set up the
+# mount-base directories, the NSS routing, and start the service.
+- name: Configure autofs
+  when: sssd_configure_autofs
+  block:
+    - name: Create autofs mount base for shares
+      ansible.builtin.file:
+        path: "{{ sssd_autofs_base }}"
+        state: directory
+        mode: "0755"
+
+    - name: Create autofs mount base for home directories
+      ansible.builtin.file:
+        path: "{{ sssd_mounted_homedir_base }}"
+        state: directory
+        mode: "0755"
+      when: sssd_homedir_mode == 'mounted'
+
+    # NSS routing: with sssd_enable_autofs on, look up maps via SSSD first
+    # (it brokers the AD-stored maps); 'files' kept as fallback so any
+    # locally dropped /etc/auto.* still resolves.
+    - name: Configure nsswitch.conf for SSSD autofs
+      ansible.builtin.lineinfile:
+        path: /etc/nsswitch.conf
+        regexp: '^automount:'
+        line: "automount: {{ 'sss files' if sssd_enable_autofs | bool else 'files' }}"
+        create: true
+        mode: "0644"
+      notify: Restart autofs
+
+    # One-shot cleanup of files written by previous (file-based) versions
+    # of this role.  Only runs when SSSD autofs is enabled, because the
+    # legacy maps should be kept as fallback when sssd_enable_autofs is false.
+    - name: Remove legacy static autofs map files
+      ansible.builtin.file:
+        path: "{{ item }}"
+        state: absent
+      loop:
+        - /etc/auto.master.d/shares.autofs
+        - /etc/auto.master.d/home.autofs
+        - /etc/auto.shares
+        - /etc/auto.home
+      when: sssd_enable_autofs | bool
+      notify: Restart autofs

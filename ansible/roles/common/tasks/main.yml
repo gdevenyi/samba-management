@@ -1,0 +1,8 @@
+# common/tasks/main.yml - Intentionally empty.
+#
+# This role exists to host shared templates, on-demand tasks, and handlers
+# that the samba-dc, sssd-client, and nfs-server roles share.  When listed
+# as a `dependency` in another role's meta/main.yml the handlers in
+# common/handlers/main.yml become listenable from the consuming role
+# without any task execution here.
+---

@@ -55,23 +55,20 @@ EOF
 # Group creation
 # ---------------------------------------------------------------------------
 cmd_add() {
-    local groupname=""
-    local description=""
-    local gid=""
-    local ou=""
-
-    groupname="$1"; shift
+    local groupname="$1"; shift
 
     validate_groupname "$groupname"
 
-    while [[ $# -gt 0 ]]; do
-        case "$1" in
-            --description=*) description="${1#*=}"; shift ;;
-            --gid=*) gid="${1#*=}"; shift ;;
-            --ou=*) ou="${1#*=}"; shift ;;
-            *) log_error "Unknown option: $1"; exit 2 ;;
-        esac
-    done
+    local -A opts
+    parse_kv_args opts "--description --gid --ou" "$@"
+    local description="${opts[--description]:-}"
+    local gid="${opts[--gid]:-}"
+    local ou="${opts[--ou]:-}"
+
+    if [[ -n "$gid" && ! "$gid" =~ ^[0-9]+$ ]]; then
+        log_error "Invalid --gid value: must be a non-negative integer"
+        exit 2
+    fi
 
     if group_exists "$groupname"; then
         log_error "Group '${groupname}' already exists"
@@ -129,13 +126,9 @@ cmd_delete() {
 # Listing / inspection
 # ---------------------------------------------------------------------------
 cmd_list() {
-    local pattern=""
-    while [[ $# -gt 0 ]]; do
-        case "$1" in
-            --pattern=*) pattern="${1#*=}"; shift ;;
-            *) log_error "Unknown option: $1"; exit 2 ;;
-        esac
-    done
+    local -A opts
+    parse_kv_args opts "--pattern" "$@"
+    local pattern="${opts[--pattern]:-}"
 
     if [[ -n "$pattern" ]]; then
         # -F: treat pattern as fixed substring (not regex) -- matches user intent.
@@ -211,14 +204,24 @@ cmd_remove_members() {
         exit 3
     fi
 
+    IFS=',' read -ra member_array <<< "$members"
+    local -a trimmed=()
+    for member in "${member_array[@]}"; do
+        trimmed+=("$(trim_ws "$member")")
+    done
+
+    # Preview before prompting: in dry-run we want the user to see every
+    # planned removal before the confirmation, not after, so they can decide.
+    if [[ "${DRY_RUN:-0}" == "1" ]]; then
+        for member in "${trimmed[@]}"; do
+            dry_run "Would remove '${member}' from '${groupname}'"
+        done
+        return
+    fi
+
     confirm_action "Remove members from '${groupname}'?" || exit 0
 
-    IFS=',' read -ra member_array <<< "$members"
-    for member in "${member_array[@]}"; do
-        member="$(trim_ws "$member")"
-        if dry_run "Would remove '${member}' from '${groupname}'"; then
-            continue
-        fi
+    for member in "${trimmed[@]}"; do
         if samba-tool group removemembers "$groupname" "$member"; then
             log_info "Removed '${member}' from '${groupname}'"
         else
@@ -234,17 +237,11 @@ cmd_remove_members() {
 # Note: this is a simple one-level recursion, not a full transitive crawl.
 # ---------------------------------------------------------------------------
 cmd_list_members() {
-    local groupname=""
-    local recursive=0
+    local groupname="$1"; shift
 
-    groupname="$1"; shift
-
-    while [[ $# -gt 0 ]]; do
-        case "$1" in
-            --recursive) recursive=1; shift ;;
-            *) log_error "Unknown option: $1"; exit 2 ;;
-        esac
-    done
+    local -A opts
+    parse_kv_args opts "--recursive" "$@"
+    local recursive="${opts[--recursive]:-0}"
 
     if ! group_exists "$groupname"; then
         log_error "Group '${groupname}' not found"

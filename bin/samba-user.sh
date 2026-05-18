@@ -79,38 +79,100 @@ EOF
 # ---------------------------------------------------------------------------
 # User creation
 # ---------------------------------------------------------------------------
-cmd_add() {
-    local username=""
-    local given_name=""
-    local surname=""
-    local email=""
-    local password=""
-    local must_change_pw=0
-    local shell="${DEFAULT_SHELL}"
-    local group=""
-    local ssh_key=""
+# Create the AD user object with the supplied attributes.  Uses
+# --random-password on `samba-tool user create` so the real password never
+# appears on the command line; the caller sets the real password separately
+# via _set_user_password.
+_create_user_object() {
+    local username="$1" given_name="$2" surname="$3" email="$4" shell="$5" must_change_pw="$6"
+    local -a cmd=(samba-tool user create "$username" --random-password)
+    [[ -n "$given_name" ]] && cmd+=(--given-name="$given_name")
+    [[ -n "$surname" ]] && cmd+=(--surname="$surname")
+    [[ -n "$email" ]] && cmd+=(--mail-address="$email")
+    [[ -n "$shell" ]] && cmd+=(--login-shell="$shell")
+    [[ "$must_change_pw" -eq 1 ]] && cmd+=(--must-change-at-next-login)
 
-    username="$1"; shift
+    log_info "Creating user '${username}'..."
+    if ! "${cmd[@]}"; then
+        log_error "Failed to create user '${username}'"
+        exit 1
+    fi
+}
+
+# Set a user's password via stdin so it never appears in /proc/<pid>/cmdline.
+# samba-tool setpassword prompts twice (New + Retype) when stdin isn't a tty,
+# so feed the value twice.
+_set_user_password() {
+    local username="$1" password="$2"
+    if ! printf '%s\n%s\n' "$password" "$password" \
+        | samba-tool user setpassword "$username" &>/dev/null; then
+        log_error "Failed to set password for '${username}' (user was created)"
+        exit 1
+    fi
+}
+
+# Create the user's network home directory.  Runs locally when NFS is
+# colocated; SSHes to NFS_HOMES_SERVER as root in separate mode (the
+# samba-dc role provisions the trust keypair).  Skipped when the directory
+# already exists.  Failures here surface a clear error message rather than
+# the ERR trap's opaque line number, since the AD account has already been
+# created at this point.
+_provision_home_dir() {
+    local username="$1"
+    local home_dir="${HOME_BASE}/${username}"
+    if home_op test -d "$home_dir"; then
+        return
+    fi
+    if ! home_op mkdir -p "$home_dir" \
+        || ! home_op chmod 0770 "$home_dir" \
+        || ! home_op chown "root:${DEFAULT_GROUP}" "$home_dir"; then
+        log_error "Failed to provision home directory ${NFS_HOMES_SERVER:-localhost}:${home_dir} (user was created)"
+        exit 1
+    fi
+    log_info "Created home directory: ${NFS_HOMES_SERVER:-localhost}:${home_dir}"
+}
+
+# Add a freshly-created user to an AD group.  Group existence is the
+# caller's responsibility (pre-validated in cmd_add); a failure here means
+# the user was created but membership wasn't applied, so we exit non-zero.
+_add_user_to_group() {
+    local username="$1" group="$2"
+    log_info "Adding '${username}' to group '${group}'..."
+    if ! samba-tool group addmembers "$group" "$username"; then
+        log_error "Failed to add '${username}' to group '${group}' (user was created)"
+        exit 1
+    fi
+    flush_winbind_cache
+}
+
+cmd_add() {
+    local username="$1"; shift
 
     validate_username "$username"
 
-    while [[ $# -gt 0 ]]; do
-        case "$1" in
-            --given-name=*) given_name="${1#*=}"; shift ;;
-            --surname=*) surname="${1#*=}"; shift ;;
-            --email=*) email="${1#*=}"; shift ;;
-            --password=*) password="${1#*=}"; shift ;;
-            --must-change-pw) must_change_pw=1; shift ;;
-            --shell=*) shell="${1#*=}"; shift ;;
-            --group=*) group="${1#*=}"; shift ;;
-            --ssh-key=*) ssh_key="${1#*=}"; shift ;;
-            *) log_error "Unknown option: $1"; exit 2 ;;
-        esac
-    done
+    local -A opts
+    parse_kv_args opts \
+        "--given-name --surname --email --password --must-change-pw --shell --group --ssh-key" \
+        "$@"
+    local given_name="${opts[--given-name]:-}"
+    local surname="${opts[--surname]:-}"
+    local email="${opts[--email]:-}"
+    local password="${opts[--password]:-}"
+    local must_change_pw="${opts[--must-change-pw]:-0}"
+    local shell="${opts[--shell]:-$DEFAULT_SHELL}"
+    local group="${opts[--group]:-}"
+    local ssh_key="${opts[--ssh-key]:-}"
 
     if user_exists "$username"; then
         log_error "User '${username}' already exists"
         exit 1
+    fi
+
+    # Validate optional group up front so we don't half-create the user
+    # (create + setpassword + homedir) before discovering a bad --group value.
+    if [[ -n "$group" ]] && ! group_exists "$group"; then
+        log_error "Group '${group}' not found"
+        exit 3
     fi
 
     # Prompt interactively when --password was not supplied on the CLI.
@@ -120,56 +182,19 @@ cmd_add() {
         echo
     fi
 
-    # Build the samba-tool command dynamically, appending only the flags
-    # the caller actually provided.  --random-password lets us avoid placing
-    # the real password on the command line; the real password is then set
-    # via setpassword with stdin (see below) so it stays out of /proc/cmdline.
-    local -a cmd=(samba-tool user create "$username" --random-password)
-    [[ -n "$given_name" ]] && cmd+=(--given-name="$given_name")
-    [[ -n "$surname" ]] && cmd+=(--surname="$surname")
-    [[ -n "$email" ]] && cmd+=(--mail-address="$email")
-    [[ -n "$shell" ]] && cmd+=(--login-shell="$shell")
-    [[ "$must_change_pw" -eq 1 ]] && cmd+=(--must-change-at-next-login)
-
     if dry_run "Would create user: ${username}"; then
         return
     fi
 
-    log_info "Creating user '${username}'..."
-    if ! "${cmd[@]}"; then
-        log_error "Failed to create user '${username}'"
-        exit 1
-    fi
-
-    # Set the real password via stdin to keep it out of /proc/<pid>/cmdline.
-    # samba-tool setpassword prompts twice (New + Retype) when stdin isn't a
-    # tty, so feed the password twice.
-    if ! printf '%s\n%s\n' "$password" "$password" \
-        | samba-tool user setpassword "$username" &>/dev/null; then
-        log_error "Failed to set password for '${username}' (user was created)"
-        exit 1
-    fi
+    _create_user_object "$username" "$given_name" "$surname" "$email" "$shell" "$must_change_pw"
+    _set_user_password "$username" "$password"
     log_info "User '${username}' created successfully"
-
-    # Provision the network home directory on the NFS homes server.  When
-    # the DC also serves NFS (colocated), home_op runs locally; in
-    # separate mode it SSHes to NFS_HOMES_SERVER as root using the keypair
-    # the samba-dc role generates at provision time.
-    local home_dir="${HOME_BASE}/${username}"
-    if ! home_op test -d "$home_dir"; then
-        home_op mkdir -p "$home_dir"
-        home_op chmod 0770 "$home_dir"
-        home_op chown "root:${DEFAULT_GROUP}" "$home_dir"
-        log_info "Created home directory: ${NFS_HOMES_SERVER:-localhost}:${home_dir}"
-    fi
-
-    # Optionally add the user to an AD group immediately after creation.
+    _provision_home_dir "$username"
+    # `[[ -n "$x" ]] && _helper` trips `set -e` when the test is false, since
+    # it makes the function return non-zero; use explicit if/then instead.
     if [[ -n "$group" ]]; then
-        log_info "Adding '${username}' to group '${group}'..."
-        samba-tool group addmembers "$group" "$username" || log_warn "Failed to add to group '${group}'"
-        flush_winbind_cache
+        _add_user_to_group "$username" "$group"
     fi
-
     if [[ -n "$ssh_key" ]]; then
         _add_sshkey "$username" "$ssh_key"
     fi
@@ -179,17 +204,11 @@ cmd_add() {
 # User deletion
 # ---------------------------------------------------------------------------
 cmd_delete() {
-    local username=""
-    local archive_home=0
+    local username="$1"; shift
 
-    username="$1"; shift
-
-    while [[ $# -gt 0 ]]; do
-        case "$1" in
-            --archive-home) archive_home=1; shift ;;
-            *) log_error "Unknown option: $1"; exit 2 ;;
-        esac
-    done
+    local -A opts
+    parse_kv_args opts "--archive-home" "$@"
+    local archive_home="${opts[--archive-home]:-0}"
 
     if ! user_exists "$username"; then
         log_error "User '${username}' not found"
@@ -207,12 +226,16 @@ cmd_delete() {
 
     # Archive the home directory before deletion so data can be recovered
     # if the account was removed by mistake.  Runs on the NFS homes
-    # server (may be remote in separate mode).
+    # server (may be remote in separate mode).  If the archive fails we
+    # abort before deleting the AD account so no data is lost.
     if [[ "$archive_home" -eq 1 ]]; then
         local home_dir="${HOME_BASE}/${username}"
         if home_op test -d "$home_dir"; then
             local archive="${HOME_BASE}/${username}.tar.gz"
-            home_op tar -czf "$archive" -C "${HOME_BASE}" "$username"
+            if ! home_op tar -czf "$archive" -C "${HOME_BASE}" "$username"; then
+                log_error "Failed to archive ${NFS_HOMES_SERVER:-localhost}:${home_dir}; aborting before user deletion"
+                exit 1
+            fi
             log_info "Archived home directory to ${NFS_HOMES_SERVER:-localhost}:${archive}"
         fi
     fi
@@ -232,30 +255,20 @@ cmd_delete() {
 # because samba-tool user edit does not support arbitrary LDAP attributes.
 # ---------------------------------------------------------------------------
 cmd_modify() {
-    local username=""
-    local given_name=""
-    local surname=""
-    local email=""
-    local shell=""
-    local department=""
-
-    username="$1"; shift
+    local username="$1"; shift
 
     if ! user_exists "$username"; then
         log_error "User '${username}' not found"
         exit 3
     fi
 
-    while [[ $# -gt 0 ]]; do
-        case "$1" in
-            --given-name=*) given_name="${1#*=}"; shift ;;
-            --surname=*) surname="${1#*=}"; shift ;;
-            --email=*) email="${1#*=}"; shift ;;
-            --shell=*) shell="${1#*=}"; shift ;;
-            --department=*) department="${1#*=}"; shift ;;
-            *) log_error "Unknown option: $1"; exit 2 ;;
-        esac
-    done
+    local -A opts
+    parse_kv_args opts "--given-name --surname --email --shell --department" "$@"
+    local given_name="${opts[--given-name]:-}"
+    local surname="${opts[--surname]:-}"
+    local email="${opts[--email]:-}"
+    local shell="${opts[--shell]:-}"
+    local department="${opts[--department]:-}"
 
     dry_run "Would modify user: ${username}" && return
 
@@ -290,13 +303,9 @@ EOF
 # Listing / inspection
 # ---------------------------------------------------------------------------
 cmd_list() {
-    local pattern=""
-    while [[ $# -gt 0 ]]; do
-        case "$1" in
-            --pattern=*) pattern="${1#*=}"; shift ;;
-            *) log_error "Unknown option: $1"; exit 2 ;;
-        esac
-    done
+    local -A opts
+    parse_kv_args opts "--pattern" "$@"
+    local pattern="${opts[--pattern]:-}"
 
     if [[ -n "$pattern" ]]; then
         # -F: treat pattern as fixed substring (not regex) -- matches user intent.
@@ -348,22 +357,16 @@ cmd_disable() {
 # Password management
 # ---------------------------------------------------------------------------
 cmd_set_password() {
-    local username=""
-    local password=""
-
-    username="$1"; shift
+    local username="$1"; shift
 
     if ! user_exists "$username"; then
         log_error "User '${username}' not found"
         exit 3
     fi
 
-    while [[ $# -gt 0 ]]; do
-        case "$1" in
-            --password=*) password="${1#*=}"; shift ;;
-            *) log_error "Unknown option: $1"; exit 2 ;;
-        esac
-    done
+    local -A opts
+    parse_kv_args opts "--password" "$@"
+    local password="${opts[--password]:-}"
 
     if [[ -z "$password" ]]; then
         read -rsp "Enter new password for ${username}: " password
@@ -371,14 +374,7 @@ cmd_set_password() {
     fi
 
     dry_run "Would set password for: ${username}" && return
-    # Pipe password via stdin so it never appears in /proc/<pid>/cmdline.
-    # samba-tool setpassword prompts twice (New + Retype) when stdin isn't a
-    # tty, so feed the password twice.
-    if ! printf '%s\n%s\n' "$password" "$password" \
-        | samba-tool user setpassword "$username" &>/dev/null; then
-        log_error "Failed to set password for '${username}'"
-        exit 1
-    fi
+    _set_user_password "$username" "$password"
     log_info "Password set for '${username}'"
 }
 
@@ -390,22 +386,13 @@ cmd_password_policy_show() {
 }
 
 cmd_password_policy_set() {
-    local complexity=""
-    local min_length=""
-    local max_age=""
-    local min_age=""
-    local history=""
-
-    while [[ $# -gt 0 ]]; do
-        case "$1" in
-            --complexity=*) complexity="${1#*=}"; shift ;;
-            --min-length=*) min_length="${1#*=}"; shift ;;
-            --max-age=*) max_age="${1#*=}"; shift ;;
-            --min-age=*) min_age="${1#*=}"; shift ;;
-            --history=*) history="${1#*=}"; shift ;;
-            *) log_error "Unknown option: $1"; exit 2 ;;
-        esac
-    done
+    local -A opts
+    parse_kv_args opts "--complexity --min-length --max-age --min-age --history" "$@"
+    local complexity="${opts[--complexity]:-}"
+    local min_length="${opts[--min-length]:-}"
+    local max_age="${opts[--max-age]:-}"
+    local min_age="${opts[--min-age]:-}"
+    local history="${opts[--history]:-}"
 
     # Build command incrementally so only explicitly-set flags are included.
     local -a cmd=(samba-tool domain passwordsettings set)
@@ -483,24 +470,17 @@ EOF
 }
 
 cmd_add_sshkey() {
-    local username=""
-    local key=""
-    local key_file=""
-
-    username="$1"; shift
+    local username="$1"; shift
 
     if ! user_exists "$username"; then
         log_error "User '${username}' not found"
         exit 3
     fi
 
-    while [[ $# -gt 0 ]]; do
-        case "$1" in
-            --key=*) key="${1#*=}"; shift ;;
-            --key-file=*) key_file="${1#*=}"; shift ;;
-            *) log_error "Unknown option: $1"; exit 2 ;;
-        esac
-    done
+    local -A opts
+    parse_kv_args opts "--key --key-file" "$@"
+    local key="${opts[--key]:-}"
+    local key_file="${opts[--key-file]:-}"
 
     if [[ -n "$key_file" ]]; then
         if [[ ! -f "$key_file" ]]; then
@@ -522,22 +502,16 @@ cmd_add_sshkey() {
 }
 
 cmd_remove_sshkey() {
-    local username=""
-    local key=""
-
-    username="$1"; shift
+    local username="$1"; shift
 
     if ! user_exists "$username"; then
         log_error "User '${username}' not found"
         exit 3
     fi
 
-    while [[ $# -gt 0 ]]; do
-        case "$1" in
-            --key=*) key="${1#*=}"; shift ;;
-            *) log_error "Unknown option: $1"; exit 2 ;;
-        esac
-    done
+    local -A opts
+    parse_kv_args opts "--key" "$@"
+    local key="${opts[--key]:-}"
 
     if [[ -z "$key" ]]; then
         log_error "Must specify --key=PUBLIC_KEY"

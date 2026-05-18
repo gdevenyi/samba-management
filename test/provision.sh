@@ -11,15 +11,11 @@ trap 's=$?; echo >&2 "$0: Error on line "$LINENO": $BASH_COMMAND"; exit $s' ERR
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 ANSIBLE_DIR="${SCRIPT_DIR}/../ansible"
 
+# shellcheck source=lib.sh
+source "${SCRIPT_DIR}/lib.sh"
 # shellcheck source=test-config.env
 source "${SCRIPT_DIR}/test-config.env"
 export ANSIBLE_CONFIG="${SCRIPT_DIR}/ansible.cfg"
-
-RED='\033[0;31m'
-GREEN='\033[0;32m'
-NC='\033[0m'
-log_info() { printf "${GREEN}[INFO]${NC} %s\n" "$*"; }
-log_error() { printf "${RED}[ERROR]${NC} %s\n" "$*"; }
 
 INVENTORY=(-i "${SCRIPT_DIR}/inventory.yml")
 
@@ -47,7 +43,10 @@ ansible-playbook "${INVENTORY[@]}" "${ANSIBLE_DIR}/playbooks/provision-linux-sss
 
 echo ""
 log_info "=== Running Health Check ==="
-ansible-playbook "${INVENTORY[@]}" "${ANSIBLE_DIR}/playbooks/healthcheck.yml" || true
+# Health check is informational; surface failures loudly but don't abort the
+# script since the rest of provisioning has already succeeded by this point.
+ansible-playbook "${INVENTORY[@]}" "${ANSIBLE_DIR}/playbooks/healthcheck.yml" || \
+    log_error "Health check failed; provisioning completed but services may not be fully functional"
 
 echo ""
 log_info "=== Provisioning Complete ==="

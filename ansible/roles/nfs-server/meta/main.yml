@@ -1,0 +1,11 @@
+---
+galaxy_info:
+  author: samba-management contributors
+  description: Provision a domain-joined NFSv4+Kerberos storage server.
+  license: MIT
+  min_ansible_version: "2.14"
+
+# Pull in the shared handlers (Reload systemd, NFS service handlers) so
+# notify: works without duplicating them in this role.
+dependencies:
+  - role: common

@@ -5,17 +5,27 @@
 # provision-nfs-server playbook) so the machine has a valid AD computer
 # account and SSSD can resolve AD users and groups.
 ---
-# --- File system paths ---
-nfs_server_share_base: "/data"
-nfs_server_home_base: "/home"
+# --- File system paths (shared with samba-dc role; same defaults) ---
+samba_share_base: "/data"
+samba_home_base: "/home"
 
 # --- File shares ---
-# Each share creates a directory under nfs_server_share_base and an NFS
-# export file in /etc/exports.d/<name>.exports.  Access control is via
-# POSIX permissions on the directory.
+# Each share creates a directory under samba_share_base and an NFS export
+# file in /etc/exports.d/<name>.exports.  Access control is via POSIX
+# permissions on the directory.  Kept as nfs_server_shares (not samba_shares)
+# so a storage host can deliberately export a different share set from what
+# the DC seeds into AD autofs maps -- usually identical but the split lets
+# operators stage migrations or limit exposure.
 nfs_server_shares: []
 
-# --- NFS options ---
-nfs_server_nfs_sec: "krb5p"
-# Whether to export nfs_server_home_base via NFS for home directory mounts.
-nfs_server_export_homes: true
+# --- NFS options (shared with samba-dc role; same defaults) ---
+samba_nfs_sec: "krb5p"
+# Whether to export samba_home_base via NFS for home directory mounts.
+samba_nfs_export_homes: true
+
+# --- Verification ---
+# How long to wait for SSSD to resolve the 'domain users' group before
+# re-applying share ownership and continuing.  The default (10 retries x 3s)
+# tolerates first-boot SSSD startup latency on slower hosts.
+nfs_server_group_resolve_retries: 10
+nfs_server_group_resolve_delay: 3

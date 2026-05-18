@@ -1,0 +1,22 @@
+# join.yml - Discover and join the AD domain via realmd.
+---
+- name: Discover AD domain
+  ansible.builtin.command: "realm discover {{ sssd_domain }}"
+  register: realm_discover
+  changed_when: false
+
+- name: Check if already joined
+  ansible.builtin.command: "realm list"
+  register: realm_list
+  changed_when: false
+
+# realm join creates the computer object in AD and configures SSSD.
+# Password is fed via stdin so it never appears in /proc/<pid>/cmdline.
+# no_log: true also redacts the value from Ansible output.
+- name: Join the AD domain
+  ansible.builtin.command:
+    cmd: "realm join -v -U {{ sssd_admin_user }} {{ sssd_domain }}"
+    stdin: "{{ sssd_admin_password }}"
+  when: sssd_domain not in realm_list.stdout
+  changed_when: true
+  no_log: true

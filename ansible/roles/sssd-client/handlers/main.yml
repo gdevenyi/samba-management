@@ -1,14 +1,11 @@
-# sssd-client handlers - Service restart handlers triggered by config changes.
+# sssd-client handlers - Client-specific service handlers.
+#
+# Cross-role handlers (Reload systemd, Restart sssd, NFS service handlers)
+# live in the common role's handlers/main.yml and are loaded via the
+# meta/main.yml dependency.
 ---
-# SSSD must be restarted whenever sssd.conf changes.  The mode 0600
-# requirement on sssd.conf (set in the template task) is enforced by
-# SSSD itself; it will refuse to start with world-readable config.
-- name: Restart sssd
-  ansible.builtin.systemd:
-    name: sssd
-    state: restarted
-
-# Autofs must be restarted when map files change so it re-reads them.
+# Autofs must be restarted when map files or sssd.conf services change so
+# it re-reads them.
 - name: Restart autofs
   ansible.builtin.systemd:
     name: autofs
@@ -18,7 +15,3 @@
   ansible.builtin.systemd:
     name: ssh
     state: restarted
-
-- name: Reload systemd
-  ansible.builtin.systemd:
-    daemon_reload: true

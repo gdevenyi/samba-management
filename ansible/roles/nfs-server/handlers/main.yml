@@ -1,32 +1,10 @@
-# nfs-server handlers - Service restart handlers for NFS server config changes.
+# nfs-server handlers - NFS-server-specific service handlers (none).
+#
+# All NFS-server handlers (Reload NFS exports, Restart nfs-idmapd,
+# Restart rpc-gssd, Restart nfs-mountd, Restart rpc-svcgssd, Reload systemd)
+# now live in the common role's handlers/main.yml and are loaded via the
+# meta/main.yml dependency.  This file is kept as an explicit marker so
+# anyone adding nfs-server-specific handlers in the future knows where they
+# go.
 ---
-- name: Reload NFS exports
-  ansible.builtin.command: exportfs -ra
-  changed_when: true
-
-- name: Restart nfs-idmapd
-  ansible.builtin.systemd:
-    name: nfs-idmapd
-    state: restarted
-
-- name: Restart rpc-gssd
-  ansible.builtin.systemd:
-    name: rpc-gssd
-    state: restarted
-
-- name: Restart nfs-mountd
-  ansible.builtin.systemd:
-    name: nfs-mountd
-    state: restarted
-
-- name: Reload systemd
-  ansible.builtin.systemd:
-    daemon_reload: true
-
-# rpc-svcgssd is absent on some distros (e.g. Ubuntu 24.04 ships it merged
-# into nfs-server.service).  Tolerate a missing unit rather than aborting.
-- name: Restart rpc-svcgssd
-  ansible.builtin.systemd:
-    name: rpc-svcgssd
-    state: restarted
-  failed_when: false
+[]

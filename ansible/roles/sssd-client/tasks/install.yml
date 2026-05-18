@@ -1,0 +1,37 @@
+# install.yml - Package installation and DNS pointer for the domain.
+#
+# Packages:
+#   sssd-ad:    SSSD Active Directory provider
+#   realmd:     High-level domain join tool (wraps adcli/sssd)
+#   adcli:      Low-level AD join tool (creates computer object)
+#   libnss-sss/libpam-sss: NSS and PAM modules for identity resolution
+#   autofs/nfs-common: on-demand NFSv4 mounting with Kerberos auth
+#   libsss-sudo: SSSD plugin for AD-stored sudo rules
+---
+- name: Install SSSD and dependencies
+  ansible.builtin.apt:
+    name:
+      - sssd-ad
+      - sssd-tools
+      - realmd
+      - adcli
+      - krb5-user
+      - samba-common-bin
+      - libnss-sss
+      - libpam-sss
+      - autofs
+      - nfs-common
+      - libsss-sudo
+    state: present
+    update_cache: true
+  environment:
+    DEBIAN_FRONTEND: noninteractive
+
+# DNS must resolve the AD domain before realm discover/join can talk to the DC.
+- name: Set DNS server to DC for domain resolution
+  ansible.builtin.shell: >-
+    resolvectl dns {{ ansible_facts['default_ipv4']['interface'] }} {{ sssd_dc_ip | default(groups['dc'][0]) }}
+    && resolvectl domain {{ ansible_facts['default_ipv4']['interface'] }} {{ sssd_domain }}
+  args:
+    executable: /bin/bash
+  changed_when: true

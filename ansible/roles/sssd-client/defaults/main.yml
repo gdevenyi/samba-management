@@ -44,9 +44,9 @@ sssd_dc_hostname: "dc01"
 sssd_configure_autofs: true
 sssd_autofs_base: "/mnt/shares"
 
-# --- NFS mount options ---
+# --- NFS mount options (shared with samba-dc role; same defaults) ---
 # Kerberos security flavour: krb5 (auth), krb5i (auth+integrity), krb5p (full encryption)
-sssd_nfs_sec: "krb5p"
+samba_nfs_sec: "krb5p"
 
 sssd_enable_ssh: true
 
@@ -55,3 +55,12 @@ sssd_enable_sudo: true
 # Pull autofs maps from AD via SSSD's autofs service.  Requires the DC to
 # have been provisioned with samba_enable_autofs_seed: true (default).
 sssd_enable_autofs: true
+
+# --- Post-join verification retries ---
+# How long to wait for SSSD to start returning AD identities after a fresh
+# realm join.  The user lookup is the more aggressive of the two because it
+# usually has to talk to the DC; the group lookup typically follows quickly.
+sssd_user_resolve_retries: 5
+sssd_user_resolve_delay: 3
+sssd_group_resolve_retries: 3
+sssd_group_resolve_delay: 2

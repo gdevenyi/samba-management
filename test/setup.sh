@@ -51,14 +51,8 @@ TEST_DOMAIN="samba.test"
 TEST_REALM="SAMBA.TEST"
 GATEWAY="192.168.122.1"
 
-RED='\033[0;31m'
-GREEN='\033[0;32m'
-YELLOW='\033[1;33m'
-NC='\033[0m'
-log_info() { printf "${GREEN}[INFO]${NC} %s\n" "$*"; }
-log_warn() { printf "${YELLOW}[WARN]${NC} %s\n" "$*"; }
-log_error() { printf "${RED}[ERROR]${NC} %s\n" "$*"; }
-die() { log_error "$*"; exit 1; }
+# shellcheck source=lib.sh
+source "${SCRIPT_DIR}/lib.sh"
 
 # ---------------------------------------------------------------------------
 # Prerequisites
@@ -354,7 +348,7 @@ EOF
 nfs_server_shares:
   - name: public
     comment: "Public share for all domain users"
-nfs_server_export_homes: true
+samba_nfs_export_homes: true
 healthcheck_nfs_server: "storage01"
 EOF
     fi

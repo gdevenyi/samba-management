@@ -7,7 +7,7 @@
 # These values override role defaults in roles/nfs-server/defaults/main.yml.
 ---
 # Shares to provision on this storage server.  Each entry creates the
-# directory under nfs_server_share_base and an NFS export file in
+# directory under samba_share_base and an NFS export file in
 # /etc/exports.d/<name>.exports.  Access control is via POSIX permissions.
 # Uncomment and customize for your deployment:
 # nfs_server_shares:
@@ -17,4 +17,4 @@
 #     comment: "Engineering department share"
 
 # Whether to export /home via NFS for home directory mounts.
-nfs_server_export_homes: true
+samba_nfs_export_homes: true

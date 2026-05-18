@@ -16,16 +16,15 @@ CONFIG_FILE="${CONFIG_FILE:-${BASE_DIR}/config/samba-mgmt.conf}"
 
 if [[ -f "$CONFIG_FILE" ]]; then
     # Parse simple KEY=VALUE lines; skip comments and blank lines.
-    # Whitespace is trimmed with bash parameter expansion -- xargs is unsafe
-    # here because it interprets quotes and backticks in the value.
+    # trim_ws (from lib/common.sh, which is always sourced first by bin/*)
+    # uses bash parameter expansion -- xargs is unsafe here because it
+    # interprets quotes and backticks in the value.
     # `export` creates a global variable AND exports it so child processes
     # can see it (declare -g only creates a global, does not export).
     while IFS='=' read -r key value; do
-        key="${key#"${key%%[![:space:]]*}"}"
-        key="${key%"${key##*[![:space:]]}"}"
+        key="$(trim_ws "$key")"
         [[ -z "$key" || "$key" =~ ^# ]] && continue
-        value="${value#"${value%%[![:space:]]*}"}"
-        value="${value%"${value##*[![:space:]]}"}"
+        value="$(trim_ws "$value")"
         # Strip surrounding double quotes from values (allows
         # KEY="value with spaces" in the config file).
         value="${value#\"}"

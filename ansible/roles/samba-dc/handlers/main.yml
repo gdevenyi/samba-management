@@ -1,4 +1,8 @@
-# samba-dc handlers - Service restart handlers triggered by config changes.
+# samba-dc handlers - DC-specific service handlers.
+#
+# Cross-role handlers (Reload systemd, Restart sssd, Reload NFS exports,
+# Restart nfs-idmapd/rpc-gssd/nfs-mountd/rpc-svcgssd) live in the common
+# role's handlers/main.yml and are loaded via meta/main.yml dependency.
 ---
 - name: Reload samba-ad-dc
   ansible.builtin.systemd:
@@ -26,41 +30,8 @@
   changed_when: true
   listen: Clean Samba runtime files
 
-- name: Reload NFS exports
-  ansible.builtin.command: exportfs -ra
-  changed_when: true
-  listen: Reload NFS exports
-
 - name: Restart nfs-server
   ansible.builtin.systemd:
     name: nfs-server
     state: restarted
   listen: Restart nfs-server
-
-- name: Restart nfs-idmapd
-  ansible.builtin.systemd:
-    name: nfs-idmapd
-    state: restarted
-  listen: Restart nfs-idmapd
-
-- name: Restart rpc-gssd
-  ansible.builtin.systemd:
-    name: rpc-gssd
-    state: restarted
-  listen: Restart rpc-gssd
-
-- name: Restart nfs-mountd
-  ansible.builtin.systemd:
-    name: nfs-mountd
-    state: restarted
-  listen: Restart nfs-mountd
-
-- name: Restart sssd
-  ansible.builtin.systemd:
-    name: sssd
-    state: restarted
-  listen: Restart sssd
-
-- name: Reload systemd
-  ansible.builtin.systemd:
-    daemon_reload: true

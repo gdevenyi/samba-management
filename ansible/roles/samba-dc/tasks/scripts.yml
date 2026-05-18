@@ -1,0 +1,55 @@
+# scripts.yml - Deploy bin/lib management scripts and /usr/local/sbin symlinks.
+#
+# Scripts live under /opt/samba-management so the source tree on the DC is
+# self-contained; the symlinks in /usr/local/sbin let operators run them
+# without typing the full path.
+---
+- name: Deploy management scripts
+  block:
+    - name: Create management script directory
+      ansible.builtin.file:
+        path: /opt/samba-management
+        state: directory
+        mode: "0755"
+
+    - name: Deploy management bin scripts
+      ansible.builtin.copy:
+        src: "../../bin/"
+        dest: /opt/samba-management/bin/
+        mode: "0755"
+
+    - name: Deploy management lib scripts
+      ansible.builtin.copy:
+        src: "../../lib/"
+        dest: /opt/samba-management/lib/
+        mode: "0755"
+
+    - name: Deploy management config directory
+      ansible.builtin.file:
+        path: /opt/samba-management/config/
+        state: directory
+        owner: root
+        group: root
+        mode: "0700"
+
+    - name: Deploy management config from template
+      ansible.builtin.template:
+        src: config/samba-mgmt.conf.j2
+        dest: /opt/samba-management/config/samba-mgmt.conf
+        mode: "0600"
+
+    - name: Remove obsolete samba-share.sh symlink
+      ansible.builtin.file:
+        path: /usr/local/sbin/samba-share.sh
+        state: absent
+
+    - name: Create symlinks for management scripts
+      ansible.builtin.file:
+        src: "/opt/samba-management/bin/{{ item }}"
+        dest: "/usr/local/sbin/{{ item }}"
+        state: link
+      loop:
+        - samba-user.sh
+        - samba-group.sh
+        - samba-sudorule.sh
+        - samba-automount.sh

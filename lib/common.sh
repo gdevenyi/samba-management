@@ -200,6 +200,71 @@ realm_to_dn() {
     echo "$realm" | sed 's/\./,DC=/g; s/^/DC=/'
 }
 
+# Compose a DN under a base OU within the AD realm.  Replaces the
+# _sudo_base_dn / _rule_dn / _automount_base_dn / _map_dn / _entry_dn
+# helpers that each script used to define.
+#   $1   = base OU like "OU=SUDOers" or "OU=automount" (multi-level OUs OK)
+#   $2.. = CN components, outermost first; innermost ends up leftmost in
+#          the DN (LDAP convention).  Zero CNs returns just <base>,<realm>.
+# Examples:
+#   ad_dn "OU=SUDOers"                       -> OU=SUDOers,DC=example,DC=com
+#   ad_dn "OU=SUDOers" "myrule"              -> CN=myrule,OU=SUDOers,DC=...
+#   ad_dn "OU=automount" "auto.shares" "*"   -> CN=*,CN=auto.shares,OU=automount,DC=...
+ad_dn() {
+    local base_ou="$1"
+    shift
+    local prefix=""
+    local i
+    for ((i=$#; i>=1; i--)); do
+        prefix+="CN=${!i},"
+    done
+    printf '%s\n' "${prefix}${base_ou},$(realm_to_dn "$REALM")"
+}
+
+# Check whether an AD object exists at the given DN.
+ad_dn_exists() {
+    local dn="$1"
+    ldbsearch -H /var/lib/samba/private/sam.ldb -b "$dn" -s base dn 2>/dev/null \
+        | grep -q '^dn:' 2>/dev/null
+}
+
+# Parse --key=value arguments into a named associative array.  Boolean-style
+# flags (no `=`) are stored with value "1".  Unknown options cause exit 2.
+# Does NOT support repeated flags -- callers that need them (e.g. sudorule
+# add/modify with multiple --user= entries) must keep the inline case block.
+#
+#   $1   = name of an associative array the caller declared with `declare -A`
+#   $2   = space-separated list of allowed option keys
+#          (e.g. "--given-name --shell --must-change-pw")
+#   $3.. = the actual argument list to parse, typically "$@"
+#
+# Example:
+#   local -A opts
+#   parse_kv_args opts "--given-name --shell --must-change-pw" "$@"
+#   local given_name="${opts[--given-name]:-}"
+#   local shell="${opts[--shell]:-$DEFAULT_SHELL}"
+#   local must_change_pw="${opts[--must-change-pw]:-0}"
+parse_kv_args() {
+    # shellcheck disable=SC2178  # nameref to associative array (intentional)
+    local -n _result=$1
+    local allowed=" $2 "
+    shift 2
+    while [[ $# -gt 0 ]]; do
+        local arg="$1"
+        local key="${arg%%=*}"
+        if [[ "$allowed" != *" $key "* ]]; then
+            log_error "Unknown option: $arg"
+            exit 2
+        fi
+        if [[ "$arg" == *"="* ]]; then
+            _result["$key"]="${arg#*=}"
+        else
+            _result["$key"]=1
+        fi
+        shift
+    done
+}
+
 # Resolve a user's actual DN by sAMAccountName (handles users in any OU).
 user_dn() {
     local username="$1"
@@ -208,6 +273,44 @@ user_dn() {
         | ldif_unfold \
         | grep '^dn:' \
         | sed 's/^dn: //'
+}
+
+# Strip non-essential AD metadata from an LDIF stream (comments, blanks, and
+# the standard objectClass / GUID / timestamp attributes that every AD entry
+# carries).  Reads stdin, writes stdout.  Callers that also want to drop the
+# `dn:` line can pipe through `| grep -v '^dn:'` afterwards -- some show
+# commands want it (to identify the entry), others don't.
+ldif_show_filter() {
+    grep -v -e '^#' -e '^$' -e '^objectClass:' -e '^instanceType:' \
+            -e '^whenCreated:' -e '^whenChanged:' \
+            -e '^uSNCreated:' -e '^uSNChanged:' \
+            -e '^objectGUID:' -e '^name:' \
+            -e '^objectCategory:' -e '^distinguishedName:' \
+            -e '^showInAdvancedViewOnly:'
+}
+
+# Apply LDIF (read from this function's stdin) via ldbadd or ldbmodify and
+# report success or failure.  On failure, logs the error message and exits 1.
+# Replaces the rc=0; ldb* || rc=$?; if [[ $rc -eq 0 ]] pattern that was
+# duplicated across the sudorule and automount scripts.
+#   $1 = "add" | "modify" -- which ldb tool to invoke
+#   $2 = success message logged at info level
+#   $3 = failure message logged at error level (script then exits 1)
+# Caller invocation:  printf '%s' "$ldif" | ldb_exec add "OK" "FAIL"
+ldb_exec() {
+    local tool="$1" success_msg="$2" failure_msg="$3"
+    local bin
+    case "$tool" in
+        add) bin=ldbadd ;;
+        modify) bin=ldbmodify ;;
+        *) log_error "ldb_exec: unknown tool '${tool}' (expected add|modify)"; exit 2 ;;
+    esac
+    if "$bin" -H /var/lib/samba/private/sam.ldb 2>/dev/null; then
+        log_info "$success_msg"
+    else
+        log_error "$failure_msg"
+        exit 1
+    fi
 }
 
 # Unfold an LDIF stream: continuation lines start with a single space and

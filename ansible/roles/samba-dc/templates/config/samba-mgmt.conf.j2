@@ -35,11 +35,7 @@ NFS_SERVER={{ samba_nfs_server if samba_nfs_server else ansible_fqdn }}
 # DC, samba-user.sh SSHes here as root to manage /home/<user>.
 NFS_HOMES_SERVER={{ samba_nfs_homes_server if samba_nfs_homes_server else (samba_nfs_server if samba_nfs_server else ansible_fqdn) }}
 
-# --- DNS forwarder used by the Samba INTERNAL_DNS backend ---
-DNS_FORWARDER={{ samba_dns_forwarder }}
-
-# --- NTP pool for time synchronisation (critical for Kerberos) ---
-NTP_SERVERS="{{ samba_ntp_servers }}"
-
-# --- TLS: set to true only when proper certs are deployed to the DC ---
-TLS_ENABLED=false
+# DNS forwarder, NTP servers, and TLS settings are configured directly by the
+# samba-dc role (samba_dns_forwarder / samba_ntp_servers / samba_tls_enabled
+# in defaults/main.yml) -- the bin/* scripts don't consume them, so they're
+# omitted from this generated file.

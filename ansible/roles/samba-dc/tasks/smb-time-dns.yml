@@ -1,0 +1,76 @@
+# smb-time-dns.yml - Core DC services: smb.conf, time sync, DNS resolver.
+#
+# Runs every play; handlers fire to restart the affected services if a
+# file actually changed.  Finishes by starting samba-ad-dc.
+---
+- name: Deploy smb.conf from template
+  ansible.builtin.template:
+    src: smb.conf.j2
+    dest: /etc/samba/smb.conf
+    mode: "0644"
+    owner: root
+    group: root
+  notify: restart samba
+
+- name: Configure time synchronization
+  when: ansible_facts['distribution'] in ['Ubuntu', 'Debian']
+  block:
+    - name: Deploy systemd-timesyncd configuration
+      ansible.builtin.copy:
+        content: |
+          [Time]
+          NTP={{ samba_ntp_servers | join(' ') }}
+        dest: /etc/systemd/timesyncd.conf
+        mode: "0644"
+        owner: root
+        group: root
+      notify: restart systemd-timesyncd
+
+    - name: Enable and start systemd-timesyncd
+      ansible.builtin.systemd:
+        name: systemd-timesyncd
+        enabled: true
+        state: started
+
+- name: Configure DNS resolver
+  when: ansible_facts['distribution'] in ['Ubuntu', 'Debian']
+  block:
+    - name: Remove systemd-resolved resolv.conf symlink
+      ansible.builtin.file:
+        path: /etc/resolv.conf
+        state: absent
+
+    - name: Deploy resolv.conf pointing to local Samba DNS
+      ansible.builtin.copy:
+        content: |
+          nameserver 127.0.0.1
+          search {{ samba_realm | lower }}
+        dest: /etc/resolv.conf
+        mode: "0644"
+        owner: root
+        group: root
+
+    - name: Disable systemd-resolved
+      ansible.builtin.systemd:
+        name: systemd-resolved
+        enabled: false
+        state: stopped
+      failed_when: false
+
+- name: Flush handlers before service start
+  ansible.builtin.meta: flush_handlers
+
+- name: Clean stale Samba runtime files
+  ansible.builtin.command: /bin/true
+  notify: Clean Samba runtime files
+  changed_when: true
+  when: samba_cleanup_runtime_files | default(true) | bool
+
+- name: Flush cleanup handler
+  ansible.builtin.meta: flush_handlers
+  when: samba_cleanup_runtime_files | default(true) | bool
+
+- name: Start samba-ad-dc
+  ansible.builtin.systemd:
+    name: "{{ samba_dc_service }}"
+    state: started

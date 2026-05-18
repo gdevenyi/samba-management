@@ -1,0 +1,20 @@
+# services.yml - Start SSSD and autofs.
+#
+# SSSD must come up before autofs so the autofs service can resolve maps
+# via the sss NSS module on first start (the maps live in AD, not on disk).
+---
+- name: Enable and start sssd
+  ansible.builtin.systemd:
+    name: sssd
+    enabled: true
+    state: started
+
+- name: Flush handlers (restart SSSD if config changed)
+  ansible.builtin.meta: flush_handlers
+
+- name: Enable and start autofs
+  ansible.builtin.systemd:
+    name: autofs
+    enabled: true
+    state: started
+  when: sssd_configure_autofs

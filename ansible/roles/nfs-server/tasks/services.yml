@@ -1,0 +1,111 @@
+# services.yml - Install NFS server packages, configure, and start services.
+#
+# Includes the post-startup group-resolution wait and ownership re-apply
+# because both depend on services being up.
+---
+- name: Install NFS server packages
+  ansible.builtin.apt:
+    name:
+      - nfs-kernel-server
+      - nfs-common
+    state: present
+    update_cache: false
+
+- name: Deploy idmapd.conf
+  ansible.builtin.template:
+    src: "{{ role_path }}/../common/templates/idmapd.conf.j2"
+    dest: /etc/idmapd.conf
+    mode: "0644"
+  vars:
+    samba_idmap_domain: "{{ sssd_domain }}"
+  notify:
+    - Restart nfs-idmapd
+    - Restart rpc-gssd
+
+- name: Ensure nfs-mountd drop-in directory exists
+  ansible.builtin.file:
+    path: /etc/systemd/system/nfs-mountd.service.d
+    state: directory
+    mode: "0755"
+
+- name: Enable manage-gids on rpc.mountd
+  ansible.builtin.copy:
+    dest: /etc/systemd/system/nfs-mountd.service.d/manage-gids.conf
+    mode: "0644"
+    content: |
+      [Service]
+      ExecStart=
+      ExecStart=/usr/sbin/rpc.mountd --manage-gids
+  notify:
+    - Reload systemd
+    - Restart nfs-mountd
+
+- name: Set up shared NFS-common baseline (NEED_GSSD, unit workaround, rpc-gssd)
+  ansible.builtin.include_tasks: "{{ role_path }}/../common/tasks/nfs-common-unit.yml"
+
+- name: Enable and start nfs-common
+  ansible.builtin.systemd:
+    name: nfs-common
+    enabled: true
+    state: started
+
+- name: Enable and start nfs-idmapd
+  ansible.builtin.systemd:
+    name: nfs-idmapd
+    enabled: true
+    state: started
+
+- name: Enable and start NFS server
+  ansible.builtin.systemd:
+    name: nfs-server
+    enabled: true
+    state: started
+
+# rpc-svcgssd is absent on some distros (e.g. Ubuntu 24.04 ships it merged
+# into nfs-server.service).  Tolerate a missing unit rather than aborting.
+- name: Enable and start rpc-svcgssd (server-side Kerberos NFS)
+  ansible.builtin.systemd:
+    name: rpc-svcgssd
+    enabled: true
+    state: started
+  failed_when: false
+
+# --- Verify group resolution ---
+# NFS manage-gids requires SSSD to resolve AD groups to local GIDs.
+- name: Verify SSSD resolves the 'domain users' group
+  ansible.builtin.command:
+    cmd: getent group "domain users"
+  register: _nfs_group_resolve
+  changed_when: false
+  retries: "{{ nfs_server_group_resolve_retries }}"
+  delay: "{{ nfs_server_group_resolve_delay }}"
+  until:
+    - _nfs_group_resolve.rc == 0
+    - "'domain users:' in _nfs_group_resolve.stdout"
+    - "_nfs_group_resolve.stdout.split(':')[2] | int != 100"
+
+# Re-apply ownership now that SSSD can resolve AD group names.
+- name: Re-apply share base ownership with resolved AD group
+  ansible.builtin.file:
+    path: "{{ samba_share_base }}"
+    state: directory
+    mode: "0755"
+    owner: root
+    group: "domain users"
+
+- name: Re-apply share directory ownership with resolved AD group
+  ansible.builtin.file:
+    path: "{{ item.path | default(samba_share_base ~ '/' ~ item.name) }}"
+    state: directory
+    mode: "0770"
+    owner: root
+    group: "domain users"
+  loop: "{{ nfs_server_shares }}"
+
+- name: Flush kernel NFS auth caches after group resolution change
+  ansible.builtin.shell: |
+    set -e
+    for f in /proc/net/rpc/auth.unix.gid /proc/net/rpc/nfs4.nametoid /proc/net/rpc/nfs4.idtoname; do
+      [ -e "$f/flush" ] && date +%s > "$f/flush"
+    done
+  changed_when: false

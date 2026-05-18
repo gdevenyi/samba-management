@@ -1,0 +1,22 @@
+# ssh-trust.yml - Authorize the DC's root SSH key on the storage host.
+#
+# The DC's samba-user.sh manages /home/<user> over SSH when the homes
+# server is not colocated.  The DC's root pubkey is slurped by the
+# preflight play in provision-nfs-server.yml and installed here.
+---
+- name: Ensure /root/.ssh exists on storage host
+  ansible.builtin.file:
+    path: /root/.ssh
+    state: directory
+    mode: "0700"
+    owner: root
+    group: root
+
+- name: Authorize DC root SSH key for home directory management
+  ansible.builtin.lineinfile:
+    path: /root/.ssh/authorized_keys
+    line: "{{ hostvars[groups['dc'][0]]._samba_dc_root_pubkey.content | b64decode | trim }}"
+    create: true
+    mode: "0600"
+    owner: root
+    group: root

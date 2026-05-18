@@ -1,0 +1,11 @@
+---
+galaxy_info:
+  author: samba-management contributors
+  description: Provision a Samba Active Directory Domain Controller on Ubuntu/Debian.
+  license: MIT
+  min_ansible_version: "2.14"
+
+# Pull in the shared handlers (Reload systemd, Restart sssd, NFS service
+# handlers) so notify: works without duplicating them in this role.
+dependencies:
+  - role: common

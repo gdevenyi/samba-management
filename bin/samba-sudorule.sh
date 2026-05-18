@@ -70,20 +70,79 @@ validate_sudo_rulename() {
     fi
 }
 
-_sudo_base_dn() {
-    echo "${SUDO_OU},$(realm_to_dn "$REALM")"
-}
-
 _rule_dn() {
-    local rulename="$1"
-    echo "CN=${rulename},$(_sudo_base_dn)"
+    ad_dn "$SUDO_OU" "$1"
 }
 
 _rule_exists() {
+    ad_dn_exists "$(_rule_dn "$1")"
+}
+
+# Reject newlines/control chars in any LDIF attribute, and confirm --order
+# is a non-negative integer.  Used by both cmd_add and cmd_modify so the
+# rules are enforced identically on creation and update.
+# Args: $1=order  $2-$7=names of caller-declared arrays (namerefs).
+_validate_sudo_attrs() {
+    local order="$1"
+    local -n _users=$2
+    local -n _hosts=$3
+    local -n _commands=$4
+    local -n _runas_users=$5
+    local -n _runas_groups=$6
+    local -n _options=$7
+    local v
+    for v in "${_users[@]}" "${_hosts[@]}" "${_commands[@]}" \
+             "${_runas_users[@]}" "${_runas_groups[@]}" "${_options[@]}"; do
+        validate_ldif_value "$v" "sudo rule attribute" || exit 2
+    done
+    if [[ -n "$order" && ! "$order" =~ ^[0-9]+$ ]]; then
+        log_error "Invalid --order value: must be a non-negative integer"
+        exit 2
+    fi
+}
+
+# Assemble the modify-LDIF for a sudo rule.  Multi-valued attributes are
+# appended (`add:`); --order is replaced if supplied.  All trailing `-`
+# separators are required by ldbmodify to delimit one modification operation
+# from the next within a single dn.
+_build_sudorule_modify_ldif() {
     local rulename="$1"
+    local order="$2"
+    local -n _users=$3
+    local -n _hosts=$4
+    local -n _commands=$5
+    local -n _runas_users=$6
+    local -n _runas_groups=$7
+    local -n _options=$8
+
     local dn
     dn=$(_rule_dn "$rulename")
-    ldbsearch -H /var/lib/samba/private/sam.ldb -b "$dn" -s base dn 2>/dev/null | grep -q '^dn:' 2>/dev/null
+    local ldif="dn: ${dn}
+changetype: modify
+"
+    local u h c g o
+    for u in "${_users[@]}"; do
+        ldif+="add: sudoUser"$'\n'"sudoUser: ${u}"$'\n'"-"$'\n'
+    done
+    for h in "${_hosts[@]}"; do
+        ldif+="add: sudoHost"$'\n'"sudoHost: ${h}"$'\n'"-"$'\n'
+    done
+    for c in "${_commands[@]}"; do
+        ldif+="add: sudoCommand"$'\n'"sudoCommand: ${c}"$'\n'"-"$'\n'
+    done
+    for u in "${_runas_users[@]}"; do
+        ldif+="add: sudoRunAsUser"$'\n'"sudoRunAsUser: ${u}"$'\n'"-"$'\n'
+    done
+    for g in "${_runas_groups[@]}"; do
+        ldif+="add: sudoRunAsGroup"$'\n'"sudoRunAsGroup: ${g}"$'\n'"-"$'\n'
+    done
+    for o in "${_options[@]}"; do
+        ldif+="add: sudoOption"$'\n'"sudoOption: ${o}"$'\n'"-"$'\n'
+    done
+    if [[ -n "$order" ]]; then
+        ldif+="replace: sudoOrder"$'\n'"sudoOrder: ${order}"$'\n'"-"$'\n'
+    fi
+    printf '%s' "$ldif"
 }
 
 cmd_add() {
@@ -123,16 +182,7 @@ cmd_add() {
         exit 2
     fi
 
-    # Reject newlines/control chars before interpolating into LDIF.
-    local v
-    for v in "${users[@]}" "${hosts[@]}" "${commands[@]}" \
-             "${runas_users[@]}" "${runas_groups[@]}" "${options[@]}"; do
-        validate_ldif_value "$v" "sudo rule attribute" || exit 2
-    done
-    if [[ -n "$order" && ! "$order" =~ ^[0-9]+$ ]]; then
-        log_error "Invalid --order value: must be a non-negative integer"
-        exit 2
-    fi
+    _validate_sudo_attrs "$order" users hosts commands runas_users runas_groups options
 
     local dn
     dn=$(_rule_dn "$rulename")
@@ -180,14 +230,9 @@ cn: ${rulename}
         ldif+="sudoOrder: ${order}"$'\n'
     fi
 
-    local rc=0
-    printf '%s' "$ldif" | ldbadd -H /var/lib/samba/private/sam.ldb 2>/dev/null || rc=$?
-    if [[ $rc -eq 0 ]]; then
-        log_info "Sudo rule '${rulename}' created"
-    else
-        log_error "Failed to create sudo rule '${rulename}'"
-        exit 1
-    fi
+    printf '%s' "$ldif" | ldb_exec add \
+        "Sudo rule '${rulename}' created" \
+        "Failed to create sudo rule '${rulename}'"
 }
 
 cmd_delete() {
@@ -212,19 +257,14 @@ cmd_delete() {
     local ldif="dn: ${dn}
 changetype: delete
 "
-    local rc=0
-    printf '%s' "$ldif" | ldbmodify -H /var/lib/samba/private/sam.ldb 2>/dev/null || rc=$?
-    if [[ $rc -eq 0 ]]; then
-        log_info "Sudo rule '${rulename}' deleted"
-    else
-        log_error "Failed to delete sudo rule '${rulename}'"
-        exit 1
-    fi
+    printf '%s' "$ldif" | ldb_exec modify \
+        "Sudo rule '${rulename}' deleted" \
+        "Failed to delete sudo rule '${rulename}'"
 }
 
 cmd_list() {
     local base_dn
-    base_dn=$(_sudo_base_dn)
+    base_dn=$(ad_dn "$SUDO_OU")
     ldbsearch -H /var/lib/samba/private/sam.ldb \
         -b "$base_dn" -s one "(objectClass=sudoRole)" cn 2>/dev/null \
         | ldif_unfold \
@@ -247,20 +287,8 @@ cmd_show() {
     ldbsearch -H /var/lib/samba/private/sam.ldb \
         -b "$dn" -s base 2>/dev/null \
         | ldif_unfold \
-        | grep -v '^#' \
-        | grep -v '^$' \
-        | grep -v '^dn:' \
-        | grep -v '^objectClass:' \
-        | grep -v '^instanceType:' \
-        | grep -v '^whenCreated:' \
-        | grep -v '^whenChanged:' \
-        | grep -v '^uSNCreated:' \
-        | grep -v '^uSNChanged:' \
-        | grep -v '^objectGUID:' \
-        | grep -v '^name:' \
-        | grep -v '^objectCategory:' \
-        | grep -v '^distinguishedName:' \
-        | grep -v '^showInAdvancedViewOnly:'
+        | ldif_show_filter \
+        | grep -v '^dn:'
 }
 
 cmd_modify() {
@@ -301,56 +329,17 @@ cmd_modify() {
         exit 2
     fi
 
-    local v
-    for v in "${users[@]}" "${hosts[@]}" "${commands[@]}" \
-             "${runas_users[@]}" "${runas_groups[@]}" "${options[@]}"; do
-        validate_ldif_value "$v" "sudo rule attribute" || exit 2
-    done
-    if [[ -n "$order" && ! "$order" =~ ^[0-9]+$ ]]; then
-        log_error "Invalid --order value: must be a non-negative integer"
-        exit 2
-    fi
+    _validate_sudo_attrs "$order" users hosts commands runas_users runas_groups options
 
     if dry_run "Would modify sudo rule '${rulename}'"; then
         return
     fi
 
-    local dn
-    dn=$(_rule_dn "$rulename")
-    local ldif="dn: ${dn}
-changetype: modify
-"
-
-    for u in "${users[@]}"; do
-        ldif+="add: sudoUser"$'\n'"sudoUser: ${u}"$'\n'"-"$'\n'
-    done
-    for h in "${hosts[@]}"; do
-        ldif+="add: sudoHost"$'\n'"sudoHost: ${h}"$'\n'"-"$'\n'
-    done
-    for c in "${commands[@]}"; do
-        ldif+="add: sudoCommand"$'\n'"sudoCommand: ${c}"$'\n'"-"$'\n'
-    done
-    for u in "${runas_users[@]}"; do
-        ldif+="add: sudoRunAsUser"$'\n'"sudoRunAsUser: ${u}"$'\n'"-"$'\n'
-    done
-    for g in "${runas_groups[@]}"; do
-        ldif+="add: sudoRunAsGroup"$'\n'"sudoRunAsGroup: ${g}"$'\n'"-"$'\n'
-    done
-    for o in "${options[@]}"; do
-        ldif+="add: sudoOption"$'\n'"sudoOption: ${o}"$'\n'"-"$'\n'
-    done
-    if [[ -n "$order" ]]; then
-        ldif+="replace: sudoOrder"$'\n'"sudoOrder: ${order}"$'\n'"-"$'\n'
-    fi
-
-    local rc=0
-    printf '%s' "$ldif" | ldbmodify -H /var/lib/samba/private/sam.ldb 2>/dev/null || rc=$?
-    if [[ $rc -eq 0 ]]; then
-        log_info "Sudo rule '${rulename}' modified"
-    else
-        log_error "Failed to modify sudo rule '${rulename}'"
-        exit 1
-    fi
+    _build_sudorule_modify_ldif "$rulename" "$order" \
+            users hosts commands runas_users runas_groups options \
+        | ldb_exec modify \
+            "Sudo rule '${rulename}' modified" \
+            "Failed to modify sudo rule '${rulename}'"
 }
 
 if [[ $# -eq 0 ]] || [[ "$1" == "help" ]] || [[ "$1" == "--help" ]]; then

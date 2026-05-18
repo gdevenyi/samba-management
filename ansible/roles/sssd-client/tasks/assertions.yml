@@ -1,0 +1,10 @@
+# assertions.yml - Pre-flight validation for the sssd-client role.
+---
+- name: Validate required variables
+  ansible.builtin.assert:
+    that:
+      - sssd_realm | length > 0
+      - sssd_domain | length > 0
+      - sssd_admin_password | length > 0
+      - sssd_homedir_mode in ['local', 'mounted']
+    fail_msg: "sssd_realm, sssd_domain, sssd_admin_password are required. sssd_homedir_mode must be 'local' or 'mounted'"

@@ -37,7 +37,7 @@
 
 - name: Deploy per-share NFS export files
   ansible.builtin.template:
-    src: exports.d/share.exports.j2
+    src: "{{ role_path }}/../common/templates/share.exports.j2"
     dest: "/etc/exports.d/{{ item.name }}.exports"
     mode: "0644"
   loop: "{{ samba_shares }}"
@@ -45,7 +45,7 @@
 
 - name: Deploy NFS home directories export
   ansible.builtin.template:
-    src: exports.d/homes.exports.j2
+    src: "{{ role_path }}/../common/templates/homes.exports.j2"
     dest: /etc/exports.d/homes.exports
     mode: "0644"
   when: samba_nfs_export_homes | bool
@@ -53,20 +53,14 @@
 
 - name: Deploy idmapd.conf
   ansible.builtin.template:
-    src: idmapd.conf.j2
+    src: "{{ role_path }}/../common/templates/idmapd.conf.j2"
     dest: /etc/idmapd.conf
     mode: "0644"
+  vars:
+    samba_idmap_domain: "{{ samba_realm | lower }}"
   notify:
     - Restart nfs-idmapd
     - Restart rpc-gssd
-
-- name: Enable GSSD for Kerberos NFS
-  ansible.builtin.lineinfile:
-    path: /etc/default/nfs-common
-    regexp: "^NEED_GSSD="
-    line: "NEED_GSSD=yes"
-    create: true
-    mode: "0644"
 
 # When users authenticate via Kerberos NFS, the kernel needs to know each
 # user's full group list to enforce POSIX permissions correctly.  With
@@ -93,46 +87,12 @@
     - Reload systemd
     - Restart nfs-mountd
 
-- name: Remove package-level mask symlink for nfs-common (Ubuntu 24.04)
-  ansible.builtin.file:
-    path: /usr/lib/systemd/system/nfs-common.service
-    state: absent
-  when: >-
-    ansible_facts['distribution'] == "Ubuntu" and
-    ansible_facts['distribution_major_version'] == "24"
-
-- name: Create real nfs-common service unit
-  ansible.builtin.copy:
-    dest: /etc/systemd/system/nfs-common.service
-    mode: "0644"
-    content: |
-      [Unit]
-      Description=NFS Common daemons and services
-      DefaultDependencies=no
-      After=local-fs.target network.target
-      Wants=nfs-client.target
-
-      [Service]
-      Type=oneshot
-      RemainAfterExit=yes
-      ExecStart=/bin/true
-
-      [Install]
-      WantedBy=multi-user.target
-  notify: Reload systemd
-
-- name: Flush handlers so daemon-reload runs before we start the unit
-  ansible.builtin.meta: flush_handlers
+- name: Set up shared NFS-common baseline (NEED_GSSD, unit workaround, rpc-gssd)
+  ansible.builtin.include_tasks: "{{ role_path }}/../common/tasks/nfs-common-unit.yml"
 
 - name: Enable and start nfs-common
   ansible.builtin.systemd:
     name: nfs-common
-    enabled: true
-    state: started
-
-- name: Enable and start rpc-gssd (Kerberos NFS)
-  ansible.builtin.systemd:
-    name: rpc-gssd
     enabled: true
     state: started
 

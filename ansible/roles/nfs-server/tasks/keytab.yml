@@ -1,0 +1,99 @@
+# keytab.yml - Provision the nfs/<fqdn> Kerberos service principal.
+#
+# The NFS kernel server needs nfs/<fqdn> in its keytab for sec=krb5p.
+# `adcli update --add-service=nfs` only adds a bare `nfs@REALM` entry and
+# does NOT register the host-based `nfs/<fqdn>` SPN that rpc.svcgssd / the
+# kernel GSS layer require.  Register the SPN on the DC, export the
+# resulting key, and merge it into the storage host's keytab.
+#
+# The block-level `when:` gates every step on whether the principal is
+# already present; the initial `klist` check sets `_nfs_keytab_check`.
+---
+- name: Check if NFS principal exists in keytab
+  ansible.builtin.command: klist -k /etc/krb5.keytab
+  register: _nfs_keytab_check
+  changed_when: false
+  failed_when: false
+
+- name: Provision NFS keytab if missing
+  when: >-
+    _nfs_keytab_check.rc != 0 or
+    'nfs/' + ansible_fqdn not in _nfs_keytab_check.stdout
+  vars:
+    _nfs_keytab_path: "/tmp/nfs-{{ ansible_hostname }}.keytab"
+  block:
+    - name: Register nfs/<fqdn> SPN on the storage host's machine account
+      ansible.builtin.command: >-
+        samba-tool spn add nfs/{{ ansible_fqdn }} {{ ansible_hostname }}$
+      delegate_to: "{{ groups['dc'][0] }}"
+      become: true
+      register: _nfs_spn_add
+      # samba-tool returns non-zero (and prints "already exists") if the SPN
+      # is already on the object -- idempotent, so swallow that case.
+      failed_when:
+        - _nfs_spn_add.rc != 0
+        - "'already' not in _nfs_spn_add.stderr"
+      changed_when: _nfs_spn_add.rc == 0
+
+    - name: Export NFS key from DC
+      ansible.builtin.command: >-
+        samba-tool domain exportkeytab {{ _nfs_keytab_path }}
+        --principal=nfs/{{ ansible_fqdn }}
+      delegate_to: "{{ groups['dc'][0] }}"
+      become: true
+      changed_when: true
+
+    - name: Fetch NFS keytab from DC to control node
+      ansible.builtin.fetch:
+        src: "{{ _nfs_keytab_path }}"
+        dest: "{{ _nfs_keytab_path }}"
+        flat: true
+      delegate_to: "{{ groups['dc'][0] }}"
+      become: true
+      changed_when: false
+
+    # Push the keytab to the storage host.  fetch+copy beats a single
+    # synchronize/scp because both legs run through the same SSH transport
+    # Ansible already has open to each host.
+    - name: Push NFS keytab to storage host
+      ansible.builtin.copy:
+        src: "{{ _nfs_keytab_path }}"
+        dest: "{{ _nfs_keytab_path }}"
+        mode: "0600"
+        owner: root
+        group: root
+
+    - name: Merge NFS keytab into local keytab
+      ansible.builtin.shell: |
+        ktutil <<EOF
+        read_kt {{ _nfs_keytab_path }}
+        write_kt /etc/krb5.keytab
+        quit
+        EOF
+      changed_when: true
+      notify: Restart rpc-svcgssd
+
+    - name: Flush keytab handlers
+      ansible.builtin.meta: flush_handlers
+
+    - name: Clean up temporary NFS keytab (storage host)
+      ansible.builtin.file:
+        path: "{{ _nfs_keytab_path }}"
+        state: absent
+      changed_when: false
+
+    - name: Clean up temporary NFS keytab (DC)
+      ansible.builtin.file:
+        path: "{{ _nfs_keytab_path }}"
+        state: absent
+      delegate_to: "{{ groups['dc'][0] }}"
+      become: true
+      changed_when: false
+
+    - name: Clean up temporary NFS keytab (control node)
+      ansible.builtin.file:
+        path: "{{ _nfs_keytab_path }}"
+        state: absent
+      delegate_to: localhost
+      become: false
+      changed_when: false

@@ -7,6 +7,9 @@ trap 's=$?; echo >&2 "$0: Error on line "$LINENO": $BASH_COMMAND"; exit $s' ERR
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 CONFIG_FILE="${SCRIPT_DIR}/test-config.env"
 
+# shellcheck source=lib.sh
+source "${SCRIPT_DIR}/lib.sh"
+
 if [[ -f "$CONFIG_FILE" ]]; then
     # shellcheck source=test-config.env
     source "$CONFIG_FILE"
@@ -16,12 +19,6 @@ DC_NAME="${SMB_TEST_DC_NAME:-samba-dc}"
 CLIENT_NAME="${SMB_TEST_CLIENT_NAME:-samba-client}"
 STORAGE_NAME="${SMB_TEST_STORAGE_NAME:-samba-storage}"
 TEST_MODE="${SMB_TEST_MODE:-colocated}"
-
-GREEN='\033[0;32m'
-YELLOW='\033[1;33m'
-NC='\033[0m'
-log_info() { printf "${GREEN}[INFO]${NC} %s\n" "$*"; }
-log_warn() { printf "${YELLOW}[WARN]${NC} %s\n" "$*"; }
 
 destroy_vm() {
     local vm_name="$1"

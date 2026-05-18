@@ -1,0 +1,8 @@
+# assertions.yml - Pre-flight checks for the nfs-server role.
+---
+- name: Validate required variables
+  ansible.builtin.assert:
+    that:
+      - sssd_domain | length > 0
+      - sssd_realm | length > 0
+    fail_msg: "sssd_domain and sssd_realm are required (inherited from domain_members group_vars)"

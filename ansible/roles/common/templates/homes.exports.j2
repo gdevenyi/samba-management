@@ -1,0 +1,6 @@
+{# homes.exports.j2 - NFSv4 export for user home directories. #}
+{# Shared between the samba-dc role (colocated NFS) and the nfs-server role #}
+{# (dedicated storage host). #}
+{# #}
+{# root_squash (default) maps root to nobody for security. #}
+{{ samba_home_base }} *(rw,sec={{ samba_nfs_sec }},sync,no_subtree_check)

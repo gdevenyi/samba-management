@@ -240,13 +240,13 @@ test_permissions() {
         ssh_nfs "sudo systemctl restart sssd && sudo bash -c 'for f in /proc/net/rpc/auth.unix.gid /proc/net/rpc/nfs4.nametoid /proc/net/rpc/nfs4.idtoname; do [ -e \"\$f/flush\" ] && date +%s > \"\$f/flush\"; done' && for u in perm_writer perm_both perm_reader; do getent initgroups \"\$u\" >/dev/null; done"
 
     run_test "perm_writer can write to perm_rw_share via NFS" \
-        ssh_client "echo 'Wr1terPass!234' | kinit perm_writer@SAMBA.TEST && echo 'writer test' > /mnt/shares/perm_rw_share/writer_file.txt; rc=\$?; kdestroy; exit \$rc"
+        ssh_client "echo 'Wr1terPass!234' | kinit perm_writer@SAMBA.TEST && echo 'writer test' > /data/perm_rw_share/writer_file.txt; rc=\$?; kdestroy; exit \$rc"
     run_test "perm_writer can read from perm_rw_share via NFS" \
-        ssh_client "echo 'Wr1terPass!234' | kinit perm_writer@SAMBA.TEST && cat /mnt/shares/perm_rw_share/writer_file.txt; rc=\$?; kdestroy; exit \$rc"
+        ssh_client "echo 'Wr1terPass!234' | kinit perm_writer@SAMBA.TEST && cat /data/perm_rw_share/writer_file.txt; rc=\$?; kdestroy; exit \$rc"
     run_test "perm_both can write to perm_rw_share via NFS" \
-        ssh_client "echo 'B0thPass!12345' | kinit perm_both@SAMBA.TEST && echo 'both test' > /mnt/shares/perm_rw_share/both_file.txt; rc=\$?; kdestroy; exit \$rc"
+        ssh_client "echo 'B0thPass!12345' | kinit perm_both@SAMBA.TEST && echo 'both test' > /data/perm_rw_share/both_file.txt; rc=\$?; kdestroy; exit \$rc"
     run_test "perm_writer can write to perm_admin_share via NFS" \
-        ssh_client "echo 'Wr1terPass!234' | kinit perm_writer@SAMBA.TEST && echo 'admin test' > /mnt/shares/perm_admin_share/admin_file.txt; rc=\$?; kdestroy; exit \$rc"
+        ssh_client "echo 'Wr1terPass!234' | kinit perm_writer@SAMBA.TEST && echo 'admin test' > /data/perm_admin_share/admin_file.txt; rc=\$?; kdestroy; exit \$rc"
 }
 
 test_autofs_kerberos() {
@@ -262,9 +262,9 @@ test_autofs_kerberos() {
     run_test "kinit as perm_writer on client" \
         ssh_client "echo 'Wr1terPass!234' | kinit perm_writer@SAMBA.TEST"
     run_test "Trigger autofs mount of public share and verify NFS" \
-        ssh_client "ls /mnt/shares/public/ && mount | grep 'public.*nfs4'"
+        ssh_client "ls /data/public/ && mount | grep 'public.*nfs4'"
     run_test "Write and read file via autofs-mounted public share" \
-        ssh_client "echo 'autofs test content' > /mnt/shares/public/autofs_test.txt && cat /mnt/shares/public/autofs_test.txt && rm /mnt/shares/public/autofs_test.txt"
+        ssh_client "echo 'autofs test content' > /data/public/autofs_test.txt && cat /data/public/autofs_test.txt && rm /data/public/autofs_test.txt"
     run_test "kdestroy perm_writer ticket" \
         ssh_client "kdestroy"
 
@@ -278,7 +278,7 @@ test_autofs_kerberos() {
         ssh_client "kdestroy"
 
     run_test "Verify pre-provisioned public share is accessible via autofs" \
-        ssh_client "echo 'H0mePass1!2345' | kinit homeuser1@SAMBA.TEST && ls /mnt/shares/public/ && kdestroy"
+        ssh_client "echo 'H0mePass1!2345' | kinit homeuser1@SAMBA.TEST && ls /data/public/ && kdestroy"
 }
 
 test_password_policy() {

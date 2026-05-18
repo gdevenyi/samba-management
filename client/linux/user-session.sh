@@ -17,6 +17,6 @@ logger -t "samba-session" "User session started: $(whoami) at $(date)"
 
 # Ensure the autofs base mount point directory exists so autofs can work.
 # This only succeeds when run as root; for normal users it's a silent no-op.
-mkdir -p "${AUTOMOUNT_BASE:-/mnt/shares}" 2>/dev/null || true
+mkdir -p "${AUTOMOUNT_BASE:-/data}" 2>/dev/null || true
 
 exit 0

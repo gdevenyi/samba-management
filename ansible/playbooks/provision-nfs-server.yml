@@ -35,6 +35,13 @@
 - name: Provision NFS storage server
   hosts: nfs_servers
   become: true
+  # Storage hosts are the data source for shares (/data) and homes
+  # (/home/ad); they must not run client-side autofs against the same
+  # paths, or autofs shadows the local directories and breaks server-side
+  # share/home directory creation.
+  vars:
+    sssd_configure_autofs: false
+    sssd_enable_autofs: false
   roles:
     - sssd-client
     - nfs-server

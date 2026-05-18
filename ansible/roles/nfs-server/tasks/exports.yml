@@ -36,6 +36,15 @@
   loop: "{{ nfs_server_shares }}"
   notify: Reload NFS exports
 
+- name: Ensure home base directory exists
+  ansible.builtin.file:
+    path: "{{ samba_home_base }}"
+    state: directory
+    owner: root
+    group: root
+    mode: "0755"
+  when: samba_nfs_export_homes | bool
+
 - name: Deploy NFS home directories export
   ansible.builtin.template:
     src: "{{ role_path }}/../common/templates/homes.exports.j2"

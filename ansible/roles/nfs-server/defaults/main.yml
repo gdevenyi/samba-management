@@ -7,7 +7,7 @@
 ---
 # --- File system paths (shared with samba-dc role; same defaults) ---
 samba_share_base: "/data"
-samba_home_base: "/home"
+samba_home_base: "/home/ad"
 
 # --- File shares ---
 # Each share creates a directory under samba_share_base and an NFS export
@@ -20,7 +20,7 @@ nfs_server_shares: []
 
 # --- NFS options (shared with samba-dc role; same defaults) ---
 samba_nfs_sec: "krb5p"
-# Whether to export samba_home_base via NFS for home directory mounts.
+# Whether to export samba_home_base (default /home/ad) via NFS for home directory mounts.
 samba_nfs_export_homes: true
 
 # --- Verification ---

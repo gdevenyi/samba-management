@@ -18,7 +18,7 @@ DC_HOSTNAME={{ ansible_hostname }}
 # --- Samba paths ---
 SAMBA_CONF=/etc/samba/smb.conf
 SHARE_BASE={{ samba_share_base }}
-HOME_BASE=/home
+HOME_BASE={{ samba_home_base }}
 
 # --- User defaults ---
 DEFAULT_SHELL=/bin/bash
@@ -28,11 +28,11 @@ DEFAULT_GROUP="Domain Users"
 LOG_FILE=/var/log/samba-management.log
 
 # --- Linux client automount ---
-AUTOMOUNT_BASE=/mnt/shares
+AUTOMOUNT_BASE={{ samba_autofs_shares_mount }}
 NFS_SEC={{ samba_nfs_sec }}
 NFS_SERVER={{ samba_nfs_server if samba_nfs_server else ansible_fqdn }}
 # Host that serves user home directories over NFS.  When this is not the
-# DC, samba-user.sh SSHes here as root to manage /home/<user>.
+# DC, samba-user.sh SSHes here as root to manage {{ samba_home_base }}/<user>.
 NFS_HOMES_SERVER={{ samba_nfs_homes_server if samba_nfs_homes_server else (samba_nfs_server if samba_nfs_server else ansible_fqdn) }}
 
 # DNS forwarder, NTP servers, and TLS settings are configured directly by the

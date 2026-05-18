@@ -39,11 +39,11 @@ else
     DC_HOSTNAME="${DC_HOSTNAME:-dc01}"
     SAMBA_CONF="${SAMBA_CONF:-/etc/samba/smb.conf}"
     SHARE_BASE="${SHARE_BASE:-/data}"
-    HOME_BASE="${HOME_BASE:-/home}"
+    HOME_BASE="${HOME_BASE:-/home/ad}"
     DEFAULT_SHELL="${DEFAULT_SHELL:-/bin/bash}"
     LOG_FILE="${LOG_FILE:-/var/log/samba-management.log}"
     DEFAULT_GROUP="${DEFAULT_GROUP:-Domain Users}"
-    AUTOMOUNT_BASE="${AUTOMOUNT_BASE:-/mnt/shares}"
+    AUTOMOUNT_BASE="${AUTOMOUNT_BASE:-/data}"
 fi
 
 # Export the fallback defaults so the bin/* scripts and any child processes

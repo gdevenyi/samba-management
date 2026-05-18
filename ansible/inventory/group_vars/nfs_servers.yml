@@ -16,5 +16,5 @@
 #   - name: engineering
 #     comment: "Engineering department share"
 
-# Whether to export /home via NFS for home directory mounts.
+# Whether to export samba_home_base (default /home/ad) via NFS for home directory mounts.
 samba_nfs_export_homes: true

@@ -18,9 +18,9 @@ sssd_admin_password: ""
 
 # --- Home directory configuration ---
 # Two modes are supported:
-#   "local"   - pam_mkhomedir creates /home/user on first login
+#   "local"   - pam_mkhomedir creates /home/ad/user on first login
 #   "mounted" - autofs mounts the user's home dir via NFS from the DC
-sssd_fallback_homedir: "/home/%u"
+sssd_fallback_homedir: "/home/ad/%u"
 sssd_mounted_homedir_base: "/home/ad"
 sssd_default_shell: "/bin/bash"
 
@@ -42,7 +42,7 @@ sssd_dc_hostname: "dc01"
 # installed, the mount-base directories are created, and SSSD is configured
 # to broker maps from AD (no per-client map files).
 sssd_configure_autofs: true
-sssd_autofs_base: "/mnt/shares"
+sssd_autofs_base: "/data"
 
 # --- NFS mount options (shared with samba-dc role; same defaults) ---
 # Kerberos security flavour: krb5 (auth), krb5i (auth+integrity), krb5p (full encryption)

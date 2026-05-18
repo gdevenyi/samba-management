@@ -140,7 +140,7 @@ This joins the server to the domain, registers the `nfs/<fqdn>` SPN against
 the storage host's machine account, and configures NFSv4+Kerberos exports.
 A passwordless root SSH keypair is also generated on the DC and installed in
 the storage host's `authorized_keys` so `samba-user.sh` can manage user home
-directories (under `/home/<user>`) on the remote NFS host.
+directories (under `/home/ad/<user>`) on the remote NFS host.
 
 ### Step 4: Join Linux Clients
 
@@ -152,7 +152,7 @@ ansible-playbook playbooks/provision-linux-sssd.yml
 This configures each Linux client to:
 - Install SSSD and join the AD domain via `realm`
 - Configure SSSD for AD authentication (`id_provider = ad`)
-- Set up autofs for NFSv4 share mounting at `/mnt/shares/<name>`
+- Set up autofs for NFSv4 share mounting at `/data/<name>`
 - Mount AD home directories via NFS at `/home/ad/<username>` (default)
 - Disable `pam_mkhomedir` (remote homedirs are mounted, not created locally)
 
@@ -160,7 +160,7 @@ After joining, verify on a client:
 ```bash
 getent passwd Administrator
 id Administrator                # confirm AD groups resolve
-ls /mnt/shares/public           # autofs mounts on access
+ls /data/public                 # autofs mounts on access
 ```
 
 ### Step 5: Join Windows Clients
@@ -246,7 +246,7 @@ All scripts run **as root on the DC**. They source `lib/common.sh` then `lib/con
 ./bin/samba-sudorule.sh delete dev-restart --force
 
 # Autofs map management (AD-stored maps, consumed by SSSD on every client)
-./bin/samba-automount.sh add-share engineering          # /mnt/shares/engineering -> dc:/data/engineering
+./bin/samba-automount.sh add-share engineering          # /data/engineering -> dc:/data/engineering
 ./bin/samba-automount.sh add-share engineering --sec=krb5i
 ./bin/samba-automount.sh list                           # list maps
 ./bin/samba-automount.sh list auto.shares               # list entries in a map
@@ -425,14 +425,14 @@ All tests clean up after themselves (users, groups, shares, sudo rules, and auto
 | `DC_HOSTNAME` | `dc01` | DC hostname for client scripts |
 | `SAMBA_CONF` | `/etc/samba/smb.conf` | Path to Samba config |
 | `SHARE_BASE` | `/data` | Base directory for shares |
-| `HOME_BASE` | `/home` | Base directory for user homes |
+| `HOME_BASE` | `/home/ad` | Base directory for user homes |
 | `DEFAULT_SHELL` | `/bin/bash` | Shell for new AD users |
 | `DEFAULT_GROUP` | `Domain Users` | Default group for new users |
 | `LOG_FILE` | `/var/log/samba-management.log` | Log file path |
-| `AUTOMOUNT_BASE` | `/mnt/shares` | Autofs mount base on clients |
+| `AUTOMOUNT_BASE` | `/data` | Autofs mount base on clients |
 | `NFS_SEC` | `krb5p` | Kerberos NFS flavour used by `samba-automount.sh add-share` |
 | `NFS_SERVER` | DC FQDN | Default NFS host baked into autofs entries (set to `samba_nfs_server` when split) |
-| `NFS_HOMES_SERVER` | DC FQDN | Host where `/home/<user>` lives; used by `samba-user.sh` (SSHs there for create/archive when remote) |
+| `NFS_HOMES_SERVER` | DC FQDN | Host where `/home/ad/<user>` lives; used by `samba-user.sh` (SSHs there for create/archive when remote) |
 | `DNS_FORWARDER` | `8.8.8.8` | Upstream DNS for SAMBA_INTERNAL |
 | `NTP_SERVERS` | `0-3.pool.ntp.org` | NTP pool (Kerberos requires time sync) |
 | `TLS_ENABLED` | `false` | Enable TLS for LDAP |
@@ -443,7 +443,7 @@ Key variables in role defaults (overridden by `group_vars/`):
 
 | Variable | Default | Role | Description |
 |---|---|---|---|
-| `sssd_homedir_mode` | `mounted` | sssd-client | `mounted` = NFS autofs at `/home/ad/<user>`, `local` = pam_mkhomedir at `/home/<user>` |
+| `sssd_homedir_mode` | `mounted` | sssd-client | `mounted` = NFS autofs at `/home/ad/<user>`, `local` = pam_mkhomedir at `/home/ad/<user>` |
 | `sssd_mounted_homedir_base` | `/home/ad` | sssd-client | Where remote homedirs mount (mounted mode) |
 | `sssd_nfs_sec` | `krb5p` | sssd-client | NFS Kerberos security flavour |
 | `sssd_enable_ssh` | `true` | sssd-client | Configure `sss_ssh_authorizedkeys` for AD-stored SSH keys |

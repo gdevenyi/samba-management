@@ -10,6 +10,20 @@
 - name: Pre-flight assertions
   ansible.builtin.import_tasks: assertions.yml
 
+# Storage hosts must not run client-side autofs.  The sssd-client role
+# installs the autofs package as a hard dependency (Ubuntu auto-starts it),
+# and its idmapd.conf handler restarts autofs unconditionally.  With the
+# share base (/data) and home base (/home/ad) being the autofs mount roots
+# on clients, leaving autofs running on the storage host would shadow those
+# directories and break server-side share/home directory creation.
+- name: Stop and mask autofs on storage hosts
+  ansible.builtin.systemd:
+    name: autofs
+    state: stopped
+    enabled: false
+    masked: true
+  failed_when: false
+
 - name: Register this host in Samba DNS so the DC and clients can resolve it
   ansible.builtin.import_tasks: dns-register.yml
 

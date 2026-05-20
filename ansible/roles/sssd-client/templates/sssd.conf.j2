@@ -20,6 +20,10 @@ fallback_homedir = {{ sssd_effective_fallback_homedir }}
 ad_domain = {{ sssd_domain }}
 use_fully_qualified_names = {{ 'True' if sssd_use_fully_qualified_names else 'False' }}
 access_provider = {{ sssd_access_provider }}
+{# sssd-ldap.5 recommends disabling referral chasing against AD: chasing #}
+{# them costs round trips and reveals no extra data on a single-forest    #}
+{# Samba domain.  Explicit is better than relying on provider defaults.   #}
+ldap_referrals = false
 {% if sssd_access_provider == 'ad' %}
 {# permissive mode: log GPO denials but don't enforce them, avoiding #}
 {# lockouts from misconfigured or absent GPOs in a Samba AD domain #}

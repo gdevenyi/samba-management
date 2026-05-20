@@ -32,6 +32,9 @@ default_shell = {{ samba_default_shell }}
 access_provider = ad
 {# Don't enforce GPOs on the DC -- they may not be configured for it. #}
 ad_gpo_access_control = permissive
+{# sssd-ldap.5 recommends disabling referral chasing against AD: no extra #}
+{# data is reachable across referrals in a single-forest Samba domain.   #}
+ldap_referrals = false
 {# We're the DC, don't let SSSD rotate our own machine account password #}
 {# or update DNS records (samba-ad-dc handles both). #}
 ad_maximum_machine_account_password_age = 0

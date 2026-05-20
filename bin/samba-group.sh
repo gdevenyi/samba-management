@@ -107,6 +107,19 @@ cmd_delete() {
         exit 3
     fi
 
+    # Per-host login anchors are referenced by ad_access_filter on the
+    # matching client.  Deleting one without first dropping the filter
+    # locks every user out of that host.  Require --force so the operator
+    # has to acknowledge they understand the consequence.
+    if [[ "$groupname" == login-* && "${FORCE:-0}" != "1" ]]; then
+        log_error "'${groupname}' looks like a per-host SSSD login anchor."
+        log_error "Deleting it will lock all users out of any client whose"
+        log_error "sssd_login_anchor_group references it (see sssd-client/"
+        log_error "tasks/dc-bootstrap.yml).  Re-run with --force if you are"
+        log_error "certain (e.g. the host is being decommissioned)."
+        exit 4
+    fi
+
     confirm_action "Delete group '${groupname}'?" || exit 0
 
     if dry_run "Would delete group: ${groupname}"; then

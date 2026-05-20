@@ -30,7 +30,7 @@ NC='\033[0m'
 # --- Test data --------------------------------------------------------------
 # Centralised so setup, exercise, and cleanup all reference the same names.
 TEST_USERS=(testuser1 testuser2 homeuser1 homeuser2 perm_reader perm_writer perm_both perm_outsider login_allowed login_denied)
-TEST_GROUPS=(TestGroup ShareReaders ShareWriters computenode-login)
+TEST_GROUPS=(TestGroup ShareReaders ShareWriters computenode-login login-delete-probe)
 TEST_SHARES=(perm_rw_share perm_admin_share)
 TEST_SUDO_RULES=(admin-all users-nopasswd)
 TEST_SSH_KEY="ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAITestKeyForSambaManagementTest12345 test@samba.test"
@@ -432,6 +432,19 @@ test_login_access_filter() {
         ssh_client "sudo sssctl user-checks login_denied 2>&1 | grep -q '^pam_acct_mgmt: Permission denied'"
     run_test "login_allowed still passes via catch-all" \
         ssh_client "sudo sssctl user-checks login_allowed 2>&1 | grep -q '^pam_acct_mgmt: Success'"
+
+    # samba-group.sh refuses to delete login-* groups without --force,
+    # because those are SSSD anchor groups whose removal locks the host.
+    run_test "Create probe anchor group login-delete-probe" \
+        ssh_dc 'sudo samba-group.sh add login-delete-probe --description="anchor delete guard test"'
+    run_test "Delete of login-* without --force is refused" \
+        ssh_dc "! sudo samba-group.sh delete login-delete-probe"
+    run_test "login-delete-probe still exists after refused delete" \
+        ssh_dc 'sudo samba-tool group show login-delete-probe'
+    run_test "Delete of login-* with --force succeeds" \
+        ssh_dc 'sudo samba-group.sh delete login-delete-probe --force'
+    run_test "login-delete-probe is gone after forced delete" \
+        ssh_dc '! sudo samba-tool group show login-delete-probe 2>/dev/null'
 }
 
 test_autofs_maps() {

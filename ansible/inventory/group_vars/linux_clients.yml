@@ -3,3 +3,10 @@
 # SSSD join credentials are inherited from domain_members.yml.
 # Only client-specific overrides go here.
 ---
+# Per-machine login restrictions using a chain-matched anchor group.
+# Uncomment to enable; on first provision each client's anchor group
+# (login-<hostname>) is auto-created on the DC, and if a catchall is
+# set it is nested inside the anchor.  See CLAUDE.md > "Login Access
+# Control" for the operator workflow (creating class groups, etc.).
+# sssd_login_anchor_group: "login-{{ ansible_hostname }}"
+# sssd_login_anchor_catchall: "login-all"

@@ -1,0 +1,67 @@
+---
+# Ensures the per-host anchor group exists on the DC, and optionally
+# nests the catch-all group inside it.  Idempotent; runs before
+# configure.yml so SSSD never restarts with a filter that refers to
+# a non-existent group (which would lock out every user on the host).
+
+- name: "Check existence on DC of anchor group {{ sssd_login_anchor_group }}"
+  ansible.builtin.command:
+    cmd: samba-tool group show "{{ sssd_login_anchor_group }}"
+  delegate_to: "{{ groups['dc'][0] }}"
+  become: true
+  register: _anchor_show
+  changed_when: false
+  failed_when: false
+
+- name: "Create on DC the anchor group {{ sssd_login_anchor_group }}"
+  ansible.builtin.command:
+    cmd: >-
+      samba-tool group add "{{ sssd_login_anchor_group }}"
+      --description="Login anchor for {{ ansible_hostname }} (managed by Ansible)"
+  delegate_to: "{{ groups['dc'][0] }}"
+  become: true
+  when: _anchor_show.rc != 0
+  changed_when: true
+
+- name: "Check existence on DC of catch-all group {{ sssd_login_anchor_catchall }}"
+  ansible.builtin.command:
+    cmd: samba-tool group show "{{ sssd_login_anchor_catchall }}"
+  delegate_to: "{{ groups['dc'][0] }}"
+  become: true
+  register: _catchall_show
+  changed_when: false
+  failed_when: false
+  when: sssd_login_anchor_catchall | length > 0
+
+- name: "Create on DC the catch-all group {{ sssd_login_anchor_catchall }}"
+  ansible.builtin.command:
+    cmd: >-
+      samba-tool group add "{{ sssd_login_anchor_catchall }}"
+      --description="Login allowed on all hosts (managed by Ansible)"
+  delegate_to: "{{ groups['dc'][0] }}"
+  become: true
+  when:
+    - sssd_login_anchor_catchall | length > 0
+    - _catchall_show.rc != 0
+  changed_when: true
+
+- name: List anchor group members on the DC
+  ansible.builtin.command:
+    cmd: samba-tool group listmembers "{{ sssd_login_anchor_group }}"
+  delegate_to: "{{ groups['dc'][0] }}"
+  become: true
+  register: _anchor_members
+  changed_when: false
+  failed_when: false
+  when: sssd_login_anchor_catchall | length > 0
+
+- name: Nest catch-all inside anchor on the DC
+  ansible.builtin.command:
+    cmd: >-
+      samba-tool group addmembers "{{ sssd_login_anchor_group }}" "{{ sssd_login_anchor_catchall }}"
+  delegate_to: "{{ groups['dc'][0] }}"
+  become: true
+  when:
+    - sssd_login_anchor_catchall | length > 0
+    - sssd_login_anchor_catchall not in (_anchor_members.stdout_lines | default([]))
+  changed_when: true

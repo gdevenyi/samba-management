@@ -33,6 +33,35 @@ sssd_cache_credentials: true
 # locked, etc.) and optionally GPO-based access control.
 sssd_access_provider: "ad"
 
+# --- Login access control (ad_access_filter) ---
+# Restricts which AD users may authenticate, via a per-host "anchor"
+# group referenced with AD's LDAP chain-matching rule.  Any group
+# nested inside the anchor automatically grants login -- no client
+# changes when new class groups are added on the DC.
+#
+# Recommended (set in group_vars/linux_clients.yml):
+#     sssd_login_anchor_group: "login-{{ ansible_hostname }}"
+#     sssd_login_anchor_catchall: "login-all"
+#
+# Then on the DC, to grant a class of users access to a class of
+# machines:
+#     samba-group add computenode-login
+#     samba-tool group addmembers login-node01 computenode-login
+#     samba-group add-members computenode-login alice,bob
+# No Ansible run required.
+#
+# Empty (default) = no filter, any enabled AD user may log in.
+# Only takes effect when sssd_access_provider == "ad".
+sssd_login_anchor_group: ""
+sssd_login_anchor_catchall: ""
+# DN suffix for the anchor group.  Empty = auto-derive
+# CN=Users,DC=<components-of-sssd_domain>.
+sssd_login_anchor_base_dn: ""
+sssd_login_anchor_bootstrap: true
+# Raw filter override; non-empty value replaces the chain-matching
+# filter.  Used for advanced cases.
+sssd_ad_access_filter: ""
+
 # --- Home directory mode ---
 sssd_homedir_mode: "mounted"
 

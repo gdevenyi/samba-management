@@ -16,6 +16,12 @@
 - name: Discover and join the AD domain
   ansible.builtin.import_tasks: join.yml
 
+- name: Bootstrap login anchor group on the DC
+  ansible.builtin.import_tasks: dc-bootstrap.yml
+  when:
+    - sssd_login_anchor_group | length > 0
+    - sssd_login_anchor_bootstrap | bool
+
 - name: Configure SSSD and PAM
   ansible.builtin.import_tasks: configure.yml
 

@@ -123,6 +123,26 @@ There is no lint, typecheck, or CI pipeline. Always run `bash -n` and YAML valid
 - SSSD caches sudo rules with three refresh mechanisms: full refresh (every 6 hours), smart refresh (incremental, every 15 minutes), and rules refresh (on each sudo invocation).
 - **`sudoHost` filtering**: SSSD only downloads rules matching the client host (`ALL`, hostname, FQDN, IP address, netgroup, or network). Rules with `sudoHost: ALL` apply everywhere.
 
+## Login Access Control
+
+- **Per-machine login restrictions** use SSSD `ad_access_filter` (not `pam_access`). Each client renders a fixed chain-matching filter referencing a single per-host **anchor group** `login-<hostname>`: `DOM:<domain>:(memberOf:1.2.840.113556.1.4.1941:=CN=login-<host>,CN=Users,DC=...)`. The OID is AD's `LDAP_MATCHING_RULE_IN_CHAIN`, which evaluates `memberOf` transitively through nested groups. The `DOM:<domain>:` prefix is mandatory: SSSD's filter parser in `src/providers/ad/ad_access.c` (`parse_filter`) splits on colons looking for keyword prefixes; without `DOM:` it misparses the OID's colons and falls through to "deny all".
+- **Anchor groups are not used directly** — class/role groups (`login-all`, `computenode-login`, ...) are nested *inside* the anchor on the DC. Users join the class groups. Adding a new class group requires no SSSD restart and no Ansible run.
+- **Defaults**: the role ships with the feature disabled (`sssd_login_anchor_group: ""`); any enabled AD user can log in. Enable by setting `sssd_login_anchor_group: "login-{{ ansible_hostname }}"` in `group_vars/linux_clients.yml`. Optionally set `sssd_login_anchor_catchall: "login-all"` for a global "trusted everywhere" group. Provisioning auto-creates both groups on the DC (delegated, idempotent) and nests the catch-all inside each host's anchor.
+- **Adding a machine-class group** (purely DC-side, no Ansible):
+  ```bash
+  samba-group add computenode-login
+  samba-tool group addmembers login-node01 computenode-login
+  samba-tool group addmembers login-node02 computenode-login
+  samba-group add-members computenode-login alice,bob
+  ```
+  Access takes effect after SSSD's cache refreshes (minutes), or immediately after `sss_cache -E` on the client.
+- **True per-machine scope**: skip the catch-all entirely (`sssd_login_anchor_catchall: ""`, the role default) and add users (or class groups) directly to a single `login-<hostname>` group. `samba-tool group addmembers login-node01 alice` grants alice access to node01 only.
+- **Raw override** `sssd_ad_access_filter` replaces the chain-matching filter wholesale for advanced cases.
+- **Caveats**:
+  - The anchor group MUST exist on the DC before SSSD restarts with the filter, or the host locks out all users. Bootstrap (`tasks/dc-bootstrap.yml`) runs before `configure.yml` for this reason. Disabling bootstrap (`sssd_login_anchor_bootstrap: false`) is only safe when you've created the group out-of-band first.
+  - `userWorkstations` and `logonHours` AD attributes are not honoured by SSSD on Linux. Group-membership filtering is the only effective mechanism on this stack.
+  - The DC itself does not apply the filter (it is in the `dc` group, not `linux_clients`); admins retain SSH access to the DC regardless of login-group membership.
+
 ## Bash Script Conventions
 
 - All scripts: `set -euo pipefail`, `require_root`, subcommand dispatch via `case`.

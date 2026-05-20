@@ -337,9 +337,12 @@ healthcheck_dc_hostname: "dc01"
 ${members_extra}
 EOF
 
-    # Linux clients group_vars (client-specific only)
+    # Linux clients group_vars: enable ad_access_filter so the test
+    # suite can exercise per-machine login restrictions.  See
+    # AGENTS.md > "Login Access Control".
     cat > "${SCRIPT_DIR}/group_vars/linux_clients.yml" <<EOF
-{}
+sssd_login_anchor_group: "login-{{ ansible_hostname }}"
+sssd_login_anchor_catchall: "login-all"
 EOF
 
     # NFS servers group_vars (separate mode only)

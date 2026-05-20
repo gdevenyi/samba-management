@@ -24,6 +24,19 @@ access_provider = {{ sssd_access_provider }}
 {# permissive mode: log GPO denials but don't enforce them, avoiding #}
 {# lockouts from misconfigured or absent GPOs in a Samba AD domain #}
 ad_gpo_access_control = permissive
+{% if sssd_ad_access_filter %}
+ad_access_filter = {{ sssd_ad_access_filter }}
+{% elif sssd_login_anchor_group %}
+{% set _base_dn = sssd_login_anchor_base_dn or ('CN=Users,DC=' + sssd_domain.replace('.', ',DC=')) %}
+{# Chain-matching (OID 1.2.840.113556.1.4.1941) honours nested group #}
+{# membership, so class groups nested inside the anchor on the DC   #}
+{# grant access without re-rendering this file.                     #}
+{# The DOM:<domain>: prefix is required.  SSSD's ad_access_filter   #}
+{# parser splits on colons looking for keyword prefixes; without    #}
+{# DOM: it misparses the colons in the extensible-match OID syntax  #}
+{# and falls through to "deny all".  See ad_access.c parse_filter.  #}
+ad_access_filter = DOM:{{ sssd_domain }}:(memberOf:1.2.840.113556.1.4.1941:=CN={{ sssd_login_anchor_group }},{{ _base_dn }})
+{% endif %}
 {% endif %}
 {% if sssd_enable_autofs | bool %}
 {# autofs maps stored in AD under OU=automount (nisMap/nisObject).  With #}

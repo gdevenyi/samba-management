@@ -29,8 +29,8 @@ NC='\033[0m'
 
 # --- Test data --------------------------------------------------------------
 # Centralised so setup, exercise, and cleanup all reference the same names.
-TEST_USERS=(testuser1 testuser2 homeuser1 homeuser2 perm_reader perm_writer perm_both perm_outsider)
-TEST_GROUPS=(TestGroup ShareReaders ShareWriters)
+TEST_USERS=(testuser1 testuser2 homeuser1 homeuser2 perm_reader perm_writer perm_both perm_outsider login_allowed login_denied)
+TEST_GROUPS=(TestGroup ShareReaders ShareWriters computenode-login)
 TEST_SHARES=(perm_rw_share perm_admin_share)
 TEST_SUDO_RULES=(admin-all users-nopasswd)
 TEST_SSH_KEY="ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAITestKeyForSambaManagementTest12345 test@samba.test"
@@ -361,6 +361,79 @@ test_sudo_rules() {
         ssh_dc "! sudo samba-sudorule.sh list | grep -q users-nopasswd"
 }
 
+test_login_access_filter() {
+    echo ""
+    echo "--- Login Access Filter (ad_access_filter) ---"
+
+    # Provisioning should have created login-client01 (anchor) and
+    # login-all (catch-all) with the latter nested inside the former.
+    run_test "Anchor group login-client01 exists on DC" \
+        ssh_dc "sudo samba-tool group show login-client01"
+    run_test "Catch-all group login-all exists on DC" \
+        ssh_dc "sudo samba-tool group show login-all"
+    run_test "login-all is nested inside login-client01" \
+        ssh_dc "sudo samba-tool group listmembers login-client01 | grep -qx login-all"
+
+    # The rendered filter on the client must use the DOM: prefix
+    # (required for the extensible-match OID to parse) and reference
+    # this host's anchor group.
+    run_test "Client sssd.conf contains DOM-wrapped chain-match filter" \
+        ssh_client "sudo grep -qE 'ad_access_filter = DOM:samba\\.test:\\(memberOf:1\\.2\\.840\\.113556\\.1\\.4\\.1941:=CN=login-client01' /etc/sssd/sssd.conf"
+
+    # Create one user in the catch-all and one outside it.
+    run_test "Create user login_allowed" \
+        ssh_dc sudo samba-user.sh add login_allowed \
+            --given-name=Login --surname=Allowed \
+            --password=Login0kP@ss123 --force
+    run_test "Create user login_denied" \
+        ssh_dc sudo samba-user.sh add login_denied \
+            --given-name=Login --surname=Denied \
+            --password=L0ginN0P@ss123 --force
+    run_test "Add login_allowed to login-all" \
+        ssh_dc sudo samba-group.sh add-members login-all login_allowed
+
+    run_test "Flush SSSD cache on client (initial)" \
+        ssh_client sudo sss_cache -E
+    sleep 3
+
+    # sssctl user-checks runs the PAM account stack against SSSD, which
+    # is where ad_access_filter is enforced.  IMPORTANT: sssctl always
+    # exits 0 if it ran -- the PAM result is only in the textual output
+    # ("pam_acct_mgmt: Success" vs "pam_acct_mgmt: Permission denied").
+    # Grep the output, do not trust the exit code.
+    run_test "login_allowed passes SSSD PAM account check" \
+        ssh_client "sudo sssctl user-checks login_allowed 2>&1 | grep -q '^pam_acct_mgmt: Success'"
+    run_test "login_denied fails SSSD PAM account check" \
+        ssh_client "sudo sssctl user-checks login_denied 2>&1 | grep -q '^pam_acct_mgmt: Permission denied'"
+
+    # Dynamic class-group test: create a class group, nest it in the
+    # anchor, add login_denied -- they should now be allowed without
+    # any Ansible run or sssd.conf change.
+    run_test "Create class group computenode-login on DC" \
+        ssh_dc 'sudo samba-group.sh add computenode-login --description="Compute node login class"'
+    run_test "Nest computenode-login inside login-client01" \
+        ssh_dc 'sudo samba-tool group addmembers login-client01 computenode-login'
+    run_test "Add login_denied to computenode-login" \
+        ssh_dc sudo samba-group.sh add-members computenode-login login_denied
+    run_test "Flush SSSD cache on client (after class group added)" \
+        ssh_client sudo sss_cache -E
+    sleep 3
+    run_test "login_denied now passes via chain matching" \
+        ssh_client "sudo sssctl user-checks login_denied 2>&1 | grep -q '^pam_acct_mgmt: Success'"
+
+    # Revoke: removing the class from the anchor locks login_denied
+    # back out, but login_allowed remains allowed via the catch-all.
+    run_test "Remove computenode-login from login-client01" \
+        ssh_dc 'sudo samba-tool group removemembers login-client01 computenode-login'
+    run_test "Flush SSSD cache on client (after revoke)" \
+        ssh_client sudo sss_cache -E
+    sleep 3
+    run_test "login_denied is rejected again after class removal" \
+        ssh_client "sudo sssctl user-checks login_denied 2>&1 | grep -q '^pam_acct_mgmt: Permission denied'"
+    run_test "login_allowed still passes via catch-all" \
+        ssh_client "sudo sssctl user-checks login_allowed 2>&1 | grep -q '^pam_acct_mgmt: Success'"
+}
+
 test_autofs_maps() {
     echo ""
     echo "--- Autofs Map Management ---"
@@ -397,6 +470,7 @@ main() {
     test_ssh_keys
     test_sudo_rules
     test_autofs_maps
+    test_login_access_filter
 
     echo ""
     echo "=============================="

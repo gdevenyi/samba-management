@@ -416,8 +416,11 @@ cmd_password_policy_set() {
 
 # ---------------------------------------------------------------------------
 # SSH key management
-# SSH public keys are stored in the altSecurityIdentities attribute using
-# the "ssh:" prefix convention.  This avoids AD schema extensions.
+# SSH public keys are stored as raw OpenSSH-format values in the
+# altSecurityIdentities attribute, with no prefix.  SSSD's ssh responder
+# emits each attribute value verbatim to sss_ssh_authorizedkeys and from
+# there to sshd; any "ssh: " or similar prefix would be passed through
+# unchanged and sshd would refuse the key as malformed.
 # Shared helpers (user_dn, ldif_unfold, validate_ldif_value) live in
 # lib/common.sh and are used here.
 # ---------------------------------------------------------------------------
@@ -436,9 +439,13 @@ _list_sshkeys() {
         printf '%s\n' "$lines" \
             | sed 's/^altSecurityIdentities: //' \
             | while IFS= read -r line; do
+                # Legacy entries written by older versions carried a
+                # "ssh: " prefix; strip it on display so a mixed corpus
+                # still reads cleanly.  New writes use the raw form.
                 case "$line" in
                     ssh:\ *) printf "  %s\n" "${line#ssh: }" ;;
-                    ssh:*) printf "  %s\n" "${line#ssh:}" ;;
+                    ssh:*)   printf "  %s\n" "${line#ssh:}" ;;
+                    *)       printf "  %s\n" "$line" ;;
                 esac
             done
     fi
@@ -459,7 +466,7 @@ _add_sshkey() {
 dn: ${target_dn}
 changetype: modify
 add: altSecurityIdentities
-altSecurityIdentities: ssh: ${key}
+altSecurityIdentities: ${key}
 EOF
     if [[ $rc -eq 0 ]]; then
         log_info "SSH key added to '${username}'"
@@ -525,13 +532,25 @@ cmd_remove_sshkey() {
 
     dry_run "Would remove SSH key from '${username}'" && return
 
+    # Try the raw form first (current write format); fall back to the
+    # legacy "ssh: " prefix so we can still remove keys written by older
+    # versions.  Either succeeds or both fail.
     local rc=0
     ldbmodify -H /var/lib/samba/private/sam.ldb <<EOF 2>/dev/null || rc=$?
 dn: ${target_dn}
 changetype: modify
 delete: altSecurityIdentities
+altSecurityIdentities: ${key}
+EOF
+    if [[ $rc -ne 0 ]]; then
+        rc=0
+        ldbmodify -H /var/lib/samba/private/sam.ldb <<EOF 2>/dev/null || rc=$?
+dn: ${target_dn}
+changetype: modify
+delete: altSecurityIdentities
 altSecurityIdentities: ssh: ${key}
 EOF
+    fi
     if [[ $rc -eq 0 ]]; then
         log_info "SSH key removed from '${username}'"
     else

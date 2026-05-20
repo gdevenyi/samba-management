@@ -56,8 +56,10 @@ ad_access_filter = DOM:{{ sssd_domain }}:(memberOf:1.2.840.113556.1.4.1941:=CN={
 autofs_provider = ad
 {% endif %}
 {% if sssd_enable_ssh | bool %}
-{# SSH key retrieval from AD altSecurityIdentities attribute. #}
-{# Keys are stored with "ssh: " prefix; SSSD strips it automatically. #}
+{# SSH key retrieval from AD altSecurityIdentities attribute.  Keys are #}
+{# stored as raw OpenSSH-format values (no prefix): SSSD's ssh responder #}
+{# does not strip arbitrary prefixes, so anything other than a valid    #}
+{# OpenSSH key would be passed through to sshd verbatim and rejected.   #}
 ldap_user_ssh_public_key = altSecurityIdentities
 ldap_user_extra_attrs = altSecurityIdentities
 {% endif %}

@@ -316,6 +316,35 @@ test_ssh_keys() {
     sleep 2
     run_test "Client retrieves SSH key via sss_ssh_authorizedkeys" \
         ssh_client "sss_ssh_authorizedkeys testuser1 | grep -q 'AAAAC3NzaC1lZDI1NTE5AAAAITestKeyForSambaManagementTest12345'"
+
+    # End-to-end SSH login test: generate a real keypair, store the public
+    # half in AD via samba-user.sh, then attempt `ssh -i <priv>` to the
+    # client as the AD user.  This is the test the existing
+    # sss_ssh_authorizedkeys grep doesn't cover -- it would pass even if
+    # SSSD emits the key with a "ssh: " prefix that sshd rejects.
+    local e2e_key="/tmp/sambatest-${RANDOM}"
+    rm -f "${e2e_key}" "${e2e_key}.pub"
+    ssh-keygen -t ed25519 -N "" -C "samba-mgmt-e2e" -f "${e2e_key}" >/dev/null
+    local e2e_pub
+    e2e_pub=$(cat "${e2e_key}.pub")
+    run_test "Add real SSH key to testuser1 for end-to-end login" \
+        ssh_dc "sudo samba-user.sh add-sshkey testuser1 --key='${e2e_pub}'"
+    # Allow testuser1 to log in via the login filter on this host.
+    run_test "Add testuser1 to login-all" \
+        ssh_dc "sudo samba-group.sh add-members login-all testuser1"
+    run_test "Flush SSSD cache so the new key and filter take effect" \
+        ssh_client "sudo sss_cache -E"
+    sleep 3
+    run_test "End-to-end: SSH to client as testuser1 with AD-stored key" \
+        ssh -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null \
+            -o ConnectTimeout=10 -o BatchMode=yes \
+            -i "${e2e_key}" "testuser1@${SMB_TEST_CLIENT_IP}" "id"
+    run_test "Remove testuser1 from login-all" \
+        ssh_dc "sudo samba-group.sh remove-members login-all testuser1 --force"
+    run_test "Remove real SSH key from testuser1" \
+        ssh_dc "sudo samba-user.sh remove-sshkey testuser1 --key='${e2e_pub}'"
+    rm -f "${e2e_key}" "${e2e_key}.pub"
+
     run_test "Remove SSH key from testuser1" \
         ssh_dc "sudo samba-user.sh remove-sshkey testuser1 --key='${TEST_SSH_KEY}'"
     run_test "Verify SSH key removed from testuser1" \

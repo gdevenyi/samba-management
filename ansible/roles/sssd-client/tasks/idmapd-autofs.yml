@@ -44,18 +44,3 @@
         create: true
         mode: "0644"
       notify: Restart autofs
-
-    # One-shot cleanup of files written by previous (file-based) versions
-    # of this role.  Only runs when SSSD autofs is enabled, because the
-    # legacy maps should be kept as fallback when sssd_enable_autofs is false.
-    - name: Remove legacy static autofs map files
-      ansible.builtin.file:
-        path: "{{ item }}"
-        state: absent
-      loop:
-        - /etc/auto.master.d/shares.autofs
-        - /etc/auto.master.d/home.autofs
-        - /etc/auto.shares
-        - /etc/auto.home
-      when: sssd_enable_autofs | bool
-      notify: Restart autofs

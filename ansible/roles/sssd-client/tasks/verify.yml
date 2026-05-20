@@ -11,10 +11,16 @@
   delay: "{{ sssd_user_resolve_delay }}"
   until: getent_check.rc == 0
 
+# Mirror the DC's check: rc=0 alone isn't enough -- if SSSD is still
+# warming up and the `files` NSS source answers first, this could match
+# the local `users` group (GID 100) instead of the AD-resolved one.
 - name: Verify domain group lookup
   ansible.builtin.command: "getent group 'domain users'"
   register: getent_group
   changed_when: false
   retries: "{{ sssd_group_resolve_retries }}"
   delay: "{{ sssd_group_resolve_delay }}"
-  until: getent_group.rc == 0
+  until:
+    - getent_group.rc == 0
+    - "'domain users:' in getent_group.stdout"
+    - getent_group.stdout.split(':')[2] | int != 100

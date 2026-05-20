@@ -14,8 +14,8 @@ samba_home_base: "/home/ad"
 # file in /etc/exports.d/<name>.exports.  Access control is via POSIX
 # permissions on the directory.  Kept as nfs_server_shares (not samba_shares)
 # so a storage host can deliberately export a different share set from what
-# the DC seeds into AD autofs maps -- usually identical but the split lets
-# operators stage migrations or limit exposure.
+# the DC seeds into AD autofs maps — usually identical but the split lets
+# operators stage changes or limit exposure.
 nfs_server_shares: []
 
 # --- NFS options (shared with samba-dc role; same defaults) ---

@@ -20,8 +20,10 @@ services = nss, pam
 [domain/{{ samba_realm }}]
 id_provider = ad
 ad_domain = {{ samba_realm | lower }}
-ad_server = {{ ansible_fqdn }}
-ldap_uri = ldap://{{ ansible_fqdn }}
+{# No explicit ad_server/ldap_uri: the DC's local Samba DNS already serves #}
+{# the _ldap._tcp / _kerberos._tcp SRV records for the realm, so SSSD's    #}
+{# built-in service discovery picks the right host and scales naturally   #}
+{# the day a second DC is added.                                          #}
 ldap_sasl_authid = {{ ansible_hostname | upper }}$@{{ samba_realm | upper }}
 {# Use bare usernames so NFSv4 idmap (perm_writer@samba.test) resolves to #}
 {# the correct local UID.  With prefix names (SAMBA\perm_writer) the NFS #}

@@ -18,7 +18,7 @@ NC='\033[0m'
 # --- Configurable via environment or auto-detected ---
 REALM="${REALM:-}"
 DC_HOST="${DC_HOST:-}"
-# NFS server hostname (defaults to DC_HOST for backward compatibility).
+# NFS server hostname (defaults to DC_HOST when unset).
 NFS_HOST="${NFS_HOST:-}"
 # User to test NSS resolution with -- override for sites that renamed the
 # default Administrator account.
@@ -97,7 +97,7 @@ echo ""
 detect_realm
 detect_dc
 
-# Default NFS_HOST to DC_HOST for backward compatibility.
+# Default NFS_HOST to DC_HOST when unset.
 if [[ -z "$NFS_HOST" ]]; then
     NFS_HOST="$DC_HOST"
 fi

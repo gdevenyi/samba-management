@@ -1,10 +1,9 @@
 # deprovision-linux.yml - Ansible playbook to remove a Linux client from the AD domain.
 #
 # Reverses the provisioning done by provision-linux-sssd.yml: leaves the
-# domain, stops/disables SSSD + autofs, removes SSSD and autofs configuration
-# (including the legacy file-based map files from older versions of this
-# role).  failed_when:false / state=absent are used so the playbook is
-# idempotent even on partially-provisioned clients.
+# domain, stops/disables SSSD + autofs, removes SSSD and autofs configuration.
+# failed_when:false / state=absent are used so the playbook is idempotent
+# even on partially-provisioned clients.
 ---
 - name: Deprovision Linux client from domain
   hosts: linux_clients
@@ -50,16 +49,3 @@
         regexp: '^automount:'
         state: absent
       failed_when: false
-
-    # Remove any local autofs map files.  Covers both the legacy file-based
-    # layout (this role used to write these) and any ad-hoc files an operator
-    # may have dropped.  AD-stored maps live in sam.ldb and are unaffected.
-    - name: Remove local autofs map files
-      ansible.builtin.file:
-        path: "{{ item }}"
-        state: absent
-      loop:
-        - /etc/auto.master.d/shares.autofs
-        - /etc/auto.shares
-        - /etc/auto.master.d/home.autofs
-        - /etc/auto.home

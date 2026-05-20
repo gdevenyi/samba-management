@@ -24,6 +24,13 @@ access_provider = {{ sssd_access_provider }}
 {# them costs round trips and reveals no extra data on a single-forest    #}
 {# Samba domain.  Explicit is better than relying on provider defaults.   #}
 ldap_referrals = false
+{# Disable DDNS for determinism: SSSD's GSS-TSIG updates do reach the     #}
+{# DC's AD-integrated zone (this works regardless of the site DNS being   #}
+{# unmodifiable), but any A/PTR our stack actually relies on -- the DC's  #}
+{# own PTR, the NFS server's A/PTR for rpc.gssd reverse resolution -- is  #}
+{# registered explicitly during provisioning.  Leaving DDNS on adds       #}
+{# nothing here and just produces background traffic and journald noise.  #}
+dyndns_update = false
 {% if sssd_access_provider == 'ad' %}
 {# permissive mode: log GPO denials but don't enforce them, avoiding #}
 {# lockouts from misconfigured or absent GPOs in a Samba AD domain #}

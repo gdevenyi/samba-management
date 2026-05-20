@@ -1,10 +1,18 @@
-# dns-register.yml - Register this storage host's A record in the Samba DC's DNS.
+# dns-register.yml - Register this storage host's A and PTR records in the
+# Samba DC's DNS.
 #
 # `realm join` via SSSD/adcli creates the AD computer object but does NOT
 # register a DNS A record for the host (that's a Windows-specific behaviour
 # of the MS join client).  Without an A record, the DC can't `ssh storage01`
 # to manage home directories, and clients can't mount autofs entries that
 # reference the storage host by short name.
+#
+# The matching PTR is registered explicitly here instead of being left to
+# SSSD's automatic DDNS (which we disable for determinism, see
+# sssd-client/templates/sssd.conf.j2).  rpc.gssd on NFS clients must
+# reverse-resolve the storage IP to build the nfs/<fqdn> SPN -- without a
+# PTR the mount silently falls back and Kerberos krb5p mounts fail with
+# "unable to resolve" in the client journal.
 #
 # Idempotent: `samba-tool dns query` succeeds when the record exists and
 # returns non-zero (with "Record does not exist") when it doesn't.
@@ -52,5 +60,57 @@
   delegate_to: "{{ groups['dc'][0] }}"
   become: true
   when: _nfs_dns_check.rc != 0
+  changed_when: true
+  no_log: true
+
+# PTR record uses the reverse zone the samba-dc role created
+# (<third>.<second>.<first>.in-addr.arpa for the DC's /24).
+- name: Compute storage host's reverse-zone components
+  ansible.builtin.set_fact:
+    _nfs_rev_octets: "{{ ansible_default_ipv4.address.split('.') }}"
+
+- name: Compute storage host's reverse zone name
+  ansible.builtin.set_fact:
+    _nfs_reverse_zone: "{{ _nfs_rev_octets[2] }}.{{ _nfs_rev_octets[1] }}.{{ _nfs_rev_octets[0] }}.in-addr.arpa"
+
+- name: Check if storage host PTR record already exists in Samba DNS
+  ansible.builtin.command:
+    argv:
+      - samba-tool
+      - dns
+      - query
+      - "{{ groups['dc'][0] }}"
+      - "{{ _nfs_reverse_zone }}"
+      - "{{ _nfs_rev_octets[3] }}"
+      - PTR
+      - "-U"
+      - Administrator
+  environment:
+    PASSWD: "{{ sssd_admin_password }}"
+  register: _nfs_ptr_check
+  changed_when: false
+  failed_when: false
+  delegate_to: "{{ groups['dc'][0] }}"
+  become: true
+  no_log: true
+
+- name: Register storage host PTR record in Samba DNS
+  ansible.builtin.command:
+    argv:
+      - samba-tool
+      - dns
+      - add
+      - "{{ groups['dc'][0] }}"
+      - "{{ _nfs_reverse_zone }}"
+      - "{{ _nfs_rev_octets[3] }}"
+      - PTR
+      - "{{ ansible_fqdn }}"
+      - "-U"
+      - Administrator
+  environment:
+    PASSWD: "{{ sssd_admin_password }}"
+  delegate_to: "{{ groups['dc'][0] }}"
+  become: true
+  when: _nfs_ptr_check.rc != 0
   changed_when: true
   no_log: true

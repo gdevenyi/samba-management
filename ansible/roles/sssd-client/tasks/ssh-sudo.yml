@@ -7,9 +7,13 @@
       ansible.builtin.copy:
         dest: /etc/ssh/sshd_config.d/sssd.conf
         mode: "0644"
+        # sss_ssh_authorizedkeys talks to the SSSD socket; the privileged
+        # work happens inside SSSD itself, so we don't need to run the
+        # helper as root.  nobody matches upstream packaging guidance and
+        # cuts the privilege of code launched from sshd's parent context.
         content: |
           AuthorizedKeysCommand /usr/bin/sss_ssh_authorizedkeys
-          AuthorizedKeysCommandUser root
+          AuthorizedKeysCommandUser nobody
       notify: Restart sshd
 
 - name: Configure sudo via SSSD

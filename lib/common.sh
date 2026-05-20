@@ -148,7 +148,7 @@ validate_ldif_value() {
     esac
 }
 
-# Invalidate Samba's gencache.tdb (legacy name: "winbind cache").  Group
+# Invalidate Samba's gencache.tdb (historically called "winbind cache").  Group
 # membership changes via samba-tool are persisted in the LDB immediately,
 # but `net cache flush` drops any locally cached lookups so a follow-up
 # `id` / `getent` / NFS access check sees the new state.

@@ -447,6 +447,49 @@ test_login_access_filter() {
         ssh_dc '! sudo samba-tool group show login-delete-probe 2>/dev/null'
 }
 
+test_dns_persistence() {
+    echo ""
+    echo "--- DNS Persistence Across Reboot ---"
+    # The role drops a systemd-resolved snippet so the DC stays the
+    # resolver for the AD domain even after DHCP renews the lease or the
+    # box reboots.  The runtime `resolvectl dns ...` call alone wouldn't
+    # survive either, so this test proves the persistent path.
+    run_test "Persistent samba-ad resolved drop-in is present" \
+        ssh_client "sudo test -f /etc/systemd/resolved.conf.d/samba-ad.conf"
+    run_test "Reboot client to clear runtime resolvectl state" \
+        ssh_client "sudo systemctl reboot" || true
+    # Wait for SSH to come back; client01 takes ~25-40s on cloud-init VMs.
+    local i=0
+    while ! ssh_client true 2>/dev/null; do
+        i=$((i+1))
+        if [[ $i -gt 30 ]]; then
+            echo "    client did not come back in 60s"
+            TESTS_FAIL=$((TESTS_FAIL + 1))
+            return
+        fi
+        sleep 2
+    done
+    # Even after SSH returns, sssd_be is still establishing its provider
+    # connection.  Poll on the actual resolution we care about so the test
+    # doesn't race; getent over SSSD is the slowest of the three, so once
+    # it succeeds the SRV / resolvectl checks below are trivially green.
+    i=0
+    while ! ssh_client "getent passwd Administrator >/dev/null 2>&1"; do
+        i=$((i+1))
+        if [[ $i -gt 30 ]]; then
+            echo "    SSSD did not warm up in 60s"
+            break
+        fi
+        sleep 2
+    done
+    run_test "After reboot: resolvectl reports DC as DNS for AD domain" \
+        ssh_client "resolvectl domain | grep -q 'samba.test' && resolvectl dns | grep -q '${SMB_TEST_DC_IP}'"
+    run_test "After reboot: AD SRV records resolve via the DC" \
+        ssh_client "host -t SRV _ldap._tcp.samba.test | grep -q SRV"
+    run_test "After reboot: getent passwd Administrator resolves via SSSD" \
+        ssh_client "getent passwd Administrator | grep -q '^administrator:'"
+}
+
 test_autofs_maps() {
     echo ""
     echo "--- Autofs Map Management ---"
@@ -484,6 +527,9 @@ main() {
     test_sudo_rules
     test_autofs_maps
     test_login_access_filter
+    # Keep DNS persistence last because it reboots the client; tests
+    # that depend on the client running need to have completed by then.
+    test_dns_persistence
 
     echo ""
     echo "=============================="

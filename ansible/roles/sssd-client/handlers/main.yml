@@ -15,3 +15,11 @@
   ansible.builtin.systemd:
     name: ssh
     state: restarted
+
+# Pick up changes under /etc/systemd/resolved.conf.d/ without rebooting.
+# `restart` is the only way to make resolved re-parse drop-ins; reload
+# is a no-op for resolved.
+- name: Reload systemd-resolved
+  ansible.builtin.systemd:
+    name: systemd-resolved
+    state: restarted

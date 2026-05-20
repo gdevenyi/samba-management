@@ -28,7 +28,67 @@
     DEBIAN_FRONTEND: noninteractive
 
 # DNS must resolve the AD domain before realm discover/join can talk to the DC.
-- name: Set DNS server to DC for domain resolution
+#
+# The site DNS/DHCP is externally owned and cannot be modified, so we have
+# to override resolution *here*.  The override must be persistent across
+# reboot and DHCP renewal -- site DHCP will keep restoring its own
+# resolver settings on every lease refresh, so a runtime-only resolvectl
+# call would last only until the next reboot.
+#
+# Persistent: systemd-resolved drop-in under /etc/systemd/resolved.conf.d/
+# with Domains=~<realm> (the ~ prefix marks it as a *routing* domain --
+# only queries inside the AD zone go to the DC, everything else continues
+# to use whatever resolver DHCP supplies).
+#
+# Immediate: the resolvectl pair below applies the same override to the
+# running stub-resolver without a reload, so realm join / SSSD startup in
+# the rest of this play can use the new DNS right away.
+- name: Ensure systemd-resolved drop-in directory exists
+  ansible.builtin.file:
+    path: /etc/systemd/resolved.conf.d
+    state: directory
+    mode: "0755"
+    owner: root
+    group: root
+
+# Both forward and reverse AD lookups must go to the DC:
+#   - Forward: <realm> (no leading ~) -- this serves *two* purposes that
+#     a pure routing domain (~realm) would not: it is also a *search*
+#     domain, so short names from the AD zone (autofs map entries like
+#     `storage01`, AD-issued hostnames in keytabs, etc.) get expanded to
+#     storage01.<realm> before lookup.  Without the search behaviour
+#     autofs's add_host_addrs() fails with "Temporary failure in name
+#     resolution" and Kerberos NFS mounts never happen.
+#   - Reverse: ~<rev>.in-addr.arpa -- pure routing.  This covers
+#     rpc.gssd's reverse resolution of the NFS server IP (the site DNS
+#     has no PTR records for the AD subnet), and there is no notion of
+#     a "search" suffix for in-addr.arpa, so the ~ prefix is correct.
+# Everything outside the AD/reverse zones stays on the site DNS that DHCP
+# supplies because we don't claim ~. (the catch-all routing domain).
+- name: Compute DC subnet's reverse-zone name for resolved Domains=
+  ansible.builtin.set_fact:
+    _sssd_dc_reverse_zone: >-
+      {%- set ip = sssd_dc_ip | default(groups['dc'][0]) -%}
+      {%- set o = ip.split('.') -%}
+      {{ o[2] }}.{{ o[1] }}.{{ o[0] }}.in-addr.arpa
+
+- name: Deploy persistent AD DNS routing drop-in
+  ansible.builtin.copy:
+    dest: /etc/systemd/resolved.conf.d/samba-ad.conf
+    mode: "0644"
+    owner: root
+    group: root
+    content: |
+      # Managed by sssd-client role -- do not edit by hand.
+      # Routes AD-domain queries (forward and reverse) to the DC; site DNS
+      # still wins for everything else, so this is safe when the site
+      # resolver is the one shipped by DHCP.
+      [Resolve]
+      DNS={{ sssd_dc_ip | default(groups['dc'][0]) }}
+      Domains={{ sssd_domain }} ~{{ _sssd_dc_reverse_zone }}
+  notify: Reload systemd-resolved
+
+- name: Set DNS server to DC for domain resolution (immediate effect)
   ansible.builtin.shell: >-
     resolvectl dns {{ ansible_facts['default_ipv4']['interface'] }} {{ sssd_dc_ip | default(groups['dc'][0]) }}
     && resolvectl domain {{ ansible_facts['default_ipv4']['interface'] }} {{ sssd_domain }}

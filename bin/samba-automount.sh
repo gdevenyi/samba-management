@@ -23,8 +23,7 @@ AUTOMOUNT_OU="OU=automount"
 DEFAULT_NFS_SEC="${NFS_SEC:-krb5p}"
 # NFS_SERVER is set by the samba-dc role's config template -- it equals
 # samba_nfs_server when a dedicated storage host is configured, otherwise
-# the DC's FQDN.  Falls back to this host's FQDN if the config is missing
-# (e.g. legacy installs without the variable).
+# the DC's FQDN.  Falls back to this host's FQDN if the config is missing.
 DEFAULT_NFS_SERVER="${NFS_SERVER:-$(hostname -f)}"
 
 cmd_usage() {

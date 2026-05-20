@@ -48,7 +48,7 @@ samba_nfs_sec: "krb5p"
 # Whether to export samba_home_base (default /home/ad) via NFS for home directory mounts.
 samba_nfs_export_homes: true
 # Hostname of the NFS server for autofs map entries stored in AD.
-# Empty string (default) means the DC serves NFS — backward compatible.
+# Empty string (default) means the DC serves NFS.
 # Set to a hostname (e.g. "storage01") to offload NFS to a dedicated
 # storage server provisioned via the nfs-server role.
 samba_nfs_server: ""

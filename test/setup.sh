@@ -66,11 +66,10 @@ check_prereqs() {
     for cmd in virsh virt-install qemu-img wget cloud-localds; do
         command -v "$cmd" &>/dev/null || die "Missing: $cmd (install: apt install libvirt-clients qemu-utils cloud-image-utils)"
     done
-    if [[ ! -f "$SSH_KEY_FILE" ]]; then
-        mkdir -p "$SSH_KEY_DIR"
-        ssh-keygen -t ed25519 -f "$SSH_KEY_FILE" -N "" -C "samba-test"
-        log_info "Generated test SSH key: ${SSH_KEY_FILE}"
-    fi
+    mkdir -p "$SSH_KEY_DIR"
+    rm -f "$SSH_KEY_FILE" "$SSH_KEY_FILE.pub"
+    ssh-keygen -t ed25519 -f "$SSH_KEY_FILE" -N "" -C "samba-test"
+    log_info "Generated test SSH key: ${SSH_KEY_FILE}"
     local vms_to_check=("$DC_NAME" "$CLIENT_NAME")
     if [[ "$TEST_MODE" == "separate" ]]; then
         vms_to_check+=("$STORAGE_NAME")

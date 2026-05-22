@@ -33,7 +33,16 @@ TEST_USERS=(testuser1 testuser2 homeuser1 homeuser2 perm_reader perm_writer perm
 TEST_GROUPS=(TestGroup ShareReaders ShareWriters computenode-login login-delete-probe)
 TEST_SHARES=(perm_rw_share perm_admin_share)
 TEST_SUDO_RULES=(admin-all users-nopasswd)
-TEST_SSH_KEY="ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAITestKeyForSambaManagementTest12345 test@samba.test"
+TEST_SSH_KEY_COMMENT="samba-mgmt-test-data"
+TEST_SSH_KEY_FILE=""
+TEST_SSH_KEY=""
+
+generate_test_ssh_key() {
+    TEST_SSH_KEY_FILE=$(mktemp /tmp/samba-mgmt-test-key.XXXXXX)
+    rm -f "$TEST_SSH_KEY_FILE" "${TEST_SSH_KEY_FILE}.pub"
+    ssh-keygen -t ed25519 -N "" -C "$TEST_SSH_KEY_COMMENT" -f "$TEST_SSH_KEY_FILE" >/dev/null
+    TEST_SSH_KEY=$(<"${TEST_SSH_KEY_FILE}.pub")
+}
 
 # --- Test runner ------------------------------------------------------------
 run_test() {
@@ -95,6 +104,9 @@ cleanup_test_state() {
     # Stray temp files on the NFS host
     ssh_nfs "sudo rm -f /tmp/perm-test-file.txt" 2>/dev/null || true
 
+    if [[ -n "${TEST_SSH_KEY_FILE:-}" ]]; then
+        rm -f "$TEST_SSH_KEY_FILE" "${TEST_SSH_KEY_FILE}.pub"
+    fi
     return "$rc"
 }
 
@@ -321,14 +333,14 @@ test_ssh_keys() {
     run_test "Add SSH key to testuser1" \
         ssh_dc "sudo samba-user.sh add-sshkey testuser1 --key='${TEST_SSH_KEY}'"
     run_test "List SSH keys for testuser1 shows the key" \
-        ssh_dc "sudo samba-user.sh list-sshkeys testuser1 | grep -q 'AAAAC3NzaC1lZDI1NTE5AAAAITestKeyForSambaManagementTest12345'"
+        ssh_dc "sudo samba-user.sh list-sshkeys testuser1 | grep -Fq '${TEST_SSH_KEY_COMMENT}'"
     run_test "Show user testuser1 includes SSH keys" \
         ssh_dc "sudo samba-user.sh show testuser1 | grep -q 'SSH Keys'"
     run_test "Flush SSSD cache for SSH key retrieval" \
         ssh_client sudo sss_cache -E
     sleep 2
     run_test "Client retrieves SSH key via sss_ssh_authorizedkeys" \
-        ssh_client "sss_ssh_authorizedkeys testuser1 | grep -q 'AAAAC3NzaC1lZDI1NTE5AAAAITestKeyForSambaManagementTest12345'"
+        ssh_client "sss_ssh_authorizedkeys testuser1 | grep -Fq '${TEST_SSH_KEY_COMMENT}'"
 
     # End-to-end SSH login test: generate a real keypair, store the public
     # half in AD via samba-user.sh, then attempt `ssh -i <priv>` to the
@@ -361,7 +373,7 @@ test_ssh_keys() {
     run_test "Remove SSH key from testuser1" \
         ssh_dc "sudo samba-user.sh remove-sshkey testuser1 --key='${TEST_SSH_KEY}'"
     run_test "Verify SSH key removed from testuser1" \
-        ssh_dc "! sudo samba-user.sh list-sshkeys testuser1 | grep -q 'AAAAC3NzaC1lZDI1NTE5AAAAITestKeyForSambaManagementTest12345'"
+        ssh_dc "! sudo samba-user.sh list-sshkeys testuser1 | grep -Fq '${TEST_SSH_KEY_COMMENT}'"
 }
 
 test_sudo_rules() {
@@ -552,6 +564,7 @@ main() {
     # Cleanup runs on every exit path -- successful completion, assertion
     # failure, ^C, or unexpected error caught by the ERR trap.
     trap cleanup_test_state EXIT
+    generate_test_ssh_key
 
     echo "=============================="
     echo "  Samba Management Test Suite"

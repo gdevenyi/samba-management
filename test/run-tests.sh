@@ -240,6 +240,15 @@ test_permissions() {
     run_test "Restart SSSD and warm initgroups on storage host" \
         ssh_nfs "sudo systemctl restart sssd && sudo bash -c 'for f in /proc/net/rpc/auth.unix.gid /proc/net/rpc/nfs4.nametoid /proc/net/rpc/nfs4.idtoname; do [ -e \"\$f/flush\" ] && date +%s > \"\$f/flush\"; done' && for u in perm_writer perm_both perm_reader; do getent initgroups \"\$u\" >/dev/null; done"
     diag_dump "after warmup"
+    run_test "Verify ShareWriters visible in perm_writer initgroups" \
+        ssh_nfs "SW_GID=\$(getent group ShareWriters | cut -d: -f3) && [ -n \"\$SW_GID\" ] && for i in \$(seq 1 30); do getent initgroups perm_writer 2>/dev/null | grep -qw \"\$SW_GID\" && exit 0; sleep 1; done; echo 'ShareWriters GID not found in initgroups after 30s' >&2; exit 1"
+    diag_dump "after initgroups verify"
+    # Re-chown share directories with the now-fresh SSSD GID for ShareWriters.
+    # The initial chown in test_permissions_setup may have used a stale GID
+    # if the storage host's SSSD still cached a previous ShareWriters RID
+    # (e.g. from a prior test run that deleted+recreated groups).
+    run_test "Re-chown share directories with fresh ShareWriters GID" \
+        ssh_nfs "sudo chown root:ShareWriters /data/perm_rw_share /data/perm_admin_share && sudo chmod 2770 /data/perm_rw_share /data/perm_admin_share"
 
     run_test "perm_writer can write to perm_rw_share via NFS" \
         ssh_client "echo 'Wr1terPass!234' | kinit perm_writer@SAMBA.TEST && echo 'writer test' > /data/perm_rw_share/writer_file.txt; rc=\$?; kdestroy; exit \$rc"

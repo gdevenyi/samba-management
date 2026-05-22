@@ -350,7 +350,7 @@ test_ssh_keys() {
     sleep 3
     run_test "End-to-end: SSH to client as testuser1 with AD-stored key" \
         ssh -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null \
-            -o ConnectTimeout=10 -o BatchMode=yes \
+            -o ConnectTimeout=10 -o BatchMode=yes -o IdentitiesOnly=yes \
             -i "${e2e_key}" "testuser1@${SMB_TEST_CLIENT_IP}" "id"
     run_test "Remove testuser1 from login-all" \
         ssh_dc "sudo samba-group.sh remove-members login-all testuser1 --force"

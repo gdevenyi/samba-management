@@ -33,6 +33,7 @@ SSH_OPTS=(
     -o StrictHostKeyChecking=no
     -o UserKnownHostsFile=/dev/null
     -o ConnectTimeout=10
+    -o IdentitiesOnly=yes
 )
 
 # shellcheck disable=SC2029  # $* is intentionally expanded on the local side

@@ -44,6 +44,7 @@ destroy_vm "$CLIENT_NAME"
 rm -f "${SCRIPT_DIR}/inventory.yml"
 rm -f "${SCRIPT_DIR}/test-config.env"
 rm -rf "${SCRIPT_DIR}/group_vars"
+rm -rf "${SCRIPT_DIR}/.ssh"
 
 log_info "Base cloud image preserved: /var/lib/libvirt/images/ubuntu-noble-base.qcow2"
 log_info "=== Teardown Complete ==="

@@ -10,7 +10,7 @@
 # group_vars for running the provisioning playbooks.
 #
 # Requires libvirt group membership (usermod -aG libvirt $USER).
-# Usage: sudo [TEST_MODE=separate] ./test/setup.sh
+# Usage: [TEST_MODE=separate] ./test/setup.sh
 set -euo pipefail
 # shellcheck disable=SC2154  # 's' is assigned at trap-firing time
 trap 's=$?; echo >&2 "$0: Error on line "$LINENO": $BASH_COMMAND"; exit $s' ERR
@@ -58,10 +58,8 @@ source "${SCRIPT_DIR}/lib.sh"
 # Prerequisites
 # ---------------------------------------------------------------------------
 check_prereqs() {
-    # When invoked with sudo (the documented invocation) `groups` reports
-    # root's groups.  Check the invoking user where possible; root always
-    # has libvirt access via the unix-sock-group anyway.
-    local check_user="${SUDO_USER:-$USER}"
+    # Check libvirt group membership for the current user.
+    local check_user="$USER"
     if [[ "$EUID" -ne 0 ]] && ! id -nG "$check_user" 2>/dev/null | grep -qw libvirt; then
         die "User '${check_user}' not in libvirt group. Run: sudo usermod -aG libvirt ${check_user}  then log out/in"
     fi
@@ -126,11 +124,6 @@ SMB_TEST_STORAGE_IP="${STORAGE_IP}"
 SMB_TEST_STORAGE_NAME="${STORAGE_NAME}"
 EOF
     chmod 600 "$CONFIG_FILE"
-    # When invoked with sudo, hand the file back to the invoking user so
-    # the un-privileged provision.sh / run-tests.sh can read it.
-    if [[ -n "${SUDO_USER:-}" ]]; then
-        chown "${SUDO_USER}:" "$CONFIG_FILE"
-    fi
     log_info "Admin password: ${password}"
 }
 
@@ -356,13 +349,6 @@ healthcheck_nfs_server: "storage01"
 EOF
     fi
 
-    # Hand generated files back to the invoking user so the un-privileged
-    # provision.sh / run-tests.sh can read them.
-    if [[ -n "${SUDO_USER:-}" ]]; then
-        chown -R "${SUDO_USER}:" \
-            "${SCRIPT_DIR}/inventory.yml" \
-            "${SCRIPT_DIR}/group_vars"
-    fi
 
     log_info "Generated Ansible inventory and group_vars."
 }

@@ -400,11 +400,11 @@ This stops NFS server services, removes export files, stops SSSD/autofs, and lea
 ### Usage
 
 ```bash
-sudo                      ./test/setup.sh       # Download cloud image, create VMs, wait for SSH
-sudo TEST_MODE=separate   ./test/setup.sh       # Same, with a separate storage VM
+./test/setup.sh              # Download cloud image, create VMs, wait for SSH
+TEST_MODE=separate ./test/setup.sh       # Same, with a separate storage VM
                           ./test/provision.sh   # Run Ansible playbooks against the VMs
                           ./test/run-tests.sh   # Exercise bin/* scripts, verify client resolution
-sudo                      ./test/teardown.sh    # Destroy VMs, clean up
+./test/teardown.sh    # Destroy VMs, clean up
 ```
 
 The test environment uses domain `samba.test` (RFC 2606 reserved TLD) on the default libvirt NAT network (`192.168.122.0/24`). A random admin password is generated and stored in `test/test-config.env` (mode 0600). The Ubuntu cloud image is cached at `/var/lib/libvirt/images/ubuntu-noble-base.qcow2` for reuse across runs.

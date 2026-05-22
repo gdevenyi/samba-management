@@ -57,14 +57,14 @@ For integration testing, see `test/` below.
 **Prerequisites**: libvirt, virsh, virt-install, cloud-image-utils, ~12GB disk, ~4-6GB RAM.
 
 ```bash
-sudo                      ./test/setup.sh       # Download image, create VMs, wait for SSH
-sudo TEST_MODE=separate   ./test/setup.sh       # Same, with a separate storage VM
+./test/setup.sh              # Download image, create VMs, wait for SSH
+TEST_MODE=separate ./test/setup.sh       # Same, with a separate storage VM
                           ./test/provision.sh   # Run Ansible playbooks against the VMs
                           ./test/run-tests.sh   # Exercise bin/* scripts, verify client resolution
-sudo                      ./test/teardown.sh    # Destroy VMs, clean up
+./test/teardown.sh    # Destroy VMs, clean up
 ```
 
-The test uses domain `samba.test` (RFC 2606 reserved TLD). A random admin password (guaranteed to cover all four character classes so `samba-tool domain provision`'s built-in complexity check passes regardless of the final policy) is generated and stored in `test/test-config.env` (mode 0600, chowned back to the invoking user). Ansible inventory and group_vars are auto-generated from it. The base cloud image is cached at `/var/lib/libvirt/images/ubuntu-noble-base.qcow2` across runs.
+The test uses domain `samba.test` (RFC 2606 reserved TLD). A random admin password (guaranteed to cover all four character classes so `samba-tool domain provision`'s built-in complexity check passes regardless of the final policy) is generated and stored in `test/test-config.env` (mode 0600). Ansible inventory and group_vars are auto-generated from it. The base cloud image is cached at `/var/lib/libvirt/images/ubuntu-noble-base.qcow2` across runs.
 
 ### Test Categories
 

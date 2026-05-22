@@ -49,3 +49,47 @@ ssh_nfs() {
     [[ "${SMB_TEST_MODE:-colocated}" == "separate" ]] && host="${SMB_TEST_STORAGE_IP}"
     ssh "${SSH_OPTS[@]}" -i "${SMB_TEST_SSH_KEY}" "${SMB_TEST_SSH_USER}@${host}" "$*"
 }
+
+# --- Race-investigation diagnostics ---
+# Enabled with TEST_DIAG=1 in the environment.  Dumps NSS / SSSD / kernel
+# RPC state from the storage host and the client into /tmp/test-diag-*
+# at well-chosen points around the perm_* NFS tests.  No-op when the env
+# gate isn't set, so production runs pay no cost.
+#
+# Each call appends a section to a single per-run log file, keyed by the
+# label argument so the timeline is reconstructible after the fact.
+diag_dump() {
+    [[ "${TEST_DIAG:-0}" == "1" ]] || return 0
+    local label="$1"
+    local stamp
+    stamp="$(date +%Y%m%d-%H%M%S)"
+    local log="${TEST_DIAG_LOG:-/tmp/test-diag-${stamp%-*}.log}"
+    export TEST_DIAG_LOG="$log"
+    {
+        printf '\n===== %s @ %s =====\n' "$label" "$stamp"
+        printf '\n--- storage: id / initgroups / sssctl ---\n'
+        ssh_nfs "id perm_writer 2>&1; id perm_both 2>&1; id perm_reader 2>&1
+                 echo ---
+                 getent initgroups perm_writer 2>&1
+                 getent initgroups perm_both 2>&1
+                 getent initgroups perm_reader 2>&1
+                 echo ---
+                 getent group ShareWriters 2>&1
+                 echo ---
+                 sudo sssctl user-checks perm_writer 2>&1 | head -25"
+        printf '\n--- storage: kernel rpc caches ---\n'
+        ssh_nfs "sudo cat /proc/net/rpc/auth.unix.gid/content 2>&1 | head -20
+                 echo ---
+                 sudo cat /proc/net/rpc/nfs4.nametoid/content 2>&1 | head -20"
+        printf '\n--- storage: recent sssd + mountd journal ---\n'
+        ssh_nfs "sudo journalctl -u sssd --no-pager -n 50 2>&1 | tail -50
+                 echo ---
+                 sudo journalctl -u nfs-mountd --no-pager -n 50 2>&1 | tail -50"
+        printf '\n--- client: klist / mounts / rpc-gssd ---\n'
+        ssh_client "klist 2>&1 || true
+                    echo ---
+                    mount | grep -E 'nfs4' 2>&1 || true
+                    echo ---
+                    sudo journalctl -u rpc-gssd --no-pager -n 30 2>&1 | tail -30"
+    } >> "$log" 2>&1
+}

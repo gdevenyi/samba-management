@@ -236,17 +236,21 @@ test_permissions() {
     # uses) so SSSD repopulates with current memberships before the first
     # NFS access.  No-op in colocated mode (already handled by the
     # samba-group.sh flush_winbind_cache step on the same host).
+    diag_dump "before warmup"
     run_test "Restart SSSD and warm initgroups on storage host" \
         ssh_nfs "sudo systemctl restart sssd && sudo bash -c 'for f in /proc/net/rpc/auth.unix.gid /proc/net/rpc/nfs4.nametoid /proc/net/rpc/nfs4.idtoname; do [ -e \"\$f/flush\" ] && date +%s > \"\$f/flush\"; done' && for u in perm_writer perm_both perm_reader; do getent initgroups \"\$u\" >/dev/null; done"
+    diag_dump "after warmup"
 
     run_test "perm_writer can write to perm_rw_share via NFS" \
         ssh_client "echo 'Wr1terPass!234' | kinit perm_writer@SAMBA.TEST && echo 'writer test' > /data/perm_rw_share/writer_file.txt; rc=\$?; kdestroy; exit \$rc"
+    diag_dump "after perm_writer write attempt 1"
     run_test "perm_writer can read from perm_rw_share via NFS" \
         ssh_client "echo 'Wr1terPass!234' | kinit perm_writer@SAMBA.TEST && cat /data/perm_rw_share/writer_file.txt; rc=\$?; kdestroy; exit \$rc"
     run_test "perm_both can write to perm_rw_share via NFS" \
         ssh_client "echo 'B0thPass!12345' | kinit perm_both@SAMBA.TEST && echo 'both test' > /data/perm_rw_share/both_file.txt; rc=\$?; kdestroy; exit \$rc"
     run_test "perm_writer can write to perm_admin_share via NFS" \
         ssh_client "echo 'Wr1terPass!234' | kinit perm_writer@SAMBA.TEST && echo 'admin test' > /data/perm_admin_share/admin_file.txt; rc=\$?; kdestroy; exit \$rc"
+    diag_dump "end of test_permissions"
 }
 
 test_autofs_kerberos() {

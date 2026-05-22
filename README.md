@@ -99,12 +99,13 @@ This installs and configures:
 - Samba AD DC (`samba-ad-dc` package, masks `smbd`/`nmbd`/`winbind`)
 - Kerberos KDC (Heimdal, built into Samba)
 - DNS (SAMBA_INTERNAL backend with forwarder)
-- NTP (with `ntpsigndsocket` for AD-aware time signing)
+- NTP (time sync via `systemd-timesyncd`)
 - Reverse DNS zone for the DC's subnet
-- Organizational Units: Users, Groups, Computers, Shares
+- Organizational Units: Users, Groups, Computers, Shares, SUDOers
 - NFSv4 server with Kerberos (`sec=krb5p`) for shares and home directories
 - Any shares defined in `samba_shares` (directories under `/data` + NFS exports)
-- Password policy (complexity, length, expiry)
+- Password policy (complexity off, min length 14, max age 42, min age 1, history 24)
+- Account lockout policy (threshold 0/disabled, duration 30m, reset 30m)
 - Optional TLS (disabled by default)
 
 After provisioning, verify:
@@ -170,7 +171,7 @@ cd ansible
 ansible-playbook playbooks/provision-windows.yml
 ```
 
-This sets DNS to the DC and joins the domain. The client will reboot.
+This sets DNS to the DC and joins the domain using `microsoft.ad.membership` (the `microsoft.ad` and `ansible.windows` collections are required — install via `ansible-galaxy collection install -r requirements.yml`). The client will reboot.
 
 Alternatively, run the standalone PowerShell script on the Windows machine:
 ```powershell
@@ -374,24 +375,36 @@ ansible-playbook playbooks/deprovision-linux.yml
 
 This runs `realm leave`, stops SSSD, and removes autofs share configs and SSSD configuration.
 
+Remove an NFS storage server:
+
+```bash
+cd ansible
+ansible-playbook playbooks/deprovision-nfs-server.yml
+```
+
+This stops NFS server services, removes export files, stops SSSD/autofs, and leaves the AD domain.
+
 ## Integration Testing
 
-A libvirt-based test environment creates two Ubuntu 24.04 VMs (DC + Linux client), provisions them with Ansible, and exercises the management scripts end-to-end against a live Samba AD domain.
+- A libvirt-based test environment creates Ubuntu 24.04 VMs, provisions them with Ansible, and exercises the management scripts end-to-end against a live Samba AD domain. Two modes are supported:
+- **`colocated`** (default): 2 VMs — DC also serves NFS.
+- **`separate`** (`TEST_MODE=separate`): 3 VMs — DC, dedicated storage server, client.
 
 ### Prerequisites
 
 - libvirt group membership (`sudo usermod -aG libvirt $USER`, then log out/in)
 - `virsh`, `virt-install`, `qemu-img`, `cloud-localds` (`apt install libvirt-clients qemu-utils cloud-image-utils`)
-- ~12GB free disk, ~4GB RAM
+- ~12GB free disk, ~4-6GB RAM
 - Your SSH public key at `~/.ssh/id_ed25519.pub`
 
 ### Usage
 
 ```bash
-./test/setup.sh       # Download cloud image, create VMs, wait for SSH
-./test/provision.sh   # Run Ansible playbooks against the VMs
-./test/run-tests.sh   # Exercise bin/* scripts, verify client resolution
-./test/teardown.sh    # Destroy VMs, clean up
+sudo                      ./test/setup.sh       # Download cloud image, create VMs, wait for SSH
+sudo TEST_MODE=separate   ./test/setup.sh       # Same, with a separate storage VM
+                          ./test/provision.sh   # Run Ansible playbooks against the VMs
+                          ./test/run-tests.sh   # Exercise bin/* scripts, verify client resolution
+sudo                      ./test/teardown.sh    # Destroy VMs, clean up
 ```
 
 The test environment uses domain `samba.test` (RFC 2606 reserved TLD) on the default libvirt NAT network (`192.168.122.0/24`). A random admin password is generated and stored in `test/test-config.env` (mode 0600). The Ubuntu cloud image is cached at `/var/lib/libvirt/images/ubuntu-noble-base.qcow2` for reuse across runs.
@@ -410,8 +423,18 @@ The test environment uses domain `samba.test` (RFC 2606 reserved TLD) on the def
 | SSH Keys | add/list/remove via `samba-user.sh`, retrieval from client via `sss_ssh_authorizedkeys` |
 | Sudo Rules | create/list/show/modify/delete; verify enforcement on client via SSSD |
 | Client | getent user/group lookup, autofs NFS mounts (shares + homes) |
+| Login Access Filter | anchor/catch-all group creation, DOM:-prefixed chain matching, dynamic class group nesting, `login-*` group delete guard |
+| DNS Persistence | reboot test verifying persistent DNS resolver config (DC stays the resolver) |
 
-All tests clean up after themselves (users, groups, shares, sudo rules, and autofs entries are removed at the end). The test harness supports both `colocated` (DC serves NFS) and `separate` (dedicated storage VM) modes via `TEST_MODE=separate ./test/setup.sh`.
+All tests clean up after themselves (users, groups, shares, sudo rules, and autofs entries are removed at the end).
+
+### Diagnostics
+
+Set `TEST_DIAG=1` to enable detailed NSS/SSSD/kernel RPC state dumps around NFS permission tests, written to `/tmp/test-diag-*.log`. Useful for investigating NFS/SSSD race conditions. No-op (zero cost) when disabled.
+
+```bash
+TEST_DIAG=1 ./test/run-tests.sh
+```
 
 ## Configuration Reference
 
@@ -433,9 +456,8 @@ All tests clean up after themselves (users, groups, shares, sudo rules, and auto
 | `NFS_SEC` | `krb5p` | Kerberos NFS flavour used by `samba-automount.sh add-share` |
 | `NFS_SERVER` | DC FQDN | Default NFS host baked into autofs entries (set to `samba_nfs_server` when split) |
 | `NFS_HOMES_SERVER` | DC FQDN | Host where `/home/ad/<user>` lives; used by `samba-user.sh` (SSHs there for create/archive when remote) |
-| `DNS_FORWARDER` | `8.8.8.8` | Upstream DNS for SAMBA_INTERNAL |
-| `NTP_SERVERS` | `0-3.pool.ntp.org` | NTP pool (Kerberos requires time sync) |
-| `TLS_ENABLED` | `false` | Enable TLS for LDAP |
+
+DNS forwarder, NTP servers, and TLS settings are Ansible role variables only (`samba_dns_forwarder`, `samba_ntp_servers`, `samba_tls_enabled`) — the `bin/*` scripts don't consume them, so they're not in `samba-mgmt.conf`.
 
 ### Ansible Role Variables
 
@@ -448,14 +470,38 @@ Key variables in role defaults (overridden by `group_vars/`):
 | `sssd_nfs_sec` | `krb5p` | sssd-client | NFS Kerberos security flavour |
 | `sssd_enable_ssh` | `true` | sssd-client | Configure `sss_ssh_authorizedkeys` for AD-stored SSH keys |
 | `sssd_enable_sudo` | `true` | sssd-client | Configure SSSD sudo provider + nsswitch routing |
-| `sssd_enable_autofs` | `true` | sssd-client | Pull autofs maps from AD via SSSD (no per-client map files) |
+| `sssd_configure_autofs` | `true` | sssd-client | Install autofs and create mount-base directories |
+| `sssd_enable_autofs` | `true` | sssd-client | Pull autofs maps from AD via SSSD (requires `sssd_configure_autofs`) |
+| `sssd_cache_credentials` | `true` | sssd-client | Cache credentials for offline authentication |
+| `sssd_use_fully_qualified_names` | `false` | sssd-client | Allow bare usernames for login |
+| `sssd_access_provider` | `ad` | sssd-client | Access provider (respects AD userAccountControl flags) |
+| `sssd_login_anchor_group` | `""` | sssd-client | Per-host anchor group for login access control |
+| `sssd_login_anchor_catchall` | `""` | sssd-client | Global "trusted everywhere" group, nested inside each anchor |
+| `sssd_login_anchor_base_dn` | `""` | sssd-client | DN suffix for anchor group; empty = auto-derive from domain |
+| `sssd_login_anchor_bootstrap` | `true` | sssd-client | Auto-create anchor groups on DC during provisioning |
+| `sssd_user_resolve_retries` | `5` | sssd-client | Post-join user lookup retries |
+| `sssd_user_resolve_delay` | `3` | sssd-client | Seconds between user lookup retries |
+| `sssd_group_resolve_retries` | `3` | sssd-client | Post-join group lookup retries |
+| `sssd_group_resolve_delay` | `2` | sssd-client | Seconds between group lookup retries |
 | `samba_nfs_sec` | `krb5p` | samba-dc | NFS Kerberos security flavour (server side) |
 | `samba_nfs_server` | `""` | samba-dc | If set, NFS exports live on this host; DC only seeds autofs maps in AD |
 | `samba_nfs_homes_server` | `""` | samba-dc | Override host for `/home` exports; falls back to `samba_nfs_server`, then the DC |
+| `samba_nfs_export_homes` | `true` | samba-dc | Export `/home/ad` via NFS for home directory mounts |
 | `samba_enable_autofs_seed` | `true` | samba-dc | Seed `OU=automount` with `auto.master`/`auto.shares`/`auto.home` on provisioning |
+| `samba_autofs_shares_timeout` | `300` | samba-dc | Autofs idle timeout (seconds) for shares mount in `auto.master` |
+| `samba_autofs_homes_timeout` | `600` | samba-dc | Autofs idle timeout (seconds) for homes mount in `auto.master` |
 | `samba_enable_sudo_schema` | `true` | samba-dc | Apply the sudo LDAP schema extension (required for `bin/samba-sudorule.sh`) |
 | `samba_password_complexity` | `off` | samba-dc | Password complexity requirement |
 | `samba_password_min_length` | `14` | samba-dc | Minimum password length (capped at 14 by `samba-tool`) |
+| `samba_password_max_age` | `42` | samba-dc | Maximum password age (days) |
+| `samba_password_min_age` | `1` | samba-dc | Minimum password age (days) |
+| `samba_password_history` | `24` | samba-dc | Number of remembered passwords |
+| `samba_account_lockout_threshold` | `0` | samba-dc | Failed logins before lockout (0 = disabled) |
+| `samba_account_lockout_duration` | `30` | samba-dc | Lockout duration (minutes) |
+| `samba_account_reset_lockout_after` | `30` | samba-dc | Reset lockout counter after (minutes) |
+| `samba_cleanup_runtime_files` | `true` | samba-dc | Remove stale Samba runtime files post-provisioning |
+| `nfs_server_group_resolve_retries` | `10` | nfs-server | Retries for SSSD group resolution before applying share ownership |
+| `nfs_server_group_resolve_delay` | `3` | nfs-server | Seconds between group resolution retries |
 
 ## Important Notes
 

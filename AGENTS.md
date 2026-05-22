@@ -17,7 +17,7 @@ A Samba Active Directory Domain Controller management suite. Ansible provisions 
 
 ## Validation Commands
 
-No formal test suite exists for unit testing. Validate changes with:
+No unit test framework exists. Validate changes with syntax checks and linting:
 
 ```bash
 # Bash syntax check (run from repo root)
@@ -50,8 +50,7 @@ For integration testing, see `test/` below.
 
 ## Test Environment (`test/`)
 
-A libvirt-based integration test that creates Ubuntu 24.04 VMs, provisions them with Ansible, and exercises the management scripts end-to-end. Two modes:
-
+- A libvirt-based integration test that creates Ubuntu 24.04 VMs, provisions them with Ansible, and exercises the management scripts end-to-end. Two modes:
 - **`colocated`** (default): 2 VMs — DC also serves NFS.
 - **`separate`** (`TEST_MODE=separate`): 3 VMs — DC, dedicated storage server, client.
 
@@ -67,6 +66,29 @@ sudo                      ./test/teardown.sh    # Destroy VMs, clean up
 
 The test uses domain `samba.test` (RFC 2606 reserved TLD). A random admin password (guaranteed to cover all four character classes so `samba-tool domain provision`'s built-in complexity check passes regardless of the final policy) is generated and stored in `test/test-config.env` (mode 0600, chowned back to the invoking user). Ansible inventory and group_vars are auto-generated from it. The base cloud image is cached at `/var/lib/libvirt/images/ubuntu-noble-base.qcow2` across runs.
 
+### Test Categories
+
+| Suite | What it exercises |
+|---|---|
+| `test_users` | create, list, show, disable, enable, set-password, delete |
+| `test_groups` | create, add-members, list-members, show, remove-members, delete |
+| `test_shares_basic` | directory creation, NFS export deployment, export verification |
+| `test_permissions_setup` + `test_permissions` | POSIX read/write access via Kerberos+NFS, secondary-group resolution through SSSD |
+| `test_autofs_kerberos` | client triggers `auto.shares` and `auto.home` via Kerberos NFS, verifies actual mount |
+| `test_password_policy` | `password-policy show` |
+| `test_ssh_keys` | add/list/remove via `samba-user.sh`, retrieval from client via `sss_ssh_authorizedkeys` |
+| `test_sudo_rules` | create/list/show/modify/delete; verify enforcement on client via SSSD |
+| `test_client_verification` | getent user/group lookup, autofs NFS mounts (shares + homes) |
+| `test_login_access_filter` | anchor/catch-all group creation, DOM:-prefixed chain matching, dynamic class group nesting, `login-*` group delete guard |
+| `test_dns_persistence` | reboot test verifying persistent DNS resolver config (DC stays the resolver) |
+| `test_autofs_maps` | explicit map listing and entry verification via `samba-automount.sh` |
+
+All tests clean up after themselves (users, groups, shares, sudo rules, and autofs entries are removed at the end). Test data is centralised at the top of `run-tests.sh`: `TEST_USERS`, `TEST_GROUPS`, `TEST_SHARES`, `TEST_SUDO_RULES`, `TEST_SSH_KEY`.
+
+### Diagnostic Dump (`TEST_DIAG=1`)
+
+`test/lib.sh` provides `diag_dump()` which dumps NSS/SSSD/kernel RPC state from the storage host and the client into `/tmp/test-diag-*.log` at well-chosen points around NFS permission tests. Gated by `TEST_DIAG=1` in the environment — production runs pay no cost. Useful for investigating NFS/SSSD race conditions.
+
 There is no lint, typecheck, or CI pipeline. Always run `bash -n` and YAML validation after edits.
 
 ## Architecture Notes
@@ -75,9 +97,11 @@ There is no lint, typecheck, or CI pipeline. Always run `bash -n` and YAML valid
 - **`bin/*` scripts source `lib/common.sh` then `lib/config.sh`** in that order. `common.sh` provides logging, validation, dry-run, Samba/winbind cache helpers, LDIF utilities (`user_dn`, `ldif_unfold`, `validate_ldif_value`), and the `home_op` wrapper that runs home-directory commands locally or via SSH to `NFS_HOMES_SERVER`. `config.sh` reads `config/samba-mgmt.conf` into exported variables. Values may be quoted (`KEY="value with spaces"`) — quotes are stripped during parsing.
 - **`client/linux/*` scripts are standalone** — they define their own logging because they run on client machines without access to `lib/`.
 - **DC also runs SSSD as a client** (see `samba-dc/tasks/sssd.yml` + `templates/sssd.conf.j2`). Samba's built-in winbind does not return AD secondary-group memberships through `getgrouplist()`, which breaks NFS server-side POSIX access checks; SSSD with `id_provider=ad` provides the full membership list. `nsswitch.conf` on the DC is `files sss` (no winbind).
+- **SSSD config decisions** (both DC and client templates): `ad_gpo_access_control = permissive` — logs GPO denials but doesn't enforce them, avoiding lockouts from absent/misconfigured GPOs in a Samba AD domain. `ldap_referrals = false` — referral chasing costs round trips and reveals no extra data in a single-forest Samba domain. `dyndns_update = false` — all A/PTR records our stack relies on are registered explicitly during provisioning; DDNS adds only background traffic and journald noise.
+- **Post-join verification**: the `sssd-client` role waits for AD identity resolution after `realm join` with configurable retries (`sssd_user_resolve_retries`/`delay`, `sssd_group_resolve_retries`/`delay`). The `nfs-server` role has its own `nfs_server_group_resolve_retries`/`delay` for waiting on SSSD to resolve the `domain users` group before applying share ownership.
 - **rpc.mountd uses `--manage-gids`**, set via a systemd drop-in (`/etc/systemd/system/nfs-mountd.service.d/manage-gids.conf`), because Ubuntu's packaged unit ignores the `[mountd] manage-gids` key in `/etc/nfs.conf`. Without this, NFS access checks rely on the client-supplied group list (max 16 GIDs) instead of the server-resolved one.
 - **`sssd-client` role pulls autofs maps from AD** (`autofs_provider = ad`, `automount: sss files` in nsswitch). The role creates the mount-base directories but writes no per-client map files; maps live in AD under `OU=automount` and are seeded by the `samba-dc` role's `autofs_seed.yml`.
-- **`nfs-server` role** provisions dedicated NFS storage servers. Hosts in the `nfs_servers` inventory group (a child of `domain_members`) get NFS server packages, the `nfs/<fqdn>` SPN added to the host's machine account on the DC (`samba-tool spn add`, then `exportkeytab`/`ktutil` merge), export directories, idmapd config, and the DC's root SSH pubkey in `authorized_keys` for cross-host home directory management.
+- **`nfs-server` role** provisions dedicated NFS storage servers. Hosts in the `nfs_servers` inventory group (a child of `domain_members`) get NFS server packages, the `nfs/<fqdn>` SPN added to the host's machine account on the DC (`samba-tool spn add`, then `exportkeytab`/`ktutil` merge), export directories, idmapd config, and the DC's root SSH pubkey in `authorized_keys` for cross-host home directory management. **Autofs is stopped and masked** on storage hosts to prevent it from shadowing the `/data` and `/home/ad` autofs mount roots. Deprovision with `ansible-playbook playbooks/deprovision-nfs-server.yml`.
 - **Inventory groups**: `domain_members` is a parent group containing `nfs_servers` and `linux_clients`. Shared SSSD join credentials go in `group_vars/domain_members.yml`. The DC is not a member of `domain_members`.
 - **Home directory modes**: `sssd_homedir_mode` controls where AD users get homedirs. `"mounted"` (default) uses autofs NFS mounts at `/home/ad/<user>`. `"local"` uses `pam_mkhomedir` at `/home/ad/<user>`. These are mutually exclusive — `pam_mkhomedir` is disabled when using mounted mode.
 - **Share management** is done via Ansible at provisioning time: `samba_shares` in group_vars defines shares. When NFS is colocated on the DC (`samba_nfs_server` not set or empty), the `samba-dc` role creates directories and exports. When a separate NFS server is used (`samba_nfs_server` set to a host in `nfs_servers`), the `nfs-server` role handles share directories under `/data` and per-share NFS export files in `/etc/exports.d/`. Access control is via POSIX permissions on the directory in both cases.
@@ -102,13 +126,15 @@ There is no lint, typecheck, or CI pipeline. Always run `bash -n` and YAML valid
 - **Time sync via systemd-timesyncd**, not chrony/ntpd. The role disables `systemd-resolved` (so the Samba DNS backend can bind to 127.0.0.1:53) and configures `systemd-timesyncd` against `samba_ntp_servers`. The historical `ntpsigndsocket` setup for AD-aware time signing is not used.
 - **`samba-tool` creates Samba/AD users, not local Linux users.** Do not confuse with `useradd`.
 - **`samba-tool domain passwordsettings` caps `--min-pwd-length` at 14** (the underlying AD attribute is a uint8 with a hardcoded ceiling). Going higher requires editing the policy via LDAP directly. The defaults in `samba-dc/defaults/main.yml` use 14.
+- **Password policy defaults**: complexity `off`, min length 14, max age 42 days, min age 1 day, history 24. Account lockout: threshold 0 (disabled), duration 30 minutes, reset after 30 minutes. All are configurable via `samba-dc` role variables.
 - **Share permissions are POSIX-based** (chown/chmod). NFS exports use `sec=krb5p` for authentication but access control is determined by file system permissions on the NFS host (DC or separate server). For group-writable share dirs use `chmod 2770` so new files inherit the group via the setgid bit.
 - **`/var/lib/samba/private/sam.ldb` is the source of truth** for AD objects. All `ldbsearch`/`ldbadd`/`ldbmodify`/`ldbdel` calls in `bin/*` use this path explicitly so they work even when Samba's `ldb_modules_path` is unusual.
 - **Provisioning idempotency** uses both `_samba_domain_provisioned` marker file (under `samba_statedir`) and `sam.ldb` presence — the marker alone could be stale if `/var/lib/samba` was wiped.
+- **Runtime file cleanup** (`samba_cleanup_runtime_files`, default `true`) removes stale Samba runtime files post-provisioning.
 
 ## SSH Key Management
 
-- **SSH public keys** are stored in the `altSecurityIdentities` AD attribute with the `ssh: ` prefix (e.g., `ssh: ssh-ed25519 AAAA... user@host`). This avoids irreversible AD schema extensions.
+- **SSH public keys** are stored as raw OpenSSH-format values in the `altSecurityIdentities` AD attribute (e.g., `ssh-ed25519 AAAA... user@host`), with no prefix. SSSD's ssh responder emits each attribute value verbatim to `sss_ssh_authorizedkeys` and from there to sshd; any prefix would be passed through unchanged and sshd would reject the key as malformed. This avoids irreversible AD schema extensions. Legacy entries written by older versions carried a `ssh: ` prefix; `list-sshkeys` strips it on display and `remove-sshkey` falls back to the prefixed form for backward compatibility.
 - `bin/samba-user.sh` provides `add-sshkey`, `remove-sshkey`, `list-sshkeys` subcommands that use `ldbmodify`/`ldbsearch` directly on the DC's `sam.ldb`.
 - The `sssd-client` role configures SSSD's `ssh` service to read keys from `altSecurityIdentities` and deploys an `AuthorizedKeysCommand` snippet to `sshd_config.d/`.
 - **`sssd_enable_ssh`** (default: `true`) controls whether the client configures SSH key retrieval. Set to `false` in `group_vars` to disable.
@@ -142,6 +168,7 @@ There is no lint, typecheck, or CI pipeline. Always run `bash -n` and YAML valid
   - The anchor group MUST exist on the DC before SSSD restarts with the filter, or the host locks out all users. Bootstrap (`tasks/dc-bootstrap.yml`) runs before `configure.yml` for this reason. Disabling bootstrap (`sssd_login_anchor_bootstrap: false`) is only safe when you've created the group out-of-band first.
   - `userWorkstations` and `logonHours` AD attributes are not honoured by SSSD on Linux. Group-membership filtering is the only effective mechanism on this stack.
   - The DC itself does not apply the filter (it is in the `dc` group, not `linux_clients`); admins retain SSH access to the DC regardless of login-group membership.
+  - **`login-*` groups are deletion-protected**: `samba-group.sh delete` refuses to delete groups matching `login-*` without `--force`, because removing an anchor that a client's `ad_access_filter` references would lock all users out of that host. The guard prints an explanatory error naming the affected SSSD config.
 
 ## Bash Script Conventions
 

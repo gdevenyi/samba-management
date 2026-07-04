@@ -13,13 +13,13 @@ A complete toolkit for provisioning and managing a Samba Active Directory Domain
 - `ansible-galaxy collection install -r requirements.yml` (for Windows client support)
 
 ### Domain Controller Target
-- Fresh Ubuntu LTS installation
+- Fresh Ubuntu 24.04 or 26.04 LTS (or Debian 12) installation
 - Static IP address
 - Hostname under 15 characters, FQDN resolving to LAN IP in `/etc/hosts`
 - SSH access with sudo
 
 ### Linux Client Targets
-- Ubuntu LTS (or Debian-based)
+- Ubuntu 24.04 or 26.04 LTS (or Debian 12)
 - Network access to the DC on ports 53, 88, 389, 2049
 - SSH access with sudo
 
@@ -99,7 +99,7 @@ This installs and configures:
 - Samba AD DC (`samba-ad-dc` package, masks `smbd`/`nmbd`/`winbind`)
 - Kerberos KDC (Heimdal, built into Samba)
 - DNS (SAMBA_INTERNAL backend with forwarder)
-- NTP (time sync via `systemd-timesyncd`)
+- NTP (time sync via `systemd-timesyncd` or `chrony`, whichever the image ships)
 - Reverse DNS zone for the DC's subnet
 - Organizational Units: Users, Groups, Computers, Shares, SUDOers
 - NFSv4 server with Kerberos (`sec=krb5p`) for shares and home directories
@@ -386,7 +386,7 @@ This stops NFS server services, removes export files, stops SSSD/autofs, and lea
 
 ## Integration Testing
 
-- A libvirt-based test environment creates Ubuntu 24.04 VMs, provisions them with Ansible, and exercises the management scripts end-to-end against a live Samba AD domain. Two modes are supported:
+- A libvirt-based test environment creates Ubuntu VMs (26.04 by default; override with `UBUNTU_CODENAME`/`UBUNTU_VERSION`), provisions them with Ansible, and exercises the management scripts end-to-end against a live Samba AD domain. Two modes are supported:
 - **`colocated`** (default): 2 VMs — DC also serves NFS.
 - **`separate`** (`TEST_MODE=separate`): 3 VMs — DC, dedicated storage server, client.
 
@@ -407,7 +407,7 @@ TEST_MODE=separate ./test/setup.sh       # Same, with a separate storage VM
 ./test/teardown.sh    # Destroy VMs, clean up
 ```
 
-The test environment uses domain `samba.test` (RFC 2606 reserved TLD) on the default libvirt NAT network (`192.168.122.0/24`). A random admin password is generated and stored in `test/test-config.env` (mode 0600). The Ubuntu cloud image is cached at `/var/lib/libvirt/images/ubuntu-noble-base.qcow2` for reuse across runs.
+The test environment uses domain `samba.test` (RFC 2606 reserved TLD) on the default libvirt NAT network (`192.168.122.0/24`). A random admin password is generated and stored in `test/test-config.env` (mode 0600). The Ubuntu cloud image is cached at `/var/lib/libvirt/images/ubuntu-<codename>-base.qcow2` (e.g. `ubuntu-resolute-base.qcow2`) for reuse across runs.
 
 ### What `run-tests.sh` Verifies
 

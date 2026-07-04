@@ -15,6 +15,9 @@ if [[ -f "$CONFIG_FILE" ]]; then
     source "$CONFIG_FILE"
 fi
 
+# Codename of the cached base image (mirrors setup.sh's default).
+UBUNTU_CODENAME="${UBUNTU_CODENAME:-resolute}"
+
 DC_NAME="${SMB_TEST_DC_NAME:-samba-dc}"
 CLIENT_NAME="${SMB_TEST_CLIENT_NAME:-samba-client}"
 STORAGE_NAME="${SMB_TEST_STORAGE_NAME:-samba-storage}"
@@ -46,5 +49,5 @@ rm -f "${SCRIPT_DIR}/test-config.env"
 rm -rf "${SCRIPT_DIR}/group_vars"
 rm -rf "${SCRIPT_DIR}/.ssh"
 
-log_info "Base cloud image preserved: /var/lib/libvirt/images/ubuntu-noble-base.qcow2"
+log_info "Base cloud image preserved: /var/lib/libvirt/images/ubuntu-${UBUNTU_CODENAME}-base.qcow2"
 log_info "=== Teardown Complete ==="

@@ -5,10 +5,10 @@
     that:
       - ansible_distribution in ['Ubuntu', 'Debian']
       - >-
-        (ansible_distribution == 'Ubuntu' and ansible_distribution_version in ['22.04', '24.04']) or
+        (ansible_distribution == 'Ubuntu' and ansible_distribution_version in ['22.04', '24.04', '26.04']) or
         (ansible_distribution == 'Debian' and ansible_distribution_major_version == '12')
     fail_msg: >-
-      Only Ubuntu 22.04/24.04 and Debian 12 are supported. Current: {{ ansible_distribution }} {{ ansible_distribution_version }}
+      Only Ubuntu 22.04/24.04/26.04 and Debian 12 are supported. Current: {{ ansible_distribution }} {{ ansible_distribution_version }}
     success_msg: 'OS {{ ansible_distribution }} {{ ansible_distribution_version }} is supported'
 
 - name: Validate hostname length and reserved names

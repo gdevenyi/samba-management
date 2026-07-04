@@ -214,12 +214,15 @@ test_permissions_setup() {
     run_test "Add perm_both to ShareWriters" \
         ssh_dc sudo samba-group.sh add-members ShareWriters perm_both
 
+    # ShareWriters was just created; the storage host's SSSD may not have it
+    # cached yet, so wait for an on-demand getgrnam to resolve it before the
+    # chown (otherwise `chown root:ShareWriters` fails with "invalid group").
     run_test "Create perm_rw_share directory with group permissions" \
-        ssh_nfs "sudo mkdir -p /data/perm_rw_share && sudo chmod 2770 /data/perm_rw_share && sudo chown root:ShareWriters /data/perm_rw_share"
+        ssh_nfs "sudo mkdir -p /data/perm_rw_share && sudo chmod 2770 /data/perm_rw_share && for i in \$(seq 1 30); do getent group ShareWriters >/dev/null 2>&1 && break; sleep 1; done && sudo chown root:ShareWriters /data/perm_rw_share"
     run_test "Create perm_rw_share NFS export file" \
         ssh_nfs 'echo "/data/perm_rw_share *(rw,sec=krb5p,sync,no_subtree_check)" | sudo tee /etc/exports.d/perm_rw_share.exports && sudo exportfs -ra'
     run_test "Create perm_admin_share directory" \
-        ssh_nfs "sudo mkdir -p /data/perm_admin_share && sudo chmod 2770 /data/perm_admin_share && sudo chown root:ShareWriters /data/perm_admin_share"
+        ssh_nfs "sudo mkdir -p /data/perm_admin_share && sudo chmod 2770 /data/perm_admin_share && for i in \$(seq 1 30); do getent group ShareWriters >/dev/null 2>&1 && break; sleep 1; done && sudo chown root:ShareWriters /data/perm_admin_share"
     run_test "Create perm_admin_share NFS export file" \
         ssh_nfs 'echo "/data/perm_admin_share *(rw,sec=krb5p,sync,no_subtree_check)" | sudo tee /etc/exports.d/perm_admin_share.exports && sudo exportfs -ra'
     run_test "Create test file on NFS server" \
@@ -510,14 +513,24 @@ test_dns_persistence() {
     # survive either, so this test proves the persistent path.
     run_test "Persistent samba-ad resolved drop-in is present" \
         ssh_client "sudo test -f /etc/systemd/resolved.conf.d/samba-ad.conf"
+    # Capture the pre-reboot boot id.  `systemctl reboot` returns over SSH
+    # before the box actually starts shutting down, so a plain "wait for SSH"
+    # loop races: it reconnects to the still-up (or mid-shutdown) client and
+    # the post-reboot checks hit `Connection reset by peer`.  Waiting until SSH
+    # returns a *different* boot id proves the machine genuinely cycled.
+    local boot_id_before
+    boot_id_before=$(ssh_client "cat /proc/sys/kernel/random/boot_id" 2>/dev/null)
     run_test "Reboot client to clear runtime resolvectl state" \
         ssh_client "sudo systemctl reboot" || true
-    # Wait for SSH to come back; client01 takes ~25-40s on cloud-init VMs.
-    local i=0
-    while ! ssh_client true 2>/dev/null; do
+    # Wait for the client to come back on a fresh boot; cloud-init VMs take
+    # ~25-40s, and 26.04 is slower, so allow up to 180s.
+    local i=0 boot_id_now=""
+    while true; do
+        boot_id_now=$(ssh_client "cat /proc/sys/kernel/random/boot_id" 2>/dev/null || true)
+        [[ -n "$boot_id_now" && "$boot_id_now" != "$boot_id_before" ]] && break
         i=$((i+1))
-        if [[ $i -gt 30 ]]; then
-            echo "    client did not come back in 60s"
+        if [[ $i -gt 90 ]]; then
+            echo "    client did not reboot within 180s"
             TESTS_FAIL=$((TESTS_FAIL + 1))
             return
         fi

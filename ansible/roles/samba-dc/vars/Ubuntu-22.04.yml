@@ -1,0 +1,32 @@
+# Distribution+version-specific variables for Ubuntu 22.04 (jammy).
+# Loaded in preference to vars/Ubuntu.yml by tasks/main.yml's first_found lookup.
+#
+# 22.04 has no `samba-ad-dc` metapackage (introduced in 24.04); the AD DC
+# daemon and its `samba-ad-dc.service` unit ship in `samba`, and `samba-tool`
+# lives in `samba-common-bin`.  Everything else matches vars/Ubuntu.yml.
+#
+# `winbind` is required here explicitly: the AD DC daemon forks an internal
+# winbindd (`/usr/sbin/winbindd`), and without the package the daemon aborts
+# with "Failed to exec child - No such file or directory".  On 24.04/26.04 the
+# samba-ad-dc metapackage pulls winbind in; the lean `samba` package does not.
+# The winbind *service* is still masked (samba_dc_mask_services) -- only the
+# binary is needed.
+---
+samba_dc_packages:
+  - samba
+  - samba-common-bin
+  - winbind
+  - smbclient
+  - krb5-user
+  - bind9-dnsutils
+  - acl
+  - attr
+  - ldb-tools
+  - nfs-kernel-server
+  - nfs-common
+samba_dc_service: samba-ad-dc
+samba_dc_mask_services:
+  - smbd
+  - nmbd
+  - winbind
+samba_statedir: /var/lib/samba

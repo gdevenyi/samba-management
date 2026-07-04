@@ -6,14 +6,11 @@
 # owned by AD groups.  SSSD's id_provider=ad reads the membership
 # directly via LDAP and exposes it correctly.
 ---
+# Already installed in install.yml before the DNS switch; kept here as an
+# idempotent safety net (no download when the packages are already present).
 - name: Install SSSD on the DC
   ansible.builtin.apt:
-    name:
-      - sssd-ad
-      - sssd-tools
-      - libnss-sss
-      - libpam-sss
-      - krb5-user
+    name: "{{ samba_dc_sssd_packages }}"
     state: present
     update_cache: false
 

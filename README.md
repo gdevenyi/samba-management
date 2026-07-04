@@ -13,13 +13,13 @@ A complete toolkit for provisioning and managing a Samba Active Directory Domain
 - `ansible-galaxy collection install -r requirements.yml` (for Windows client support)
 
 ### Domain Controller Target
-- Fresh Ubuntu 24.04 or 26.04 LTS (or Debian 12) installation
+- Fresh Ubuntu 22.04, 24.04, or 26.04 LTS (or Debian 12) installation
 - Static IP address
 - Hostname under 15 characters, FQDN resolving to LAN IP in `/etc/hosts`
 - SSH access with sudo
 
 ### Linux Client Targets
-- Ubuntu 24.04 or 26.04 LTS (or Debian 12)
+- Ubuntu 22.04, 24.04, or 26.04 LTS (or Debian 12)
 - Network access to the DC on ports 53, 88, 389, 2049
 - SSH access with sudo
 
@@ -96,7 +96,7 @@ ansible-playbook playbooks/provision-dc.yml
 ```
 
 This installs and configures:
-- Samba AD DC (`samba-ad-dc` package, masks `smbd`/`nmbd`/`winbind`)
+- Samba AD DC (the `samba-ad-dc` metapackage, or `samba`+`samba-common-bin`+`winbind` on 22.04; masks `smbd`/`nmbd`/`winbind`)
 - Kerberos KDC (Heimdal, built into Samba)
 - DNS (SAMBA_INTERNAL backend with forwarder)
 - NTP (time sync via `systemd-timesyncd` or `chrony`, whichever the image ships)

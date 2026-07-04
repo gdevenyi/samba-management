@@ -16,6 +16,21 @@ samba_server_role: "dc"
 samba_use_rfc2307: true
 samba_tls_enabled: false
 
+# --- DC-side SSSD packages ---
+# The DC runs SSSD as a client for full AD group resolution (see sssd.yml).
+# These are installed during the main package phase, BEFORE the DNS resolver is
+# switched to the local Samba DNS, so their download uses the image's original
+# working resolver.  Names are identical across Ubuntu 22.04/24.04/26.04 and
+# Debian 12.  Installing them later (post-switch) fails on releases whose base
+# packages don't already satisfy the deps (e.g. jammy), because external names
+# no longer resolve reliably through the Samba forwarder mid-provision.
+samba_dc_sssd_packages:
+  - sssd-ad
+  - sssd-tools
+  - libnss-sss
+  - libpam-sss
+  - krb5-user
+
 # --- File system paths ---
 samba_share_base: "/data"
 samba_home_base: "/home/ad"

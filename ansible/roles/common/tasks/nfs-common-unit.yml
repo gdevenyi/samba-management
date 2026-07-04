@@ -49,6 +49,19 @@
 - name: Flush handlers so daemon-reload runs before we start the unit
   ansible.builtin.meta: flush_handlers
 
+# rpc.gssd opens the pipefs-directory from /etc/nfs.conf (/run/rpc_pipefs on
+# current nfs-utils).  On Ubuntu 22.04 that mount (run-rpc_pipefs.mount, from
+# the rpc-pipefs-generator) is left inactive at boot while the legacy
+# /var/lib/nfs/rpc_pipefs is mounted instead, and rpc_pipefs.target reports
+# active without it -- so rpc-gssd aborts with "opendir(/run/rpc_pipefs)
+# failed".  Start the mount unit directly; a no-op where it's already mounted
+# (24.04/26.04/Debian 12), tolerant on any layout that lacks the unit.
+- name: Ensure the RPC pipefs mount is active before rpc-gssd
+  ansible.builtin.systemd:
+    name: run-rpc_pipefs.mount
+    state: started
+  failed_when: false
+
 - name: Enable and start rpc-gssd (Kerberos NFS)
   ansible.builtin.systemd:
     name: rpc-gssd

@@ -16,6 +16,12 @@
     state: restarted
   listen: restart systemd-timesyncd
 
+- name: Restart chrony
+  ansible.builtin.systemd:
+    name: chrony
+    state: restarted
+  listen: restart chrony
+
 - name: Reload resolv
   ansible.builtin.shell: resolvconf -u || true
   changed_when: true

@@ -1,9 +1,9 @@
-# nfs-common-unit.yml - Ubuntu 24.04 NFS-client baseline shared by every NFS host.
+# nfs-common-unit.yml - Ubuntu NFS-client baseline shared by every NFS host.
 #
-# Ubuntu 24.04 ships /usr/lib/systemd/system/nfs-common.service as a symlink
-# to /dev/null (a package-level mask), so `systemctl start nfs-common` is a
-# no-op.  Replace it with a real oneshot unit so dependent services
-# (rpc-gssd, autofs) actually have something to pull in.
+# Ubuntu (24.04 and later) ships /usr/lib/systemd/system/nfs-common.service as
+# a symlink to /dev/null (a package-level mask), so `systemctl start
+# nfs-common` is a no-op.  Replace it with a real oneshot unit so dependent
+# services (rpc-gssd, autofs) actually have something to pull in.
 #
 # Also enables NEED_GSSD=yes for Kerberos NFS, and starts rpc-gssd which
 # every consumer (DC, storage host, client) needs.  Roles that need
@@ -18,13 +18,13 @@
     create: true
     mode: "0644"
 
-- name: Remove package-level mask symlink for nfs-common (Ubuntu 24.04)
+# state: absent is a harmless no-op on releases that don't ship the mask, so
+# this covers 24.04, 26.04, and any future Ubuntu without a per-version gate.
+- name: Remove package-level mask symlink for nfs-common (Ubuntu)
   ansible.builtin.file:
     path: /usr/lib/systemd/system/nfs-common.service
     state: absent
-  when: >-
-    ansible_facts['distribution'] == "Ubuntu" and
-    ansible_facts['distribution_major_version'] == "24"
+  when: ansible_facts['distribution'] == "Ubuntu"
 
 - name: Create real nfs-common service unit
   ansible.builtin.copy:

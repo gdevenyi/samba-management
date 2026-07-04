@@ -50,7 +50,7 @@ For integration testing, see `test/` below.
 
 ## Test Environment (`test/`)
 
-- A libvirt-based integration test that creates Ubuntu 24.04 VMs, provisions them with Ansible, and exercises the management scripts end-to-end. Two modes:
+- A libvirt-based integration test that creates Ubuntu VMs (26.04 by default; overridable via `UBUNTU_CODENAME`/`UBUNTU_VERSION`), provisions them with Ansible, and exercises the management scripts end-to-end. Two modes:
 - **`colocated`** (default): 2 VMs — DC also serves NFS.
 - **`separate`** (`TEST_MODE=separate`): 3 VMs — DC, dedicated storage server, client.
 
@@ -64,7 +64,9 @@ TEST_MODE=separate ./test/setup.sh       # Same, with a separate storage VM
 ./test/teardown.sh    # Destroy VMs, clean up
 ```
 
-The test uses domain `samba.test` (RFC 2606 reserved TLD). A random admin password (guaranteed to cover all four character classes so `samba-tool domain provision`'s built-in complexity check passes regardless of the final policy) is generated and stored in `test/test-config.env` (mode 0600). Ansible inventory and group_vars are auto-generated from it. The base cloud image is cached at `/var/lib/libvirt/images/ubuntu-noble-base.qcow2` across runs.
+The test uses domain `samba.test` (RFC 2606 reserved TLD). A random admin password (guaranteed to cover all four character classes so `samba-tool domain provision`'s built-in complexity check passes regardless of the final policy) is generated and stored in `test/test-config.env` (mode 0600). Ansible inventory and group_vars are auto-generated from it. The base cloud image is cached at `/var/lib/libvirt/images/ubuntu-<codename>-base.qcow2` (e.g. `ubuntu-resolute-base.qcow2`) across runs.
+
+**Running detached (CI/background) — redirect stdin from `/dev/null`.** `provision.sh` invokes `ansible-playbook`, and Ansible aborts with `ERROR: Ansible requires blocking IO on stdin/stdout/stderr. Non-blocking file handles detected: <stdin>` when it inherits a non-blocking stdin (which happens when the script is launched from a background/detached job runner rather than an interactive terminal). Run `./test/provision.sh < /dev/null` (and likewise `run-tests.sh`) in that case. Interactive terminal runs have a blocking tty on stdin and need no redirect.
 
 ### Test Categories
 
@@ -113,7 +115,7 @@ There is no lint, typecheck, or CI pipeline. Always run `bash -n` and YAML valid
 - **NFS Kerberos principal**: `nfs/<fqdn>` SPN is added to the machine account of the NFS host and exported to `/etc/krb5.keytab` during provisioning. On the DC this is done by the `nfs.yml` task file in the `samba-dc` role. On a separate NFS server the `nfs-server` role registers the SPN on the DC via `samba-tool spn add` (delegate_to dc), `exportkeytab` to a temp file, fetches it via Ansible, copies it to the storage host, and merges it into `/etc/krb5.keytab` with `ktutil`. `adcli update --add-service=nfs` is intentionally not used because it produces a bare `nfs@REALM` entry rather than the host-based `nfs/<fqdn>` SPN that rpc.svcgssd / the kernel GSS layer require.
 - **Export files**: Each share gets `/etc/exports.d/<name>.exports`. Home directories get `/etc/exports.d/homes.exports`. The NFS server reads all `*.exports` files in addition to `/etc/exports`.
 - **idmapd.conf** must be deployed on both NFS server and clients with matching `Domain = <realm>` for consistent UID/GID mapping. Both `samba-dc` and `nfs-server` roles ship `idmapd.conf.j2`; `sssd-client` deploys a matching one.
-- **`nfs-common` is a generated systemd unit**, not the packaged one. On Ubuntu 24.04 the role removes `/usr/lib/systemd/system/nfs-common.service` (which masks the service) and writes a real oneshot unit in `/etc/systemd/system/`. `rpc-svcgssd` is tolerated as missing because some distros merge it into `nfs-server.service`.
+- **`nfs-common` is a generated systemd unit**, not the packaged one. On Ubuntu the role removes `/usr/lib/systemd/system/nfs-common.service` (a `/dev/null` mask on 24.04 and later; the removal is a harmless no-op on releases that don't ship the mask) and writes a real oneshot unit in `/etc/systemd/system/`. `rpc-svcgssd` is tolerated as missing because some distros merge it into `nfs-server.service`.
 - **NEED_GSSD=yes** must be set in `/etc/default/nfs-common` on the NFS server (whether DC or separate) for Kerberos NFS to function.
 - **Port 2049** (NFS) must be accessible from clients in addition to the standard AD ports (88 Kerberos, 53 DNS, 389 LDAP).
 - **Client mount syntax**: `mount -t nfs4 -o sec=krb5p <nfs_host>:/data/<share> /data/<share>` where `<nfs_host>` is the DC or the dedicated NFS server. Autofs handles this automatically via the AD-stored `auto.shares` map; `/home/ad/<user>` is similarly autofs-mounted via `auto.home`'s wildcard entry that expands `&` to the requested username.
@@ -123,7 +125,7 @@ There is no lint, typecheck, or CI pipeline. Always run `bash -n` and YAML valid
 - **On a DC, `samba-ad-dc` replaces `smbd`/`nmbd`/`winbind`**. These services must be masked, not just stopped. The `reload_samba()` function in `lib/common.sh` detects which service is running.
 - **krb5.conf must be copied, never symlinked** — `/var/lib/samba/private/` is root-only readable since Samba 4.7. The role copies `/var/lib/samba/private/krb5.conf` to `/etc/krb5.conf` after `samba-tool domain provision` runs.
 - **`/etc/hosts` must resolve FQDN to LAN IP, not 127.0.0.1** — Kerberos breaks otherwise. The `samba-dc` role asserts this in `assertions.yml`.
-- **Time sync via systemd-timesyncd**, not chrony/ntpd. The role disables `systemd-resolved` (so the Samba DNS backend can bind to 127.0.0.1:53) and configures `systemd-timesyncd` against `samba_ntp_servers`. The historical `ntpsigndsocket` setup for AD-aware time signing is not used.
+- **Time sync uses whichever daemon the image ships.** The role detects the time daemon via `service_facts` and configures `systemd-timesyncd` where present (22.04/24.04, Debian 12) or `chrony` otherwise (Ubuntu 26.04 cloud images ship chrony and no systemd-timesyncd). timesyncd is configured via `/etc/systemd/timesyncd.conf`; chrony via an `/etc/chrony/conf.d/samba-ntp.conf` drop-in of `server <host> iburst` lines. Both are driven by `samba_ntp_servers`. Neither package is force-installed over the image default. The role disables `systemd-resolved` (so the Samba DNS backend can bind to 127.0.0.1:53). The historical `ntpsigndsocket` setup for AD-aware time signing is not used.
 - **`samba-tool` creates Samba/AD users, not local Linux users.** Do not confuse with `useradd`.
 - **`samba-tool domain passwordsettings` caps `--min-pwd-length` at 14** (the underlying AD attribute is a uint8 with a hardcoded ceiling). Going higher requires editing the policy via LDAP directly. The defaults in `samba-dc/defaults/main.yml` use 14.
 - **Password policy defaults**: complexity `off`, min length 14, max age 42 days, min age 1 day, history 24. Account lockout: threshold 0 (disabled), duration 30 minutes, reset after 30 minutes. All are configurable via `samba-dc` role variables.

@@ -26,6 +26,12 @@
 - name: Configure NSS/PAM for DC-as-client
   ansible.builtin.include_tasks: nss_pam.yml
 
+# Runs after sssd.yml/nss_pam.yml so the AD "domain users" group resolves
+# through NSS when share directories are chowned to it (colocated NFS mode).
+# Kept before sudo_schema/autofs_seed, which rely on the OUs it creates.
+- name: Create OUs, share directories, and NFS exports
+  ansible.builtin.include_tasks: ous-shares-nfs.yml
+
 - name: Apply sudo schema extension
   ansible.builtin.include_tasks: sudo_schema.yml
   when:

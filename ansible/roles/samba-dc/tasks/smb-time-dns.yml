@@ -12,25 +12,57 @@
     group: root
   notify: restart samba
 
+# Kerberos needs accurate time.  We configure whichever time daemon the image
+# ships: systemd-timesyncd on 22.04/24.04 and Debian 12, chrony on Ubuntu 26.04
+# cloud images (where systemd-timesyncd is not installed).  Detected at runtime
+# so neither package has to be force-installed over the image default.
 - name: Configure time synchronization
   when: ansible_facts['distribution'] in ['Ubuntu', 'Debian']
   block:
-    - name: Deploy systemd-timesyncd configuration
-      ansible.builtin.copy:
-        content: |
-          [Time]
-          NTP={{ samba_ntp_servers | join(' ') }}
-        dest: /etc/systemd/timesyncd.conf
-        mode: "0644"
-        owner: root
-        group: root
-      notify: restart systemd-timesyncd
+    - name: Gather service facts to detect the available time daemon
+      ansible.builtin.service_facts:
 
-    - name: Enable and start systemd-timesyncd
-      ansible.builtin.systemd:
-        name: systemd-timesyncd
-        enabled: true
-        state: started
+    - name: Configure systemd-timesyncd
+      when: "'systemd-timesyncd.service' in ansible_facts.services"
+      block:
+        - name: Deploy systemd-timesyncd configuration
+          ansible.builtin.copy:
+            content: |
+              [Time]
+              NTP={{ samba_ntp_servers | join(' ') }}
+            dest: /etc/systemd/timesyncd.conf
+            mode: "0644"
+            owner: root
+            group: root
+          notify: restart systemd-timesyncd
+
+        - name: Enable and start systemd-timesyncd
+          ansible.builtin.systemd:
+            name: systemd-timesyncd
+            enabled: true
+            state: started
+
+    - name: Configure chrony
+      when: "'systemd-timesyncd.service' not in ansible_facts.services"
+      block:
+        - name: Deploy chrony NTP sources
+          ansible.builtin.copy:
+            content: |
+              # Managed by samba-dc role. NTP sources for AD Kerberos time sync.
+              {% for _ntp in samba_ntp_servers %}
+              server {{ _ntp }} iburst
+              {% endfor %}
+            dest: /etc/chrony/conf.d/samba-ntp.conf
+            mode: "0644"
+            owner: root
+            group: root
+          notify: restart chrony
+
+        - name: Enable and start chrony
+          ansible.builtin.systemd:
+            name: chrony
+            enabled: true
+            state: started
 
 - name: Configure DNS resolver
   when: ansible_facts['distribution'] in ['Ubuntu', 'Debian']

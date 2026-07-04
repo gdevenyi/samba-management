@@ -5,9 +5,13 @@
 #   colocated (default) - 2 VMs: DC serves NFS
 #   separate            - 3 VMs: DC + dedicated storage server + client
 #
-# Creates Ubuntu 24.04 cloud-image VMs on the default libvirt NAT network
+# Creates Ubuntu cloud-image VMs on the default libvirt NAT network
 # with static IPs, SSH key injection, and generates Ansible inventory +
 # group_vars for running the provisioning playbooks.
+#
+# Defaults to Ubuntu 26.04 (Resolute Raccoon).  Override the target release
+# via UBUNTU_CODENAME / UBUNTU_VERSION (e.g. UBUNTU_CODENAME=noble
+# UBUNTU_VERSION=24.04 ./test/setup.sh).
 #
 # Requires libvirt group membership (usermod -aG libvirt $USER).
 # Usage: [TEST_MODE=separate] ./test/setup.sh
@@ -15,11 +19,23 @@ set -euo pipefail
 # shellcheck disable=SC2154  # 's' is assigned at trap-firing time
 trap 's=$?; echo >&2 "$0: Error on line "$LINENO": $BASH_COMMAND"; exit $s' ERR
 
+# Target Ubuntu release (overridable via env).  Codename drives the cloud-image
+# path/URL; version drives the libvirt os-variant.
+UBUNTU_CODENAME="${UBUNTU_CODENAME:-resolute}"
+UBUNTU_VERSION="${UBUNTU_VERSION:-26.04}"
+
+# libvirt os-variant.  os-variant only tunes guest device/tuning defaults, not
+# correctness, so when this host's libosinfo db doesn't yet know the release
+# (e.g. ubuntu26.04 on an older libosinfo) we fall back to a recent generic
+# Linux profile.  Override the fallback with OS_VARIANT_FALLBACK, or pin the
+# variant outright with OS_VARIANT.
+OS_VARIANT_FALLBACK="${OS_VARIANT_FALLBACK:-linux2024}"
+
 # Use a dedicated test key (passwordless ed25519, generated on first run).
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 CONFIG_FILE="${SCRIPT_DIR}/test-config.env"
-BASE_IMAGE="/var/lib/libvirt/images/ubuntu-noble-base.qcow2"
-IMAGE_URL="https://cloud-images.ubuntu.com/noble/current/noble-server-cloudimg-amd64.img"
+BASE_IMAGE="/var/lib/libvirt/images/ubuntu-${UBUNTU_CODENAME}-base.qcow2"
+IMAGE_URL="https://cloud-images.ubuntu.com/${UBUNTU_CODENAME}/current/${UBUNTU_CODENAME}-server-cloudimg-amd64.img"
 
 SSH_KEY_DIR="${SCRIPT_DIR}/.ssh"
 SSH_KEY_FILE="${SSH_KEY_DIR}/id_ed25519"
@@ -89,7 +105,7 @@ download_base_image() {
         log_info "Base image cached: ${BASE_IMAGE}"
         return
     fi
-    log_info "Downloading Ubuntu 24.04 cloud image (~600MB)..."
+    log_info "Downloading Ubuntu ${UBUNTU_VERSION} cloud image (~600MB)..."
     wget -q --show-progress -O "$BASE_IMAGE" "$IMAGE_URL"
 }
 
@@ -194,6 +210,24 @@ EOF
 }
 
 # ---------------------------------------------------------------------------
+# Resolve the libvirt os-variant.  Prefer OS_VARIANT if the caller pinned one;
+# else use ubuntu<version> when this host's libosinfo knows it, otherwise the
+# generic fallback.  Cached in OS_VARIANT after the first call.
+# ---------------------------------------------------------------------------
+resolve_os_variant() {
+    if [[ -n "${OS_VARIANT:-}" ]]; then
+        return
+    fi
+    local want="ubuntu${UBUNTU_VERSION}"
+    if virt-install --osinfo list 2>/dev/null | tr ', ' '\n\n' | grep -qxF "$want"; then
+        OS_VARIANT="$want"
+    else
+        OS_VARIANT="$OS_VARIANT_FALLBACK"
+        log_warn "libosinfo has no '${want}'; using generic os-variant '${OS_VARIANT}'."
+    fi
+}
+
+# ---------------------------------------------------------------------------
 # Create VM disk overlay and launch
 # ---------------------------------------------------------------------------
 create_vm() {
@@ -201,6 +235,8 @@ create_vm() {
     local disk_size="$2"
     local ram="$3"
     local vcpu="$4"
+
+    resolve_os_variant
 
     local disk_path="/var/lib/libvirt/images/${vm_name}.qcow2"
     qemu-img create -f qcow2 -b "$BASE_IMAGE" -F qcow2 "$disk_path" "$disk_size"
@@ -212,7 +248,7 @@ create_vm() {
         --disk "path=${disk_path},bus=virtio" \
         --disk "path=/var/lib/libvirt/images/${vm_name}-cidata.iso,device=cdrom" \
         --network "network=default,model=virtio" \
-        --os-variant ubuntu24.04 \
+        --os-variant "$OS_VARIANT" \
         --import \
         --noautoconsole
 
@@ -225,24 +261,35 @@ create_vm() {
 wait_for_ssh() {
     local ip="$1"
     local name="$2"
-    # 10 minutes overall; cloud-init on a fresh image can take a few minutes.
-    local max_wait=600
-    local elapsed=0
-    # Cap each remote call so a hung SSH/cloud-init session can't blow
-    # past max_wait silently (elapsed only ticks when the SSH call returns).
+    # Overall budget in real wall-clock seconds (configurable).  A fresh
+    # cloud image can take several minutes on first boot; 26.04 is slower to
+    # settle than 24.04, so default to 15 minutes.
+    local max_wait="${SSH_WAIT_TIMEOUT:-900}"
+    # Cap each remote call so a hung SSH/cloud-init session can't block
+    # indefinitely between wall-clock checks.
     local per_try=30
+    local start=$SECONDS
 
-    log_info "Waiting for ${name} (${ip}) to become ready..."
-    while [[ $elapsed -lt $max_wait ]]; do
-        if timeout "$per_try" ssh -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null \
-               -o ConnectTimeout=5 -o BatchMode=yes \
+    log_info "Waiting for ${name} (${ip}) to become ready (up to ${max_wait}s)..."
+    local status
+    while (( SECONDS - start < max_wait )); do
+        # cloud-init on Ubuntu 26.04 exits non-zero (2) for "degraded done" when
+        # it hit a recoverable warning (e.g. it declines to unlock the ubuntu
+        # password because we only inject an SSH key) even though the instance
+        # is fully configured.  Key readiness off the reported status text
+        # rather than the exit code so any recoverable warning doesn't wedge us.
+        # IdentitiesOnly=yes pins auth to our -i key; without it a populated
+        # ssh-agent offers its own keys first and can exhaust the server's
+        # MaxAuthTries before ours is tried ("Too many authentication failures").
+        status=$(timeout "$per_try" ssh -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null \
+               -o ConnectTimeout=5 -o BatchMode=yes -o IdentitiesOnly=yes \
                -i "$SSH_KEY_FILE" "ubuntu@${ip}" \
-               "sudo cloud-init status --wait" &>/dev/null; then
-            log_info "${name} ready (${elapsed}s)."
+               "sudo cloud-init status --wait" 2>/dev/null) || true
+        if [[ "$status" == *"status: done"* ]]; then
+            log_info "${name} ready ($((SECONDS - start))s)."
             return 0
         fi
         sleep 5
-        elapsed=$((elapsed + per_try + 5))
     done
     die "Timed out waiting for ${name} after ${max_wait}s."
 }

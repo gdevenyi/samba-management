@@ -1,19 +1,19 @@
 # configure.yml - Orchestrate the post-provisioning DC configuration.
 #
 # Each phase lives in a focused file so this orchestrator stays scannable:
-#   smb-time-dns.yml   - smb.conf + systemd-timesyncd + Samba DNS resolver
+#   smb-time-dns.yml   - smb.conf + time sync + Samba DNS resolver
 #   reverse-dns.yml    - first-run reverse DNS zone + PTR for the DC
-#   ous-shares-nfs.yml - OUs, share dirs, NFS, cross-host SSH for split-NFS
 #   scripts.yml        - /opt/samba-management deploy + sbin symlinks
+#
+# NOTE: ous-shares-nfs.yml (OUs, share dirs, NFS) is intentionally NOT here.
+# It chowns share directories to the AD "domain users" group, which only
+# resolves through NSS once SSSD is up, so main.yml runs it after sssd.yml.
 ---
 - name: Core services - smb.conf, time, DNS resolver, start samba-ad-dc
   ansible.builtin.import_tasks: smb-time-dns.yml
 
 - name: Reverse DNS zone and PTR record
   ansible.builtin.import_tasks: reverse-dns.yml
-
-- name: OUs, share directories, NFS, and cross-host SSH for split deployments
-  ansible.builtin.import_tasks: ous-shares-nfs.yml
 
 - name: Deploy management scripts and create symlinks
   ansible.builtin.import_tasks: scripts.yml

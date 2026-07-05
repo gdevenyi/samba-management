@@ -47,6 +47,11 @@ samba_shares: []
 samba_nfs_sec: "krb5p"
 # Whether to export samba_home_base (default /home/ad) via NFS for home directory mounts.
 samba_nfs_export_homes: true
+# Stable NFS filesystem id for the /home/ad export.  Empty (default) lets the
+# kernel derive one from the backing device.  Set to a unique small integer
+# (not 0) when /home/ad is on ZFS/Btrfs to avoid client ESTALE errors across a
+# reboot or pool export/import.  Must differ from every per-share `fsid:`.
+samba_nfs_homes_fsid: ""
 # Hostname of the NFS server for autofs map entries stored in AD.
 # Empty string (default) means the DC serves NFS.
 # Set to a hostname (e.g. "storage01") to offload NFS to a dedicated

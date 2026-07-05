@@ -10,6 +10,14 @@
 {#   sec=krb5p       Kerberos authentication + integrity + privacy (encryption) #}
 {#   sync            Commit writes to disk before replying (safe but slower) #}
 {#   no_subtree_check Skip subtree checking (recommended for single-directory exports) #}
+{#   fsid=<n>        Stable NFS filesystem id (optional per-share `fsid:` key). #}
+{#                   Recommended on ZFS/Btrfs: the kernel's auto-derived fsid #}
+{#                   comes from the backing device number, which can change #}
+{#                   across a reboot or `zpool export/import`, giving clients #}
+{#                   ESTALE (stale file handle) until they remount.  Pin a #}
+{#                   unique small integer per export to keep filehandles stable. #}
+{#                   Must be unique across all exports on the host and must not #}
+{#                   be 0 (reserved for the NFSv4 pseudo-root). #}
 {# #}
 {# Callers pass `samba_share_base` and `samba_nfs_sec` via task-level vars:. #}
-{{ item.path | default(samba_share_base ~ '/' ~ item.name) }} *(rw,sec={{ samba_nfs_sec }},sync,no_subtree_check)
+{{ item.path | default(samba_share_base ~ '/' ~ item.name) }} *(rw,sec={{ samba_nfs_sec }},sync,no_subtree_check{% if item.fsid is defined and item.fsid | string != '' %},fsid={{ item.fsid }}{% endif %})

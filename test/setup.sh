@@ -362,6 +362,8 @@ ${dc_extra}
 samba_shares:
   - name: public
     comment: "Public share for all domain users"
+    fsid: 101
+samba_nfs_homes_fsid: 100
 EOF
 
     # Shared domain_members group_vars
@@ -390,7 +392,9 @@ EOF
 nfs_server_shares:
   - name: public
     comment: "Public share for all domain users"
+    fsid: 101
 samba_nfs_export_homes: true
+samba_nfs_homes_fsid: 100
 healthcheck_nfs_server: "storage01"
 EOF
     fi

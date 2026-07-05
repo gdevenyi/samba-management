@@ -3,4 +3,10 @@
 {# (dedicated storage host). #}
 {# #}
 {# root_squash (default) maps root to nobody for security. #}
-{{ samba_home_base }} *(rw,sec={{ samba_nfs_sec }},sync,no_subtree_check)
+{# fsid: set samba_nfs_homes_fsid (default empty) to pin a stable NFS #}
+{# filesystem id for the homes export.  Recommended when /home/ad lives on #}
+{# ZFS/Btrfs, where the kernel's auto-derived fsid can change across a reboot #}
+{# or pool export/import and give clients ESTALE until they remount.  Must be #}
+{# a unique small integer (not 0, which is reserved for the NFSv4 pseudo-root) #}
+{# and distinct from every per-share fsid on the host. #}
+{{ samba_home_base }} *(rw,sec={{ samba_nfs_sec }},sync,no_subtree_check{% if samba_nfs_homes_fsid is defined and samba_nfs_homes_fsid | string != '' %},fsid={{ samba_nfs_homes_fsid }}{% endif %})

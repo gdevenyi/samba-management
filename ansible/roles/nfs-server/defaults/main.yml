@@ -22,6 +22,11 @@ nfs_server_shares: []
 samba_nfs_sec: "krb5p"
 # Whether to export samba_home_base (default /home/ad) via NFS for home directory mounts.
 samba_nfs_export_homes: true
+# Stable NFS filesystem id for the /home/ad export.  Empty (default) lets the
+# kernel derive one from the backing device.  Set to a unique small integer
+# (not 0) when /home/ad is on ZFS/Btrfs to avoid client ESTALE errors across a
+# reboot or pool export/import.  Must differ from every per-share `fsid:`.
+samba_nfs_homes_fsid: ""
 
 # --- Verification ---
 # How long to wait for SSSD to resolve the 'domain users' group before

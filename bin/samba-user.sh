@@ -29,7 +29,9 @@ Subcommands:
     --given-name=NAME                    First name
     --surname=NAME                       Last name
     --email=ADDR                         Email address
-    --password=PASS                      Initial password (prompted if omitted)
+    --password=PASS                      Initial password (prompted if omitted;
+                                         note: CLI values are visible in
+                                         /proc/*/cmdline -- prefer the prompt)
     --must-change-pw                     Force password change at first login
     --shell=SHELL                        Login shell (default: ${DEFAULT_SHELL})
     --group=GROUP                        Add to group after creation
@@ -50,7 +52,8 @@ Subcommands:
   enable <username>                    Enable a disabled account
   disable <username>                   Disable an account
   set-password <username>              Reset user password
-    --password=PASS                      New password (prompted if omitted)
+    --password=PASS                      New password (prompted if omitted;
+                                         prefer the prompt -- see add)
 
   add-sshkey <username>                Add SSH public key to user
     --key=PUBLIC_KEY                     Key string
@@ -102,10 +105,17 @@ _create_user_object() {
 # Set a user's password via stdin so it never appears in /proc/<pid>/cmdline.
 # samba-tool setpassword prompts twice (New + Retype) when stdin isn't a tty,
 # so feed the value twice.
+#
+# $3 (optional, "1" to enable): re-assert must-change-at-next-login.
+# setpassword resets pwdLastSet to "now" by default, which would silently
+# clear the flag that `user create --must-change-at-next-login` just set --
+# so the caller's --must-change-pw intent has to be re-applied here.
 _set_user_password() {
-    local username="$1" password="$2"
+    local username="$1" password="$2" must_change="${3:-0}"
+    local -a cmd=(samba-tool user setpassword "$username")
+    [[ "$must_change" == "1" ]] && cmd+=(--must-change-at-next-login)
     if ! printf '%s\n%s\n' "$password" "$password" \
-        | samba-tool user setpassword "$username" &>/dev/null; then
+        | "${cmd[@]}" &>/dev/null; then
         log_error "Failed to set password for '${username}' (user was created)"
         exit 1
     fi
@@ -117,19 +127,45 @@ _set_user_password() {
 # already exists.  Failures here surface a clear error message rather than
 # the ERR trap's opaque line number, since the AD account has already been
 # created at this point.
+#
+# Ownership: the directory is owned by the user (mode 0700) like a
+# conventional Unix home.  The freshly-created account may take a few
+# seconds to become resolvable through the homes host's SSSD, so we poll
+# getent before the chown -- chowning to a not-yet-resolvable name would
+# fail outright.
 _provision_home_dir() {
     local username="$1"
     local home_dir="${HOME_BASE}/${username}"
     if home_op test -d "$home_dir"; then
+        # Left over from a previous same-named account (delete preserves
+        # home data).  The new account has a fresh SID/uid and will NOT own
+        # the old files -- with 0700 homes that means the user is locked out
+        # of their own home.  Surface it instead of silently skipping.
+        local cur_owner
+        cur_owner=$(home_op stat -c %U "$home_dir" 2>/dev/null || echo '?')
+        if [[ "$cur_owner" != "$username" ]]; then
+            log_warn "Home directory ${home_dir} already exists but is owned by '${cur_owner}', not '${username}'."
+            log_warn "Review its contents, then either reassign it (chown -R ${username} ${home_dir})"
+            log_warn "or archive/remove it and re-run this command."
+        fi
         return
     fi
+    # Wait (up to 30s) for the new account to resolve through NSS on the
+    # homes host.  First resolution of a brand-new user needs a round trip
+    # to AD, and SSSD's negative cache (default 15s) may briefly mask it if
+    # anything queried the name before the account existed.  30s outlasts
+    # both.
+    if ! home_op sh -c "for i in \$(seq 1 30); do getent passwd '${username}' >/dev/null 2>&1 && exit 0; sleep 1; done; exit 1"; then
+        log_error "User '${username}' not resolvable via NSS on ${NFS_HOMES_SERVER:-localhost} after 30s; home directory not created (user was created)"
+        exit 1
+    fi
     if ! home_op mkdir -p "$home_dir" \
-        || ! home_op chmod 0770 "$home_dir" \
-        || ! home_op chown "root:${DEFAULT_GROUP}" "$home_dir"; then
+        || ! home_op chown "${username}:${DEFAULT_GROUP}" "$home_dir" \
+        || ! home_op chmod 0700 "$home_dir"; then
         log_error "Failed to provision home directory ${NFS_HOMES_SERVER:-localhost}:${home_dir} (user was created)"
         exit 1
     fi
-    log_info "Created home directory: ${NFS_HOMES_SERVER:-localhost}:${home_dir}"
+    log_info "Created home directory: ${NFS_HOMES_SERVER:-localhost}:${home_dir} (${username}, mode 0700)"
 }
 
 # Add a freshly-created user to an AD group.  Group existence is the
@@ -175,19 +211,24 @@ cmd_add() {
         exit 3
     fi
 
-    # Prompt interactively when --password was not supplied on the CLI.
+    if dry_run "Would create user: ${username}"; then
+        return
+    fi
+
+    # Prompt interactively when --password was not supplied on the CLI
+    # (after the dry-run gate -- a preview should never prompt).
     # -r prevents backslash interpretation; -s hides the input.
     if [[ -z "$password" ]]; then
         read -rsp "Enter password for ${username}: " password
         echo
     fi
-
-    if dry_run "Would create user: ${username}"; then
-        return
+    if [[ -z "$password" ]]; then
+        log_error "Password must not be empty"
+        exit 2
     fi
 
     _create_user_object "$username" "$given_name" "$surname" "$email" "$shell" "$must_change_pw"
-    _set_user_password "$username" "$password"
+    _set_user_password "$username" "$password" "$must_change_pw"
     log_info "User '${username}' created successfully"
     _provision_home_dir "$username"
     # `[[ -n "$x" ]] && _helper` trips `set -e` when the test is false, since
@@ -232,11 +273,12 @@ cmd_delete() {
         local home_dir="${HOME_BASE}/${username}"
         if home_op test -d "$home_dir"; then
             local archive="${HOME_BASE}/${username}.tar.gz"
-            if ! home_op tar -czf "$archive" -C "${HOME_BASE}" "$username"; then
+            if ! home_op tar -czf "$archive" -C "${HOME_BASE}" "$username" \
+                || ! home_op chmod 0600 "$archive"; then
                 log_error "Failed to archive ${NFS_HOMES_SERVER:-localhost}:${home_dir}; aborting before user deletion"
                 exit 1
             fi
-            log_info "Archived home directory to ${NFS_HOMES_SERVER:-localhost}:${archive}"
+            log_info "Archived home directory to ${NFS_HOMES_SERVER:-localhost}:${archive} (mode 0600)"
         fi
     fi
 
@@ -247,12 +289,19 @@ cmd_delete() {
         log_error "Failed to delete user '${username}'"
         exit 1
     fi
+
+    # Home data is never deleted by this command.  Note it explicitly: a
+    # future account with the same name gets a different SID/uid and will
+    # not own these files (see the warning in add).
+    if home_op test -d "${HOME_BASE}/${username}"; then
+        log_info "Home directory preserved at ${NFS_HOMES_SERVER:-localhost}:${HOME_BASE}/${username} (remove or archive it manually if no longer needed)"
+    fi
 }
 
 # ---------------------------------------------------------------------------
-# User modification - limited by what samba-tool exposes directly.
-# Only givenName is set via ldbmodify; other attributes require ADUC/RSAT
-# because samba-tool user edit does not support arbitrary LDAP attributes.
+# User modification - applies attribute changes via ldbmodify on sam.ldb.
+# Each supplied option becomes one `replace:` stanza in a single modify
+# operation (stanzas are separated by `-` per RFC 2849 / ldbmodify).
 # ---------------------------------------------------------------------------
 cmd_modify() {
     local username="$1"; shift
@@ -270,6 +319,18 @@ cmd_modify() {
     local shell="${opts[--shell]:-}"
     local department="${opts[--department]:-}"
 
+    if [[ -z "$given_name" && -z "$surname" && -z "$email" && -z "$shell" && -z "$department" ]]; then
+        log_error "Must specify at least one attribute to modify (--given-name, --surname, --email, --shell, --department)"
+        exit 2
+    fi
+
+    # Validate every value before building any LDIF.
+    [[ -n "$given_name" ]] && { validate_ldif_value "$given_name" "given name" || exit 2; }
+    [[ -n "$surname" ]] && { validate_ldif_value "$surname" "surname" || exit 2; }
+    [[ -n "$email" ]] && { validate_ldif_value "$email" "email" || exit 2; }
+    [[ -n "$shell" ]] && { validate_ldif_value "$shell" "shell" || exit 2; }
+    [[ -n "$department" ]] && { validate_ldif_value "$department" "department" || exit 2; }
+
     dry_run "Would modify user: ${username}" && return
 
     log_info "Modifying user '${username}'..."
@@ -279,24 +340,18 @@ cmd_modify() {
     target_dn=$(user_dn "$username")
     [[ -n "$target_dn" ]] || { log_error "Could not resolve DN for '${username}'"; exit 3; }
 
-    # Only givenName is applied via ldbmodify; all other attributes are
-    # flagged as requiring ADUC because samba-tool lacks fine-grained
-    # attribute setters and direct LDAP LDIF modification is fragile.
-    if [[ -n "$given_name" ]]; then
-        validate_ldif_value "$given_name" "given name" || exit 2
-        ldbmodify -H /var/lib/samba/private/sam.ldb <<EOF 2>/dev/null || log_warn "Could not set givenName (use ADUC for full attribute management)"
-dn: ${target_dn}
+    local ldif="dn: ${target_dn}
 changetype: modify
-replace: givenName
-givenName: ${given_name}
-EOF
-    fi
-    [[ -n "$surname" ]] && log_warn "Surname modification requires ADUC or direct LDAP edit"
-    [[ -n "$email" ]] && log_warn "Email modification requires ADUC or direct LDAP edit"
-    [[ -n "$shell" ]] && log_warn "Shell modification requires ADUC or direct LDAP edit"
-    [[ -n "$department" ]] && log_warn "Department modification requires ADUC or direct LDAP edit"
+"
+    [[ -n "$given_name" ]] && ldif+="replace: givenName"$'\n'"givenName: ${given_name}"$'\n'"-"$'\n'
+    [[ -n "$surname" ]] && ldif+="replace: sn"$'\n'"sn: ${surname}"$'\n'"-"$'\n'
+    [[ -n "$email" ]] && ldif+="replace: mail"$'\n'"mail: ${email}"$'\n'"-"$'\n'
+    [[ -n "$shell" ]] && ldif+="replace: loginShell"$'\n'"loginShell: ${shell}"$'\n'"-"$'\n'
+    [[ -n "$department" ]] && ldif+="replace: department"$'\n'"department: ${department}"$'\n'"-"$'\n'
 
-    log_info "User '${username}' modification processed. For full attribute editing, use ADUC/RSAT."
+    printf '%s' "$ldif" | ldb_exec modify \
+        "User '${username}' modified" \
+        "Failed to modify user '${username}'"
 }
 
 # ---------------------------------------------------------------------------
@@ -347,8 +402,9 @@ cmd_disable() {
         log_error "User '${username}' not found"
         exit 3
     fi
-    confirm_action "Disable user '${username}'?" || exit 0
+    # Dry-run short-circuits before prompting (preview must never prompt).
     dry_run "Would disable user: ${username}" && return
+    confirm_action "Disable user '${username}'?" || exit 0
     samba-tool user disable "$username"
     log_info "User '${username}' disabled"
 }
@@ -368,12 +424,16 @@ cmd_set_password() {
     parse_kv_args opts "--password" "$@"
     local password="${opts[--password]:-}"
 
+    dry_run "Would set password for: ${username}" && return
+
     if [[ -z "$password" ]]; then
         read -rsp "Enter new password for ${username}: " password
         echo
     fi
-
-    dry_run "Would set password for: ${username}" && return
+    if [[ -z "$password" ]]; then
+        log_error "Password must not be empty"
+        exit 2
+    fi
     _set_user_password "$username" "$password"
     log_info "Password set for '${username}'"
 }
@@ -579,6 +639,15 @@ if [[ $# -eq 0 ]] || [[ "$1" == "help" ]] || [[ "$1" == "--help" ]]; then
 fi
 
 subcommand="$1"; shift
+
+# Every subcommand except list/password-policy takes a username as its
+# first positional -- fail with a clear message instead of an unbound-
+# variable trap when it's missing.
+case "$subcommand" in
+    add|delete|modify|show|enable|disable|set-password|add-sshkey|remove-sshkey|list-sshkeys)
+        require_arg "${1:-}" "<username>"
+        ;;
+esac
 
 case "$subcommand" in
     add) cmd_add "$@" ;;

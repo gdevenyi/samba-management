@@ -349,6 +349,14 @@ fi
 
 subcommand="$1"; shift
 
+# Positional-argument guard: clear usage error instead of an unbound-
+# variable trap when the rule name is missing.
+case "$subcommand" in
+    add|delete|show|modify)
+        require_arg "${1:-}" "<rulename>"
+        ;;
+esac
+
 case "$subcommand" in
     add) cmd_add "$@" ;;
     delete) cmd_delete "$@" ;;

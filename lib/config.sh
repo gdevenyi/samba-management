@@ -24,6 +24,12 @@ if [[ -f "$CONFIG_FILE" ]]; then
     while IFS='=' read -r key value; do
         key="$(trim_ws "$key")"
         [[ -z "$key" || "$key" =~ ^# ]] && continue
+        # Reject malformed keys instead of letting `export` abort the whole
+        # script (set -e) on a stray non-KEY=VALUE line.
+        if [[ ! "$key" =~ ^[A-Za-z_][A-Za-z0-9_]*$ ]]; then
+            echo "Warning: skipping malformed config line in ${CONFIG_FILE}: ${key}" >&2
+            continue
+        fi
         value="$(trim_ws "$value")"
         # Strip surrounding double quotes from values (allows
         # KEY="value with spaces" in the config file).
@@ -33,21 +39,33 @@ if [[ -f "$CONFIG_FILE" ]]; then
     done < "$CONFIG_FILE"
 else
     echo "Warning: Config file not found at ${CONFIG_FILE}, using defaults" >&2
-    REALM="${REALM:-EXAMPLE.INTERNAL}"
-    DOMAIN="${DOMAIN:-EXAMPLE}"
-    NETBIOS="${NETBIOS:-EXAMPLE}"
-    DC_HOSTNAME="${DC_HOSTNAME:-dc01}"
-    SAMBA_CONF="${SAMBA_CONF:-/etc/samba/smb.conf}"
-    SHARE_BASE="${SHARE_BASE:-/data}"
-    HOME_BASE="${HOME_BASE:-/home/ad}"
-    DEFAULT_SHELL="${DEFAULT_SHELL:-/bin/bash}"
-    LOG_FILE="${LOG_FILE:-/var/log/samba-management.log}"
-    DEFAULT_GROUP="${DEFAULT_GROUP:-Domain Users}"
-    AUTOMOUNT_BASE="${AUTOMOUNT_BASE:-/data}"
 fi
 
-# Export the fallback defaults so the bin/* scripts and any child processes
-# see them.  The file-parsing path above already exports each key as it is
-# read; this is the backstop for the no-config-file branch.
+# Apply defaults for any key the config file did not define (or when there
+# is no config file at all).  A partial config must not leave a variable
+# unset -- scripts reference these unguarded and would die mid-operation
+# with an unbound-variable error (potentially after side effects like AD
+# account creation).
+REALM="${REALM:-EXAMPLE.INTERNAL}"
+DOMAIN="${DOMAIN:-EXAMPLE}"
+NETBIOS="${NETBIOS:-EXAMPLE}"
+DC_HOSTNAME="${DC_HOSTNAME:-dc01}"
+SAMBA_CONF="${SAMBA_CONF:-/etc/samba/smb.conf}"
+SHARE_BASE="${SHARE_BASE:-/data}"
+HOME_BASE="${HOME_BASE:-/home/ad}"
+DEFAULT_SHELL="${DEFAULT_SHELL:-/bin/bash}"
+LOG_FILE="${LOG_FILE:-/var/log/samba-management.log}"
+DEFAULT_GROUP="${DEFAULT_GROUP:-Domain Users}"
+AUTOMOUNT_BASE="${AUTOMOUNT_BASE:-/data}"
+
+# Export so the bin/* scripts and any child processes see them.  The
+# file-parsing path above already exports keys it read; this covers the
+# defaulted ones.
 export REALM DOMAIN NETBIOS DC_HOSTNAME SAMBA_CONF SHARE_BASE HOME_BASE
 export DEFAULT_SHELL LOG_FILE DEFAULT_GROUP AUTOMOUNT_BASE
+
+# Ensure the log file exists so the log_* helpers' append path is active
+# (they skip file logging when the file is absent, e.g. on read-only /var).
+if [[ ! -f "$LOG_FILE" ]]; then
+    { touch "$LOG_FILE" && chmod 0600 "$LOG_FILE"; } 2>/dev/null || true
+fi

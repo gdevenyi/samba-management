@@ -22,11 +22,14 @@
         enabled: false
       failed_when: false
 
-    - name: Stop and disable autofs
+    # The nfs-server role masks autofs on storage hosts; unmask on
+    # deprovision so the machine can be repurposed (e.g. as a client).
+    - name: Stop, disable, and unmask autofs
       ansible.builtin.systemd:
         name: autofs
         state: stopped
         enabled: false
+        masked: false
       failed_when: false
 
     - name: Stop and disable SSSD
@@ -66,7 +69,90 @@
         - /etc/auto.shares
         - /etc/auto.home
 
+    - name: Remove AD DNS routing drop-in
+      ansible.builtin.file:
+        path: /etc/systemd/resolved.conf.d/samba-ad.conf
+        state: absent
+
+    - name: Restart systemd-resolved to drop the AD DNS routing
+      ansible.builtin.systemd:
+        name: systemd-resolved
+        state: restarted
+      failed_when: false
+
+    - name: Remove sshd SSSD AuthorizedKeysCommand snippet
+      ansible.builtin.file:
+        path: /etc/ssh/sshd_config.d/sssd.conf
+        state: absent
+
+    - name: Remove SSSD sudoers nsswitch routing
+      ansible.builtin.lineinfile:
+        path: /etc/nsswitch.conf
+        regexp: '^sudoers:'
+        state: absent
+      failed_when: false
+
+    # Revoke the DC's root key installed by the nfs-server role for
+    # cross-host home directory management.
+    - name: Remove DC root SSH key from authorized_keys
+      ansible.builtin.lineinfile:
+        path: /root/.ssh/authorized_keys
+        regexp: 'samba-dc home-dir mgmt'
+        state: absent
+      failed_when: false
+
     - name: Leave the domain
       ansible.builtin.command: "realm leave {{ sssd_domain }}"
       failed_when: false
       changed_when: false
+
+    # Best-effort cleanup of DC-side records for this host: DNS A/PTR and
+    # the nfs/<fqdn> SPN.  failed_when: false because the DC may itself be
+    # gone by the time a storage host is deprovisioned.
+    - name: Remove storage host A record from Samba DNS
+      ansible.builtin.command:
+        argv:
+          - samba-tool
+          - dns
+          - delete
+          - "{{ groups['dc'][0] }}"
+          - "{{ sssd_domain }}"
+          - "{{ ansible_hostname }}"
+          - A
+          - "{{ ansible_default_ipv4.address }}"
+          - "-U"
+          - Administrator
+      environment:
+        PASSWD: "{{ sssd_admin_password }}"
+      delegate_to: "{{ groups['dc'][0] }}"
+      become: true
+      failed_when: false
+      changed_when: true
+      no_log: true
+
+    - name: Compute storage host's reverse zone name
+      ansible.builtin.set_fact:
+        _deprov_reverse_zone: >-
+          {%- set o = ansible_default_ipv4.address.split('.') -%}
+          {{ o[2] }}.{{ o[1] }}.{{ o[0] }}.in-addr.arpa
+
+    - name: Remove storage host PTR record from Samba DNS
+      ansible.builtin.command:
+        argv:
+          - samba-tool
+          - dns
+          - delete
+          - "{{ groups['dc'][0] }}"
+          - "{{ _deprov_reverse_zone }}"
+          - "{{ ansible_default_ipv4.address.split('.')[3] }}"
+          - PTR
+          - "{{ ansible_fqdn }}"
+          - "-U"
+          - Administrator
+      environment:
+        PASSWD: "{{ sssd_admin_password }}"
+      delegate_to: "{{ groups['dc'][0] }}"
+      become: true
+      failed_when: false
+      changed_when: true
+      no_log: true

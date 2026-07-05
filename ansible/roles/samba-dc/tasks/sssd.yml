@@ -33,7 +33,11 @@
       - exportkeytab
       - /etc/krb5.keytab
       - "--principal={{ ansible_hostname }}$"
-  when: ansible_hostname + '$@' not in _samba_keytab_check.stdout
+  # Case-insensitive: klist may render the machine principal in the
+  # account's stored case (DC01$@REALM) while ansible_hostname is lowercase,
+  # which would make a case-sensitive check re-export on every run and
+  # accumulate duplicate keytab entries.
+  when: (ansible_hostname | upper) + '$@' not in (_samba_keytab_check.stdout | upper)
   changed_when: true
 
 - name: Deploy SSSD configuration for the DC

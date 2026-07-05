@@ -1,18 +1,39 @@
 # reverse-dns.yml - Create the in-addr.arpa zone and add a PTR for the DC.
 #
-# First-run only: gated on _samba_just_provisioned so we don't churn the
-# zone every play.  Both samba-tool calls accept that the zone may already
-# exist; failed_when: false swallows the "already exists" error.
+# Runs whenever the domain exists (not just on the play that provisioned
+# it), so a first run that died after the provision marker was written
+# still gets its reverse zone on the next run.  Idempotent: each object is
+# queried first and only created when missing, mirroring the pattern in
+# nfs-server/tasks/dns-register.yml.  Genuine failures surface instead of
+# being swallowed by a blanket failed_when: false.
 ---
 - name: Compute reverse DNS zone name
   ansible.builtin.set_fact:
     _rev_octets: "{{ ansible_default_ipv4.address.split('.') }}"
-  when: _samba_just_provisioned | default(false)
+  when: _samba_domain_exists | default(false)
 
 - name: Set reverse zone
   ansible.builtin.set_fact:
     _reverse_zone: "{{ _rev_octets[2] }}.{{ _rev_octets[1] }}.{{ _rev_octets[0] }}.in-addr.arpa"
-  when: _samba_just_provisioned | default(false)
+  when: _samba_domain_exists | default(false)
+
+- name: Check if reverse DNS zone exists
+  ansible.builtin.command:
+    argv:
+      - samba-tool
+      - dns
+      - zoneinfo
+      - "{{ ansible_hostname }}.{{ samba_realm | lower }}"
+      - "{{ _reverse_zone }}"
+      - "-U"
+      - Administrator
+  environment:
+    PASSWD: "{{ samba_admin_password }}"
+  register: _reverse_zone_check
+  when: _samba_domain_exists | default(false)
+  changed_when: false
+  failed_when: false
+  no_log: true
 
 - name: Create reverse DNS zone
   ansible.builtin.command:
@@ -27,9 +48,30 @@
   # Pass the password via env var so it never appears in /proc/<pid>/cmdline.
   environment:
     PASSWD: "{{ samba_admin_password }}"
-  when: _samba_just_provisioned | default(false)
-  failed_when: false
+  when:
+    - _samba_domain_exists | default(false)
+    - _reverse_zone_check.rc != 0
   changed_when: true
+  no_log: true
+
+- name: Check if PTR record for DC exists
+  ansible.builtin.command:
+    argv:
+      - samba-tool
+      - dns
+      - query
+      - "{{ ansible_hostname }}.{{ samba_realm | lower }}"
+      - "{{ _reverse_zone }}"
+      - "{{ ansible_default_ipv4.address.split('.')[3] }}"
+      - PTR
+      - "-U"
+      - Administrator
+  environment:
+    PASSWD: "{{ samba_admin_password }}"
+  register: _dc_ptr_check
+  when: _samba_domain_exists | default(false)
+  changed_when: false
+  failed_when: false
   no_log: true
 
 - name: Add PTR record for DC
@@ -47,7 +89,8 @@
       - Administrator
   environment:
     PASSWD: "{{ samba_admin_password }}"
-  when: _samba_just_provisioned | default(false)
-  failed_when: false
+  when:
+    - _samba_domain_exists | default(false)
+    - _dc_ptr_check.rc != 0
   changed_when: true
   no_log: true

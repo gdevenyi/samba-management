@@ -15,12 +15,11 @@
   changed_when: false
   failed_when: false
 
+# Case-insensitive principal match to cover however klist renders it.
 - name: Provision NFS keytab if missing
   when: >-
     _nfs_keytab_check.rc != 0 or
-    'nfs/' + ansible_fqdn not in _nfs_keytab_check.stdout
-  vars:
-    _nfs_keytab_path: "/tmp/nfs-{{ ansible_hostname }}.keytab"
+    ('nfs/' + ansible_fqdn) | upper not in _nfs_keytab_check.stdout | upper
   block:
     - name: Register nfs/<fqdn> SPN on the storage host's machine account
       ansible.builtin.command: >-
@@ -35,9 +34,34 @@
         - "'already' not in _nfs_spn_add.stderr"
       changed_when: _nfs_spn_add.rc == 0
 
+    # Unpredictable temp paths on every hop (DC, control node, storage
+    # host): a fixed /tmp name is a symlink-attack and multi-user
+    # disclosure risk for key material.
+    - name: Create temporary keytab file on DC
+      ansible.builtin.tempfile:
+        suffix: .keytab
+      delegate_to: "{{ groups['dc'][0] }}"
+      become: true
+      register: _nfs_keytab_dc
+      changed_when: false
+
+    - name: Create temporary keytab file on control node
+      ansible.builtin.tempfile:
+        suffix: .keytab
+      delegate_to: localhost
+      become: false
+      register: _nfs_keytab_local
+      changed_when: false
+
+    - name: Create temporary keytab file on storage host
+      ansible.builtin.tempfile:
+        suffix: .keytab
+      register: _nfs_keytab_storage
+      changed_when: false
+
     - name: Export NFS key from DC
       ansible.builtin.command: >-
-        samba-tool domain exportkeytab {{ _nfs_keytab_path }}
+        samba-tool domain exportkeytab {{ _nfs_keytab_dc.path }}
         --principal=nfs/{{ ansible_fqdn }}
       delegate_to: "{{ groups['dc'][0] }}"
       become: true
@@ -45,8 +69,8 @@
 
     - name: Fetch NFS keytab from DC to control node
       ansible.builtin.fetch:
-        src: "{{ _nfs_keytab_path }}"
-        dest: "{{ _nfs_keytab_path }}"
+        src: "{{ _nfs_keytab_dc.path }}"
+        dest: "{{ _nfs_keytab_local.path }}"
         flat: true
       delegate_to: "{{ groups['dc'][0] }}"
       become: true
@@ -57,8 +81,8 @@
     # Ansible already has open to each host.
     - name: Push NFS keytab to storage host
       ansible.builtin.copy:
-        src: "{{ _nfs_keytab_path }}"
-        dest: "{{ _nfs_keytab_path }}"
+        src: "{{ _nfs_keytab_local.path }}"
+        dest: "{{ _nfs_keytab_storage.path }}"
         mode: "0600"
         owner: root
         group: root
@@ -66,7 +90,7 @@
     - name: Merge NFS keytab into local keytab
       ansible.builtin.shell: |
         ktutil <<EOF
-        read_kt {{ _nfs_keytab_path }}
+        read_kt {{ _nfs_keytab_storage.path }}
         write_kt /etc/krb5.keytab
         quit
         EOF
@@ -76,24 +100,28 @@
     - name: Flush keytab handlers
       ansible.builtin.meta: flush_handlers
 
+  always:
     - name: Clean up temporary NFS keytab (storage host)
       ansible.builtin.file:
-        path: "{{ _nfs_keytab_path }}"
+        path: "{{ _nfs_keytab_storage.path }}"
         state: absent
+      when: _nfs_keytab_storage.path is defined
       changed_when: false
 
     - name: Clean up temporary NFS keytab (DC)
       ansible.builtin.file:
-        path: "{{ _nfs_keytab_path }}"
+        path: "{{ _nfs_keytab_dc.path }}"
         state: absent
       delegate_to: "{{ groups['dc'][0] }}"
       become: true
+      when: _nfs_keytab_dc.path is defined
       changed_when: false
 
     - name: Clean up temporary NFS keytab (control node)
       ansible.builtin.file:
-        path: "{{ _nfs_keytab_path }}"
+        path: "{{ _nfs_keytab_local.path }}"
         state: absent
       delegate_to: localhost
       become: false
+      when: _nfs_keytab_local.path is defined
       changed_when: false

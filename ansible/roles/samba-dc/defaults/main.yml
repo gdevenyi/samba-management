@@ -61,6 +61,8 @@ samba_nfs_server: ""
 samba_nfs_homes_server: ""
 
 # --- Domain password policy ---
+# NOTE: keep the value quoted ("off"/"on").  Unquoted off/on are YAML
+# booleans and would render as False/True, which samba-tool rejects.
 samba_password_complexity: "off"
 # samba-tool domain passwordsettings caps min-pwd-length at 14
 # (the underlying AD attribute is a uint8 with a hardcoded ceiling).

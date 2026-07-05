@@ -268,8 +268,14 @@ All scripts run **as root on the DC**. They source `lib/common.sh` then `lib/con
 # Create a group
 ./bin/samba-group.sh add DevOps --description="DevOps team"
 
-# Add members (comma-separated)
+# Create with an rfc2307 GID (a positive integer; 0 is rejected). The NIS
+# domain samba-tool requires for this is derived automatically.
+./bin/samba-group.sh add DevOps --gid=15000
+
+# Add members (comma-separated). Members may be users OR groups —
+# nesting a group inside another is a first-class operation.
 ./bin/samba-group.sh add-members DevOps jsmith,jdoe,alice
+./bin/samba-group.sh add-members login-node01 computenode-login   # group nesting
 
 # Remove members
 ./bin/samba-group.sh remove-members DevOps jdoe
@@ -385,7 +391,7 @@ cd ansible
 ansible-playbook playbooks/deprovision-linux.yml
 ```
 
-This runs `realm leave`, stops SSSD, and removes autofs share configs and SSSD configuration.
+This runs `realm leave`, stops SSSD/autofs, and removes all client-side domain state: `sssd.conf`, the AD DNS routing drop-in (so the client no longer points DNS at a decommissioned DC), the sshd `AuthorizedKeysCommand` snippet, and the autofs/sudoers `nsswitch.conf` routing lines (restarting `systemd-resolved` and `sshd` afterward).
 
 Remove an NFS storage server:
 
@@ -394,7 +400,7 @@ cd ansible
 ansible-playbook playbooks/deprovision-nfs-server.yml
 ```
 
-This stops NFS server services, removes export files, stops SSSD/autofs, and leaves the AD domain.
+This stops NFS server services, removes export files, unmasks autofs (so the host can be repurposed), revokes the DC's root SSH key, removes the same client-side state as the Linux deprovision, leaves the AD domain, and best-effort deletes the host's DNS A/PTR records on the DC.
 
 ## Integration Testing
 
@@ -407,7 +413,7 @@ This stops NFS server services, removes export files, stops SSSD/autofs, and lea
 - libvirt group membership (`sudo usermod -aG libvirt $USER`, then log out/in)
 - `virsh`, `virt-install`, `qemu-img`, `cloud-localds` (`apt install libvirt-clients qemu-utils cloud-image-utils`)
 - ~12GB free disk, ~4-6GB RAM
-- Your SSH public key at `~/.ssh/id_ed25519.pub`
+- Write access to `/var/lib/libvirt/images` (the default pool). `setup.sh` checks this up front and, if the libvirt group's ACL mask has been reset, prints the exact fix: `sudo setfacl -m group:libvirt:rwx -m mask:rwx /var/lib/libvirt/images`
 
 ### Usage
 
@@ -437,8 +443,17 @@ The test environment uses domain `samba.test` (RFC 2606 reserved TLD) on the def
 | Client | getent user/group lookup, autofs NFS mounts (shares + homes) |
 | Login Access Filter | anchor/catch-all group creation, DOM:-prefixed chain matching, dynamic class group nesting, `login-*` group delete guard |
 | DNS Persistence | reboot test verifying persistent DNS resolver config (DC stays the resolver) |
+| User Edge Cases | input validation and exit codes, attribute recording (ldbsearch), `--group`, `list --pattern`, `--key-file` SSH keys |
+| Home Archival | `--archive-home`: 0600 tarball, contents, preserved data, foreign-owner warning on recreation |
+| Group Edge Cases | rfc2307 `--gid`, `--gid=0` rejection, `list --pattern`, `--recursive` nesting visibility, error exit codes |
+| Sudo Rule Edge Cases | full attribute set (`--host`/`--runas-*`/`--order`), order replace-not-append, duplicate/validation errors |
+| Autofs Map Lifecycle | add-map/add-entry/show/modify/delete-entry/delete-map plus every guard (auto.master, non-empty map, LDIF values) |
+| Share Edge Cases | `--sec`/`--fsid`/`--path`/`--server` validation, duplicate add, custom `--path`, data preservation on delete |
+| Dry Run | `--dry-run` previews with zero side effects and never prompts |
+| Password Policy Set | set/verify/restore round trip; empty-options error |
+| Client Healthcheck | `client/linux/healthcheck.sh` streamed to the client; all hard checks must pass |
 
-All tests clean up after themselves (users, groups, shares, sudo rules, and autofs entries are removed at the end).
+All tests clean up after themselves — users, groups, shares, sudo rules, autofs entries, and home directories are removed at the end, and the password policy is restored. Both `colocated` and `separate` modes are verified at 234/234. `test/sync-scripts.sh` pushes the working-tree `bin/`+`lib/` to the DC's `/opt/samba-management` so script edits can be re-tested without a full re-provision.
 
 ### Diagnostics
 
@@ -484,6 +499,7 @@ Key variables in role defaults (overridden by `group_vars/`):
 | `sssd_enable_sudo` | `true` | sssd-client | Configure SSSD sudo provider + nsswitch routing |
 | `sssd_configure_autofs` | `true` | sssd-client | Install autofs and create mount-base directories |
 | `sssd_enable_autofs` | `true` | sssd-client | Pull autofs maps from AD via SSSD (requires `sssd_configure_autofs`) |
+| `sssd_deploy_client_scripts` | `true` | sssd-client | Deploy `client/linux/healthcheck.sh` to `/usr/local/sbin/domain-healthcheck.sh` |
 | `sssd_cache_credentials` | `true` | sssd-client | Cache credentials for offline authentication |
 | `sssd_use_fully_qualified_names` | `false` | sssd-client | Allow bare usernames for login |
 | `sssd_access_provider` | `ad` | sssd-client | Access provider (respects AD userAccountControl flags) |

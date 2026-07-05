@@ -136,28 +136,37 @@ _set_user_password() {
 _provision_home_dir() {
     local username="$1"
     local home_dir="${HOME_BASE}/${username}"
+    # Expire any cached entry for this name on the homes host first: when a
+    # same-named account was deleted recently, SSSD can still serve the OLD
+    # account's uid from cache, which would corrupt both the ownership
+    # comparison below and the chown.  Best-effort (sss_cache errors when
+    # nothing matches).
+    home_op sss_cache -u "$username" 2>/dev/null || true
+    # Wait (up to 30s) for the account to resolve through NSS on the homes
+    # host.  First resolution of a brand-new user needs a round trip to AD,
+    # and SSSD's negative cache (default 15s) may briefly mask it if
+    # anything queried the name before the account existed.  30s outlasts
+    # both.
+    if ! home_op sh -c "for i in \$(seq 1 30); do getent passwd '${username}' >/dev/null 2>&1 && exit 0; sleep 1; done; exit 1"; then
+        log_error "User '${username}' not resolvable via NSS on ${NFS_HOMES_SERVER:-localhost} after 30s; home directory not provisioned (user was created)"
+        exit 1
+    fi
     if home_op test -d "$home_dir"; then
         # Left over from a previous same-named account (delete preserves
         # home data).  The new account has a fresh SID/uid and will NOT own
         # the old files -- with 0700 homes that means the user is locked out
         # of their own home.  Surface it instead of silently skipping.
-        local cur_owner
-        cur_owner=$(home_op stat -c %U "$home_dir" 2>/dev/null || echo '?')
-        if [[ "$cur_owner" != "$username" ]]; then
-            log_warn "Home directory ${home_dir} already exists but is owned by '${cur_owner}', not '${username}'."
+        # Compare numeric uids: a stale uid->name mapping in SSSD's cache
+        # could make a name comparison pass while ownership is still wrong.
+        local dir_uid user_uid
+        dir_uid=$(home_op stat -c %u "$home_dir" 2>/dev/null || echo '?')
+        user_uid=$(home_op id -u "$username" 2>/dev/null || echo '?')
+        if [[ "$dir_uid" != "$user_uid" || "$dir_uid" == "?" ]]; then
+            log_warn "Home directory ${home_dir} already exists but is owned by uid ${dir_uid}, not '${username}' (uid ${user_uid})."
             log_warn "Review its contents, then either reassign it (chown -R ${username} ${home_dir})"
             log_warn "or archive/remove it and re-run this command."
         fi
         return
-    fi
-    # Wait (up to 30s) for the new account to resolve through NSS on the
-    # homes host.  First resolution of a brand-new user needs a round trip
-    # to AD, and SSSD's negative cache (default 15s) may briefly mask it if
-    # anything queried the name before the account existed.  30s outlasts
-    # both.
-    if ! home_op sh -c "for i in \$(seq 1 30); do getent passwd '${username}' >/dev/null 2>&1 && exit 0; sleep 1; done; exit 1"; then
-        log_error "User '${username}' not resolvable via NSS on ${NFS_HOMES_SERVER:-localhost} after 30s; home directory not created (user was created)"
-        exit 1
     fi
     if ! home_op mkdir -p "$home_dir" \
         || ! home_op chown "${username}:${DEFAULT_GROUP}" "$home_dir" \

@@ -80,9 +80,12 @@ cmd_add() {
     # Build samba-tool command; --gid-number enables rfc2307 UID/GID
     # consistency across Linux clients; --groupou places the group in
     # a specific OU rather than the default CN=Users container.
+    # samba-tool refuses --gid-number without --nis-domain for an
+    # RFC2307-enabled group; derive the NIS domain from the NetBIOS
+    # domain name (Samba's convention: lowercase workgroup).
     local -a cmd=(samba-tool group add "$groupname")
     [[ -n "$description" ]] && cmd+=(--description="$description")
-    [[ -n "$gid" ]] && cmd+=(--gid-number="$gid")
+    [[ -n "$gid" ]] && cmd+=(--gid-number="$gid" --nis-domain="${NETBIOS,,}")
     [[ -n "$ou" ]] && cmd+=(--groupou="OU=${ou}")
 
     if dry_run "Would create group: ${groupname}"; then

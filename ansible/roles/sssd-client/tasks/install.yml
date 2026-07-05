@@ -22,6 +22,9 @@
       - autofs
       - nfs-common
       - libsss-sudo
+      # bind9-dnsutils provides `host`, used by the deployed
+      # domain-healthcheck.sh for the DNS SRV/A checks.
+      - bind9-dnsutils
     state: present
     update_cache: true
   environment:

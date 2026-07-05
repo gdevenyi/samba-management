@@ -84,8 +84,17 @@ The test uses domain `samba.test` (RFC 2606 reserved TLD). A random admin passwo
 | `test_login_access_filter` | anchor/catch-all group creation, DOM:-prefixed chain matching, dynamic class group nesting, `login-*` group delete guard |
 | `test_dns_persistence` | reboot test verifying persistent DNS resolver config (DC stays the resolver) |
 | `test_autofs_maps` | explicit map listing and entry verification via `samba-automount.sh` |
+| `test_user_edge_cases` | input validation and exit codes, attribute recording (ldbsearch), `--group`, `list --pattern`, `--key-file` SSH keys |
+| `test_user_archive` | `--archive-home`: 0600 tarball, contents, preserved data, foreign-owner warning on recreation |
+| `test_group_edge_cases` | rfc2307 `--gid`, `--gid=0` rejection, `list --pattern`, `--recursive` nesting visibility, error exit codes |
+| `test_sudorule_extended` | full attribute set (`--host`/`--runas-*`/`--order`), order replace-not-append, duplicate/validation errors |
+| `test_automount_map_lifecycle` | add-map/add-entry/show/modify/delete-entry/delete-map plus every guard (auto.master, non-empty map, LDIF values) |
+| `test_share_edge_cases` | `--sec`/`--fsid`/`--path`/`--server` validation, duplicate add, custom `--path`, data preservation on delete |
+| `test_dry_run` | `--dry-run` previews with zero side effects and never prompts |
+| `test_password_policy_set` | set/verify/restore round trip; empty-options error |
+| `test_client_healthcheck` | `client/linux/healthcheck.sh` streamed to the client; all hard checks must pass |
 
-All tests clean up after themselves (users, groups, shares, sudo rules, and autofs entries are removed at the end). Test data is centralised at the top of `run-tests.sh`: `TEST_USERS`, `TEST_GROUPS`, `TEST_SHARES`, `TEST_SUDO_RULES`, `TEST_SSH_KEY`.
+All tests clean up after themselves (users, groups, shares, sudo rules, autofs entries, and home directories are removed at the end; the password policy is restored).  `test/sync-scripts.sh` pushes the working-tree `bin/`+`lib/` to the DC's `/opt/samba-management` so script edits can be re-tested without a full re-provision. Test data is centralised at the top of `run-tests.sh`: `TEST_USERS`, `TEST_GROUPS`, `TEST_SHARES`, `TEST_SUDO_RULES`, `TEST_SSH_KEY`.
 
 ### Diagnostic Dump (`TEST_DIAG=1`)
 

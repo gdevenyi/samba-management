@@ -32,8 +32,11 @@ destroy_vm() {
     else
         log_warn "VM '${vm_name}' not found."
     fi
-    rm -f "/var/lib/libvirt/images/${vm_name}.qcow2"
-    rm -f "/var/lib/libvirt/images/${vm_name}-cidata.iso"
+    # undefine --remove-all-storage usually removes these already; the rm
+    # is a belt-and-braces cleanup.  || true so a permission error (files
+    # owned by libvirt-qemu) doesn't abort the teardown under set -e.
+    rm -f "/var/lib/libvirt/images/${vm_name}.qcow2" 2>/dev/null || true
+    rm -f "/var/lib/libvirt/images/${vm_name}-cidata.iso" 2>/dev/null || true
 }
 
 log_info "=== Tearing Down Test Environment ==="

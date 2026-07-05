@@ -29,10 +29,10 @@ NC='\033[0m'
 
 # --- Test data --------------------------------------------------------------
 # Centralised so setup, exercise, and cleanup all reference the same names.
-TEST_USERS=(testuser1 testuser2 homeuser1 homeuser2 perm_reader perm_writer perm_both perm_outsider login_allowed login_denied)
-TEST_GROUPS=(TestGroupNested TestGroup ShareReaders ShareWriters computenode-login login-delete-probe)
-TEST_SHARES=(perm_rw_share perm_admin_share public)
-TEST_SUDO_RULES=(admin-all users-nopasswd)
+TEST_USERS=(testuser1 testuser2 homeuser1 homeuser2 perm_reader perm_writer perm_both perm_outsider login_allowed login_denied edgeuser archiveuser dryuser)
+TEST_GROUPS=(TestGroupNested GidGroup EdgeGroup TestGroup ShareReaders ShareWriters computenode-login login-delete-probe)
+TEST_SHARES=(perm_rw_share perm_admin_share public edgeshare pathshare dryshare)
+TEST_SUDO_RULES=(admin-all users-nopasswd edge-rule edge-rule2)
 TEST_SSH_KEY_COMMENT="samba-mgmt-test-data"
 TEST_SSH_KEY_FILE=""
 TEST_SSH_KEY=""
@@ -108,6 +108,14 @@ cleanup_test_state() {
     for user in "${TEST_USERS[@]}"; do
         ssh_nfs "sudo rm -rf /home/ad/${user} /home/ad/${user}.tar.gz" 2>/dev/null || true
     done
+
+    # Objects created by the edge-case suites
+    ssh_dc "sudo samba-automount.sh delete-map testmap --force" 2>/dev/null || true
+    ssh_dc "sudo rm -f /tmp/edgekey.pub" 2>/dev/null || true
+    ssh_nfs "sudo rm -rf /data/custom_pathshare" 2>/dev/null || true
+    # Restore the password policy in case test_password_policy_set died
+    # between the change and its own restore step.
+    ssh_dc "sudo samba-tool domain passwordsettings set --min-pwd-length=14" >/dev/null 2>&1 || true
 
     # Stray temp files on the NFS host
     ssh_nfs "sudo rm -f /tmp/perm-test-file.txt" 2>/dev/null || true
@@ -321,13 +329,19 @@ test_permissions() {
     # any lookups: a freshly restarted backend can flap offline for tens of
     # seconds, during which initgroups is served (incomplete) from cache and
     # the verify below would time out spuriously.
+    # The trailing grep ENFORCES the online state -- without it the for
+    # loop exits 0 even when SSSD never came online, and the warm-up would
+    # poison the cache with offline (incomplete) initgroups answers.
     run_test "Restart SSSD and warm initgroups on storage host" \
-        ssh_nfs "sudo systemctl restart sssd && for i in \$(seq 1 30); do sudo sssctl domain-status samba.test 2>/dev/null | grep -q 'Online status: Online' && break; sleep 2; done && sudo bash -c 'for f in /proc/net/rpc/auth.unix.gid /proc/net/rpc/nfs4.nametoid /proc/net/rpc/nfs4.idtoname; do [ -e \"\$f/flush\" ] && date +%s > \"\$f/flush\"; done' && for u in perm_writer perm_both perm_reader; do getent initgroups \"\$u\" >/dev/null; done"
+        ssh_nfs "sudo systemctl restart sssd && for i in \$(seq 1 30); do sudo sssctl domain-status samba.test 2>/dev/null | grep -q 'Online status: Online' && break; sleep 2; done && sudo sssctl domain-status samba.test | grep -q 'Online status: Online' && sudo bash -c 'for f in /proc/net/rpc/auth.unix.gid /proc/net/rpc/nfs4.nametoid /proc/net/rpc/nfs4.idtoname; do [ -e \"\$f/flush\" ] && date +%s > \"\$f/flush\"; done' && for u in perm_writer perm_both perm_reader; do getent initgroups \"\$u\" >/dev/null; done"
     diag_dump "after warmup"
     # 60s budget, with a cache-expiry nudge every 10s in case the first
     # post-restart initgroups was cached while the backend was still offline.
+    # The GID is re-resolved INSIDE the loop: a one-shot snapshot can pin a
+    # stale cached gid (from a previous same-named group) and then grep for
+    # the wrong value forever while both sides converge.
     run_test "Verify ShareWriters visible in perm_writer initgroups" \
-        ssh_nfs "SW_GID=\$(getent group ShareWriters | cut -d: -f3) && [ -n \"\$SW_GID\" ] && for i in \$(seq 1 60); do getent initgroups perm_writer 2>/dev/null | grep -qw \"\$SW_GID\" && exit 0; [ \$((i % 10)) -eq 0 ] && sudo sss_cache -E; sleep 1; done; echo 'ShareWriters GID not found in initgroups after 60s' >&2; exit 1"
+        ssh_nfs "for i in \$(seq 1 60); do SW_GID=\$(getent group ShareWriters 2>/dev/null | cut -d: -f3); [ -n \"\$SW_GID\" ] && getent initgroups perm_writer 2>/dev/null | grep -qw \"\$SW_GID\" && exit 0; [ \$((i % 10)) -eq 0 ] && sudo sss_cache -E; sleep 1; done; echo 'ShareWriters GID not found in initgroups after 60s' >&2; exit 1"
     diag_dump "after initgroups verify"
     # Re-chown share directories with the now-fresh SSSD GID for ShareWriters.
     # The initial chown in test_permissions_setup may have used a stale GID
@@ -653,6 +667,262 @@ test_autofs_maps() {
         ssh_dc "sudo samba-automount.sh show auto.home '*' | grep -q 'nisMapEntry:.*nfs4'"
 }
 
+# Exhaustive samba-user.sh coverage: creation options, attribute recording,
+# input validation, error exit codes, pattern listing, key-file SSH keys.
+test_user_edge_cases() {
+    echo ""
+    echo "--- User Management Edge Cases ---"
+    run_test "Reject invalid username" \
+        ssh_dc "! sudo samba-user.sh add 'Bad User!' --password=Something123456 --force"
+    run_test "Missing username argument exits 2" \
+        ssh_dc "sudo samba-user.sh add >/dev/null 2>&1; test \$? -eq 2"
+    run_test "Unknown subcommand exits 2" \
+        ssh_dc "sudo samba-user.sh frobnicate >/dev/null 2>&1; test \$? -eq 2"
+    run_test "Unknown option exits 2" \
+        ssh_dc "sudo samba-user.sh add edgeuser --bogus=1 >/dev/null 2>&1; test \$? -eq 2"
+
+    run_test "Create group EdgeGroup" \
+        ssh_dc 'sudo samba-group.sh add EdgeGroup --description="Edge case group"'
+    run_test "Create edgeuser with attributes and --group" \
+        ssh_dc "sudo samba-user.sh add edgeuser --given-name=Edge --surname=Case --email=edge@samba.test --shell=/bin/sh --group=EdgeGroup --password=EdgePass123456 --force"
+    run_test "edgeuser loginShell recorded in AD" \
+        ssh_dc "sudo ldbsearch -H /var/lib/samba/private/sam.ldb '(sAMAccountName=edgeuser)' loginShell | grep -q '^loginShell: /bin/sh'"
+    run_test "edgeuser mail recorded in AD" \
+        ssh_dc "sudo ldbsearch -H /var/lib/samba/private/sam.ldb '(sAMAccountName=edgeuser)' mail | grep -q '^mail: edge@samba.test'"
+    run_test "edgeuser is member of EdgeGroup" \
+        ssh_dc "sudo samba-group.sh list-members EdgeGroup | grep -qx edgeuser"
+    run_test "Duplicate user creation fails" \
+        ssh_dc "! sudo samba-user.sh add edgeuser --password=EdgePass123456 --force"
+    run_test "Create with nonexistent --group exits 3, user not created" \
+        ssh_dc "sudo samba-user.sh add edgeuser2 --group=NoSuchGroup --password=EdgePass123456 --force >/dev/null 2>&1; test \$? -eq 3 && ! sudo samba-tool user show edgeuser2 >/dev/null 2>&1"
+    run_test "Show of nonexistent user exits 3" \
+        ssh_dc "sudo samba-user.sh show nosuchuser123 >/dev/null 2>&1; test \$? -eq 3"
+    run_test "modify with no attributes exits 2" \
+        ssh_dc "sudo samba-user.sh modify edgeuser >/dev/null 2>&1; test \$? -eq 2"
+    run_test "list --pattern filters users" \
+        ssh_dc "sudo samba-user.sh list --pattern=edgeu | grep -qx edgeuser"
+    run_test "add-sshkey via --key-file" \
+        ssh_dc "printf '%s\n' '${TEST_SSH_KEY}' | sudo tee /tmp/edgekey.pub >/dev/null && sudo samba-user.sh add-sshkey edgeuser --key-file=/tmp/edgekey.pub && sudo rm -f /tmp/edgekey.pub"
+    run_test "key-file key is listed" \
+        ssh_dc "sudo samba-user.sh list-sshkeys edgeuser | grep -Fq '${TEST_SSH_KEY_COMMENT}'"
+    run_test "add-sshkey with missing file exits 2" \
+        ssh_dc "sudo samba-user.sh add-sshkey edgeuser --key-file=/tmp/no-such-key.pub >/dev/null 2>&1; test \$? -eq 2"
+    run_test "Remove key-file key" \
+        ssh_dc "sudo samba-user.sh remove-sshkey edgeuser --key='${TEST_SSH_KEY}'"
+}
+
+# --archive-home end to end: tarball created (root-only), contents intact,
+# home data preserved, and the foreign-owner warning on recreation.
+test_user_archive() {
+    echo ""
+    echo "--- Home Directory Archival ---"
+    run_test "Create archiveuser" \
+        ssh_dc "sudo samba-user.sh add archiveuser --given-name=Archive --surname=User --password=Arch1vePass123 --force"
+    run_test "Seed a file in archiveuser's home" \
+        ssh_nfs "echo 'precious data' | sudo tee /home/ad/archiveuser/data.txt >/dev/null"
+    run_test "Delete archiveuser with --archive-home" \
+        ssh_dc "sudo samba-user.sh delete archiveuser --archive-home --force"
+    run_test "Archive exists with mode 0600" \
+        ssh_nfs "stat -c %a /home/ad/archiveuser.tar.gz 2>/dev/null | grep -qx 600"
+    run_test "Archive contains the seeded file" \
+        ssh_nfs "sudo tar -tzf /home/ad/archiveuser.tar.gz | grep -q archiveuser/data.txt"
+    run_test "Home data preserved after delete" \
+        ssh_nfs "sudo test -f /home/ad/archiveuser/data.txt"
+    run_test "Recreating archiveuser warns about foreign-owned home" \
+        ssh_dc "sudo samba-user.sh add archiveuser --password=Arch1vePass123 --force 2>&1 | grep -q 'already exists but is owned by'"
+}
+
+# Group edge cases: rfc2307 gid, gid=0 rejection, pattern listing, nesting
+# visibility via --recursive, duplicate/missing errors.
+test_group_edge_cases() {
+    echo ""
+    echo "--- Group Management Edge Cases ---"
+    run_test "Reject invalid group name" \
+        ssh_dc "! sudo samba-group.sh add 'bad/name'"
+    run_test "Reject --gid=0 (exit 2)" \
+        ssh_dc "sudo samba-group.sh add GidGroup --gid=0 >/dev/null 2>&1; test \$? -eq 2"
+    run_test "Create GidGroup with rfc2307 gid" \
+        ssh_dc "sudo samba-group.sh add GidGroup --gid=15000"
+    run_test "gidNumber recorded in AD" \
+        ssh_dc "sudo ldbsearch -H /var/lib/samba/private/sam.ldb '(sAMAccountName=GidGroup)' gidNumber | grep -q '^gidNumber: 15000'"
+    run_test "group list --pattern filters" \
+        ssh_dc "sudo samba-group.sh list --pattern=GidG | grep -qx GidGroup"
+    run_test "Duplicate group creation fails" \
+        ssh_dc "! sudo samba-group.sh add GidGroup"
+    run_test "Nest GidGroup inside EdgeGroup" \
+        ssh_dc "sudo samba-group.sh add-members EdgeGroup GidGroup"
+    run_test "Add testuser2 to GidGroup (nested-only member)" \
+        ssh_dc "sudo samba-group.sh add-members GidGroup testuser2"
+    run_test "Direct list-members omits nested-only member" \
+        ssh_dc "! sudo samba-group.sh list-members EdgeGroup | grep -qx testuser2"
+    run_test "Recursive list-members shows nested-only member" \
+        ssh_dc "sudo samba-group.sh list-members EdgeGroup --recursive | grep -qx testuser2"
+    run_test "Delete of nonexistent group exits 3" \
+        ssh_dc "sudo samba-group.sh delete NoSuchGroup --force >/dev/null 2>&1; test \$? -eq 3"
+}
+
+# Sudo rule coverage beyond the basics: every attribute option, sudoOrder
+# replace-not-append semantics, duplicate/validation errors.
+test_sudorule_extended() {
+    echo ""
+    echo "--- Sudo Rule Edge Cases ---"
+    run_test "Create edge-rule with full attribute set" \
+        ssh_dc 'sudo samba-sudorule.sh add edge-rule --user=edgeuser --user="%EdgeGroup" --host=client01 --command=/usr/bin/id --runas-user=root --runas-group=root --order=5'
+    run_test "edge-rule records both sudoUser values" \
+        ssh_dc "sudo samba-sudorule.sh show edge-rule | grep -q 'sudoUser: edgeuser' && sudo samba-sudorule.sh show edge-rule | grep -q 'sudoUser: %EdgeGroup'"
+    run_test "edge-rule records sudoHost" \
+        ssh_dc "sudo samba-sudorule.sh show edge-rule | grep -q 'sudoHost: client01'"
+    run_test "edge-rule records sudoCommand" \
+        ssh_dc "sudo samba-sudorule.sh show edge-rule | grep -q 'sudoCommand: /usr/bin/id'"
+    run_test "edge-rule records sudoRunAsUser/Group" \
+        ssh_dc "sudo samba-sudorule.sh show edge-rule | grep -q 'sudoRunAsUser: root' && sudo samba-sudorule.sh show edge-rule | grep -q 'sudoRunAsGroup: root'"
+    run_test "edge-rule records sudoOrder" \
+        ssh_dc "sudo samba-sudorule.sh show edge-rule | grep -q 'sudoOrder: 5'"
+    run_test "modify replaces sudoOrder" \
+        ssh_dc "sudo samba-sudorule.sh modify edge-rule --order=7"
+    run_test "sudoOrder replaced, not appended" \
+        ssh_dc "sudo samba-sudorule.sh show edge-rule | grep -q 'sudoOrder: 7' && ! sudo samba-sudorule.sh show edge-rule | grep -q 'sudoOrder: 5'"
+    run_test "Duplicate rule creation fails" \
+        ssh_dc "! sudo samba-sudorule.sh add edge-rule --user=edgeuser"
+    run_test "Rule without --user exits 2" \
+        ssh_dc "sudo samba-sudorule.sh add edge-rule2 --command=ALL >/dev/null 2>&1; test \$? -eq 2"
+    run_test "Reject invalid rule name" \
+        ssh_dc "! sudo samba-sudorule.sh add 'bad,name' --user=edgeuser"
+    run_test "Reject invalid --order value" \
+        ssh_dc "sudo samba-sudorule.sh add edge-rule2 --user=edgeuser --order=abc >/dev/null 2>&1; test \$? -eq 2"
+    run_test "Delete edge-rule" \
+        ssh_dc "sudo samba-sudorule.sh delete edge-rule --force"
+    run_test "Deleted rule absent from list" \
+        ssh_dc "! sudo samba-sudorule.sh list | grep -qx edge-rule"
+}
+
+# Full autofs map lifecycle: add-map/add-entry/show/modify/delete-entry/
+# delete-map plus every guard (auto.master refusal, non-empty map refusal,
+# LDIF value validation).
+test_automount_map_lifecycle() {
+    echo ""
+    echo "--- Autofs Map Lifecycle ---"
+    run_test "Reject invalid map name" \
+        ssh_dc "! sudo samba-automount.sh add-map 'bad name'"
+    run_test "Missing entry key argument exits 2" \
+        ssh_dc "sudo samba-automount.sh add-entry auto.shares >/dev/null 2>&1; test \$? -eq 2"
+    run_test "Create map testmap" \
+        ssh_dc "sudo samba-automount.sh add-map testmap"
+    run_test "testmap appears in map list" \
+        ssh_dc "sudo samba-automount.sh list | grep -qx testmap"
+    run_test "Duplicate map creation fails" \
+        ssh_dc "! sudo samba-automount.sh add-map testmap"
+    run_test "Add entry to testmap" \
+        ssh_dc "sudo samba-automount.sh add-entry testmap mykey --value='-fstype=nfs4,sec=krb5p dc01.samba.test:/data/&'"
+    run_test "Duplicate entry creation fails" \
+        ssh_dc "! sudo samba-automount.sh add-entry testmap mykey --value=whatever"
+    run_test "Reject LDIF-unsafe entry value (leading space)" \
+        ssh_dc "sudo samba-automount.sh add-entry testmap other --value=' leadingspace' >/dev/null 2>&1; test \$? -eq 2"
+    run_test "Show testmap entry" \
+        ssh_dc "sudo samba-automount.sh show testmap mykey | grep -q 'nisMapEntry:.*nfs4'"
+    run_test "Modify testmap entry value" \
+        ssh_dc "sudo samba-automount.sh modify testmap mykey --value='-fstype=nfs4,sec=krb5p dc01.samba.test:/data/v2/&'"
+    run_test "Modified value visible" \
+        ssh_dc "sudo samba-automount.sh show testmap mykey | grep -q '/data/v2/'"
+    run_test "delete-map refuses non-empty map without --force" \
+        ssh_dc "! sudo samba-automount.sh delete-map testmap"
+    run_test "delete-map refuses auto.master even with --force" \
+        ssh_dc "! sudo samba-automount.sh delete-map auto.master --force"
+    run_test "Delete testmap entry" \
+        ssh_dc "sudo samba-automount.sh delete-entry testmap mykey --force"
+    run_test "Delete empty testmap" \
+        ssh_dc "sudo samba-automount.sh delete-map testmap --force"
+    run_test "testmap gone from map list" \
+        ssh_dc "! sudo samba-automount.sh list | grep -qx testmap"
+}
+
+# Share option validation and the --path override / data-preservation path.
+test_share_edge_cases() {
+    echo ""
+    echo "--- Share Management Edge Cases ---"
+    run_test "Reject invalid share name" \
+        ssh_dc "! sudo samba-automount.sh add-share '../evil'"
+    run_test "Reject invalid --sec (exit 2)" \
+        ssh_dc "sudo samba-automount.sh add-share edgeshare --sec=sys >/dev/null 2>&1; test \$? -eq 2"
+    run_test "Reject --fsid=0 (exit 2)" \
+        ssh_dc "sudo samba-automount.sh add-share edgeshare --fsid=0 >/dev/null 2>&1; test \$? -eq 2"
+    run_test "Reject --path with whitespace (exit 2)" \
+        ssh_dc "sudo samba-automount.sh add-share edgeshare --path='/data/bad path' >/dev/null 2>&1; test \$? -eq 2"
+    run_test "Reject invalid --server (exit 2)" \
+        ssh_dc "sudo samba-automount.sh add-share edgeshare --server='bad host' >/dev/null 2>&1; test \$? -eq 2"
+    run_test "Create edgeshare" \
+        ssh_dc "sudo samba-automount.sh add-share edgeshare"
+    run_test "Duplicate add-share fails" \
+        ssh_dc "! sudo samba-automount.sh add-share edgeshare"
+    run_test "Create pathshare with custom --path" \
+        ssh_dc "sudo samba-automount.sh add-share pathshare --path=/data/custom_pathshare"
+    run_test "pathshare export references the custom path" \
+        ssh_nfs "grep -q '^/data/custom_pathshare ' /etc/exports.d/pathshare.exports"
+    run_test "pathshare map entry references the custom path" \
+        ssh_dc "sudo samba-automount.sh list auto.shares | grep pathshare | grep -q custom_pathshare"
+    run_test "delete-share without --remove-data preserves the directory" \
+        ssh_dc "sudo samba-automount.sh delete-share pathshare --force"
+    run_test "pathshare export and entry gone, data preserved" \
+        ssh_nfs "! test -f /etc/exports.d/pathshare.exports && test -d /data/custom_pathshare"
+    run_test "Remove preserved pathshare data" \
+        ssh_nfs "sudo rm -rf /data/custom_pathshare"
+    run_test "Delete edgeshare with --remove-data" \
+        ssh_dc "sudo samba-automount.sh delete-share edgeshare --remove-data --force"
+    run_test "delete-share of nonexistent share exits 3" \
+        ssh_dc "sudo samba-automount.sh delete-share nosuchshare --force >/dev/null 2>&1; test \$? -eq 3"
+}
+
+# --dry-run must preview without side effects and must never prompt.
+test_dry_run() {
+    echo ""
+    echo "--- Dry-Run Semantics ---"
+    run_test "user add --dry-run creates nothing" \
+        ssh_dc "sudo samba-user.sh add dryuser --password=DryPass12345678 --force --dry-run && ! sudo samba-tool user show dryuser >/dev/null 2>&1"
+    run_test "set-password --dry-run does not prompt (no --password)" \
+        ssh_dc "timeout 10 sudo samba-user.sh set-password edgeuser --dry-run"
+    run_test "group delete --dry-run deletes nothing" \
+        ssh_dc "sudo samba-group.sh delete EdgeGroup --dry-run --force && sudo samba-tool group show EdgeGroup >/dev/null"
+    run_test "add-share --dry-run creates nothing" \
+        ssh_dc "sudo samba-automount.sh add-share dryshare --dry-run && ! sudo samba-automount.sh list auto.shares | grep -q '^dryshare'"
+    run_test "add-share --dry-run left no export or directory" \
+        ssh_nfs "! sudo test -e /etc/exports.d/dryshare.exports && ! sudo test -d /data/dryshare"
+    run_test "sudorule add --dry-run creates nothing" \
+        ssh_dc "sudo samba-sudorule.sh add edge-rule2 --user=edgeuser --dry-run && ! sudo samba-sudorule.sh list | grep -qx edge-rule2"
+}
+
+# password-policy set round trip (changed, verified, restored).
+test_password_policy_set() {
+    echo ""
+    echo "--- Password Policy Set ---"
+    run_test "password-policy set without options exits 2" \
+        ssh_dc "sudo samba-user.sh password-policy set >/dev/null 2>&1; test \$? -eq 2"
+    run_test "Set minimum password length to 13" \
+        ssh_dc "sudo samba-user.sh password-policy set --min-length=13"
+    run_test "Policy shows minimum length 13" \
+        ssh_dc "sudo samba-user.sh password-policy show | grep -q 'Minimum password length: 13'"
+    run_test "Restore minimum password length to 14" \
+        ssh_dc "sudo samba-user.sh password-policy set --min-length=14"
+    run_test "Policy restored to minimum length 14" \
+        ssh_dc "sudo samba-user.sh password-policy show | grep -q 'Minimum password length: 14'"
+}
+
+# Run the repo's client healthcheck script on the client (streamed over
+# SSH so it works whether or not the deployed copy is current).  All HARD
+# checks must pass for exit 0.
+_run_client_healthcheck() {
+    local nfs_host="dc01.samba.test"
+    [[ "${SMB_TEST_MODE:-colocated}" == "separate" ]] && nfs_host="storage01.samba.test"
+    ssh_client "REALM=SAMBA.TEST DC_HOST=dc01.samba.test NFS_HOST=${nfs_host} HEALTHCHECK_TEST_USER=Administrator bash -s" \
+        < "${SCRIPT_DIR}/../client/linux/healthcheck.sh"
+}
+
+test_client_healthcheck() {
+    echo ""
+    echo "--- Client Healthcheck Script ---"
+    run_test "healthcheck.sh passes on the client (all hard checks)" \
+        _run_client_healthcheck
+}
+
 # --- Main -------------------------------------------------------------------
 main() {
     # Cleanup runs on every exit path -- successful completion, assertion
@@ -676,6 +946,15 @@ main() {
     test_ssh_keys
     test_sudo_rules
     test_autofs_maps
+    test_user_edge_cases
+    test_user_archive
+    test_group_edge_cases
+    test_sudorule_extended
+    test_automount_map_lifecycle
+    test_share_edge_cases
+    test_dry_run
+    test_password_policy_set
+    test_client_healthcheck
     test_login_access_filter
     # Keep DNS persistence last because it reboots the client; tests
     # that depend on the client running need to have completed by then.

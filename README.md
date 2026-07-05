@@ -30,6 +30,12 @@ A complete toolkit for provisioning and managing a Samba Active Directory Domain
 
 ## Quick Start
 
+> **New here?** For complete, end-to-end walkthroughs — standing up a standalone
+> domain, onboarding/offboarding a user, building a department share, delegating
+> sudo, restricting logins per machine — see the task-oriented
+> **[Setup & Management Scenarios](docs/SCENARIOS.md)** cookbook. The sections
+> below are the condensed reference.
+
 ### Step 1: Configure Inventory
 
 Edit `ansible/inventory/hosts.yml` to add your hosts:

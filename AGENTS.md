@@ -158,10 +158,10 @@ There is no lint, typecheck, or CI pipeline. Always run `bash -n` and YAML valid
 - **Defaults**: the role ships with the feature disabled (`sssd_login_anchor_group: ""`); any enabled AD user can log in. Enable by setting `sssd_login_anchor_group: "login-{{ ansible_hostname }}"` in `group_vars/linux_clients.yml`. Optionally set `sssd_login_anchor_catchall: "login-all"` for a global "trusted everywhere" group. Provisioning auto-creates both groups on the DC (delegated, idempotent) and nests the catch-all inside each host's anchor.
 - **Adding a machine-class group** (purely DC-side, no Ansible):
   ```bash
-  samba-group add computenode-login
+  samba-group.sh add computenode-login
   samba-tool group addmembers login-node01 computenode-login
   samba-tool group addmembers login-node02 computenode-login
-  samba-group add-members computenode-login alice,bob
+  samba-group.sh add-members computenode-login alice,bob
   ```
   Access takes effect after SSSD's cache refreshes (minutes), or immediately after `sss_cache -E` on the client.
 - **True per-machine scope**: skip the catch-all entirely (`sssd_login_anchor_catchall: ""`, the role default) and add users (or class groups) directly to a single `login-<hostname>` group. `samba-tool group addmembers login-node01 alice` grants alice access to node01 only.

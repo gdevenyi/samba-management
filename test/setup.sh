@@ -82,6 +82,13 @@ check_prereqs() {
     for cmd in virsh virt-install qemu-img wget cloud-localds; do
         command -v "$cmd" &>/dev/null || die "Missing: $cmd (install: apt install libvirt-clients qemu-utils cloud-image-utils)"
     done
+    # The harness writes seed ISOs and disk overlays directly into the
+    # default pool.  An ACL mask reset (e.g. after libvirt package updates)
+    # can silently drop the libvirt group's effective write bit -- fail
+    # early with the fix instead of dying mid-VM-creation.
+    if [[ ! -w /var/lib/libvirt/images ]]; then
+        die "/var/lib/libvirt/images is not writable by $(id -un). Fix with: sudo setfacl -m group:libvirt:rwx -m mask:rwx /var/lib/libvirt/images"
+    fi
     mkdir -p "$SSH_KEY_DIR"
     rm -f "$SSH_KEY_FILE" "$SSH_KEY_FILE.pub"
     ssh-keygen -t ed25519 -f "$SSH_KEY_FILE" -N "" -C "samba-test"

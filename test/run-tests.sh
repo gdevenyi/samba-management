@@ -171,6 +171,25 @@ test_shares_basic() {
         ssh_nfs "sudo rm -rf /data/testshare"
 }
 
+# Verify the stable NFS fsid= configured in group_vars actually lands in the
+# provisioned exports.  Unlike test_shares_basic (which hand-writes an export
+# line), this exercises the share.exports.j2 / homes.exports.j2 templates end
+# to end: setup.sh seeds fsid: 101 on the public share and
+# samba_nfs_homes_fsid: 100, provisioning renders them, and the kernel must
+# accept them.
+test_export_fsid() {
+    echo ""
+    echo "--- NFS Export fsid ---"
+    run_test "public share export file carries fsid=101" \
+        ssh_nfs "grep -q 'fsid=101' /etc/exports.d/public.exports"
+    run_test "homes export file carries fsid=100" \
+        ssh_nfs "grep -q 'fsid=100' /etc/exports.d/homes.exports"
+    run_test "kernel accepted public export with fsid=101" \
+        ssh_nfs "sudo exportfs -v | grep -q 'fsid=101'"
+    run_test "kernel accepted homes export with fsid=100" \
+        ssh_nfs "sudo exportfs -v | grep -q 'fsid=100'"
+}
+
 # Stand up users, groups, share directories, and NFS exports for the
 # permission tests in test_permissions / test_autofs_kerberos.
 test_permissions_setup() {
@@ -586,6 +605,7 @@ main() {
     test_users
     test_groups
     test_shares_basic
+    test_export_fsid
     test_permissions_setup
     test_permissions
     test_autofs_kerberos

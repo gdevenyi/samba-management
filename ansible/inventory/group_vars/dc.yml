@@ -23,8 +23,15 @@ samba_tls_enabled: false
 # export file are created on the storage host by the nfs-server role
 # (which reads nfs_server_shares from group_vars/nfs_servers.yml).
 # Access control is managed via POSIX permissions on the directory.
+# On ZFS/Btrfs, add a unique `fsid:` (small integer, not 0) to each share to
+# pin a stable NFS filesystem id and avoid client ESTALE errors across a reboot
+# or pool export/import.  Keep every fsid distinct, including samba_nfs_homes_fsid.
 samba_shares:
   - name: public
     comment: "Public share for all domain users"
+    fsid: 101
   - name: finance
     comment: "Finance department share"
+    fsid: 102
+# Stable NFS filesystem id for the /home/ad export (ZFS/Btrfs recommendation).
+samba_nfs_homes_fsid: 100

@@ -107,16 +107,6 @@
     group: "domain users"
   when: samba_nfs_server == ""
 
-- name: Re-apply share directory ownership with resolved AD group
-  ansible.builtin.file:
-    path: "{{ item.path | default(samba_share_base ~ '/' ~ item.name) }}"
-    state: directory
-    mode: "0770"
-    owner: root
-    group: "domain users"
-  loop: "{{ samba_shares }}"
-  when: samba_nfs_server == ""
-
 # The NFS server caches uid->gid mappings.  Force a flush so authentication
 # checks use the new AD-resolved GIDs rather than the stale numeric values.
 - name: Flush kernel NFS auth caches after group resolution change

@@ -160,10 +160,11 @@ flush_winbind_cache() {
     net cache flush 2>/dev/null || true
 }
 
-# Returns true when NFS_HOMES_SERVER points at this host (or is unset).
-# Used by home_op to decide local-vs-SSH for home-directory operations.
-is_local_homes_server() {
-    local target="${NFS_HOMES_SERVER:-}"
+# Returns true when the given host (arg 1) refers to this machine, or is
+# empty.  Empty means "not configured" -> treat as local.  Used by the
+# remote_* helpers to decide local-vs-SSH for cross-host storage operations.
+is_local_host() {
+    local target="${1:-}"
     [[ -z "$target" ]] && return 0
     local self_fqdn self_short
     self_fqdn="$(hostname -f 2>/dev/null || hostname)"
@@ -171,19 +172,43 @@ is_local_homes_server() {
     [[ "$target" == "$self_fqdn" || "$target" == "$self_short" ]]
 }
 
-# Run a command either locally (homes colocated on this host) or via SSH
-# to NFS_HOMES_SERVER (homes on a separate storage host).  The Ansible
-# provisioning installs the DC's root pubkey in the storage host's
-# authorized_keys so this is non-interactive.  All args are shell-quoted
-# with %q before being forwarded.
-home_op() {
-    if is_local_homes_server; then
+# Run a command either locally (storage colocated on this host) or via SSH
+# to the given host as root.  The Ansible provisioning installs the DC's root
+# pubkey in each storage host's authorized_keys so this is non-interactive.
+# All args after the host are shell-quoted with %q before being forwarded.
+#   remote_op <host> <cmd> [args...]
+remote_op() {
+    local target="$1"; shift
+    if is_local_host "$target"; then
         "$@"
     else
         local quoted=""
         printf -v quoted '%q ' "$@"
-        ssh -o BatchMode=yes -o ConnectTimeout=5 "root@${NFS_HOMES_SERVER}" "${quoted}"
+        ssh -o BatchMode=yes -o ConnectTimeout=5 "root@${target}" "${quoted}"
     fi
+}
+
+# Write stdin to a file, either locally or on a remote host as root.  Used for
+# deploying NFS export files, which carry characters awkward to pass as argv.
+#   printf '%s\n' "$content" | remote_write_file <host> <dest-path>
+remote_write_file() {
+    local target="$1" dest="$2"
+    if is_local_host "$target"; then
+        cat > "$dest"
+    else
+        ssh -o BatchMode=yes -o ConnectTimeout=5 "root@${target}" "cat > $(printf '%q' "$dest")"
+    fi
+}
+
+# Backward-compatible wrapper: true when NFS_HOMES_SERVER points at this host.
+is_local_homes_server() {
+    is_local_host "${NFS_HOMES_SERVER:-}"
+}
+
+# Run a home-directory command locally (homes colocated) or via SSH to
+# NFS_HOMES_SERVER (homes on a separate storage host).
+home_op() {
+    remote_op "${NFS_HOMES_SERVER:-}" "$@"
 }
 
 # Bash-only whitespace trim (no xargs — xargs is fragile with quotes/backticks).

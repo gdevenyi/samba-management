@@ -5,6 +5,9 @@
 # "domain users" -- ownership is re-applied in services.yml after SSSD has
 # come up and can actually resolve that to a numeric GID.
 ---
+# Only the share base (/data) is created here.  Individual share directories
+# and their per-share NFS export files are managed operationally from the DC
+# with bin/samba-automount.sh add-share (which SSHes to this storage host).
 - name: Create share base directory
   ansible.builtin.file:
     path: "{{ samba_share_base }}"
@@ -13,28 +16,11 @@
     owner: root
     group: "domain users"
 
-- name: Create share directories
-  ansible.builtin.file:
-    path: "{{ item.path | default(samba_share_base ~ '/' ~ item.name) }}"
-    state: directory
-    mode: "0770"
-    owner: root
-    group: "domain users"
-  loop: "{{ nfs_server_shares }}"
-
 - name: Create /etc/exports.d directory
   ansible.builtin.file:
     path: /etc/exports.d
     state: directory
     mode: "0755"
-
-- name: Deploy per-share NFS export files
-  ansible.builtin.template:
-    src: "{{ role_path }}/../common/templates/share.exports.j2"
-    dest: "/etc/exports.d/{{ item.name }}.exports"
-    mode: "0644"
-  loop: "{{ nfs_server_shares }}"
-  notify: Reload NFS exports
 
 - name: Ensure home base directory exists
   ansible.builtin.file:

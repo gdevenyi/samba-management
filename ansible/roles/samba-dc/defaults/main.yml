@@ -36,11 +36,10 @@ samba_ous:
   - "Shares"
   - "SUDOers"
 
-# --- File shares (empty by default; define in group_vars) ---
-# Each share creates a directory under samba_share_base and an NFS export
-# entry in /etc/exports.d/<name>.exports. Access control is via POSIX
-# permissions on the directory.
-samba_shares: []
+# --- File shares ---
+# Shares are managed operationally on the DC with bin/samba-automount.sh
+# add-share (directory + NFS export + AD autofs entry in one command), not
+# declaratively here.  See docs/SCENARIOS.md.
 
 # --- NFS server configuration ---
 # Kerberos security flavour: krb5 (auth), krb5i (auth+integrity), krb5p (auth+integrity+privacy)
@@ -80,9 +79,10 @@ samba_account_reset_lockout_after: 30
 samba_enable_sudo_schema: true
 
 # --- AD-stored autofs maps (consumed by SSSD's autofs service on clients) ---
-# Seeds OU=automount with auto.master/auto.home/auto.shares maps and a
-# per-share entry for everything in samba_shares.  Idempotent; existing
-# entries (e.g. ones added later via bin/samba-automount.sh) are preserved.
+# Seeds OU=automount with the base auto.master/auto.home/auto.shares maps and
+# the auto.home wildcard.  Per-share entries are NOT seeded here -- they are
+# added operationally by bin/samba-automount.sh add-share.  Idempotent;
+# existing entries are preserved.
 samba_enable_autofs_seed: true
 # Client-side mount points that the master map will manage.  Must match
 # sssd_autofs_shares_mount / sssd_mounted_homedir_base on the clients.

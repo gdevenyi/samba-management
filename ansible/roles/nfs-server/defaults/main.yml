@@ -10,13 +10,10 @@ samba_share_base: "/data"
 samba_home_base: "/home/ad"
 
 # --- File shares ---
-# Each share creates a directory under samba_share_base and an NFS export
-# file in /etc/exports.d/<name>.exports.  Access control is via POSIX
-# permissions on the directory.  Kept as nfs_server_shares (not samba_shares)
-# so a storage host can deliberately export a different share set from what
-# the DC seeds into AD autofs maps — usually identical but the split lets
-# operators stage changes or limit exposure.
-nfs_server_shares: []
+# Shares are managed operationally from the DC with bin/samba-automount.sh
+# add-share, which creates the directory and NFS export on this storage host
+# (over SSH) and publishes the AD autofs entry.  Nothing per-share is
+# declared here.  See docs/SCENARIOS.md.
 
 # --- NFS options (shared with samba-dc role; same defaults) ---
 samba_nfs_sec: "krb5p"

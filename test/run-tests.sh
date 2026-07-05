@@ -31,7 +31,7 @@ NC='\033[0m'
 # Centralised so setup, exercise, and cleanup all reference the same names.
 TEST_USERS=(testuser1 testuser2 homeuser1 homeuser2 perm_reader perm_writer perm_both perm_outsider login_allowed login_denied)
 TEST_GROUPS=(TestGroup ShareReaders ShareWriters computenode-login login-delete-probe)
-TEST_SHARES=(perm_rw_share perm_admin_share)
+TEST_SHARES=(perm_rw_share perm_admin_share public)
 TEST_SUDO_RULES=(admin-all users-nopasswd)
 TEST_SSH_KEY_COMMENT="samba-mgmt-test-data"
 TEST_SSH_KEY_FILE=""
@@ -155,28 +155,43 @@ test_groups() {
         ssh_dc "sudo samba-group.sh list-members TestGroup | grep -qv testuser2 || false"
 }
 
-# Provision a one-off NFS export directly (no samba-share.sh anymore).
+# Exercise samba-automount.sh add-share/delete-share end to end: a single
+# command creates the directory, the NFS export, and the auto.shares map entry
+# on the serving host (local when colocated, over SSH in separate mode);
+# delete-share --remove-data tears all three down.  Then create the persistent
+# 'public' share (with a pinned fsid) that later fsid/autofs/permission tests
+# rely on.
 test_shares_basic() {
     echo ""
-    echo "--- Share Management ---"
-    run_test "Create testshare directory" \
-        ssh_nfs "sudo mkdir -p /data/testshare && sudo chmod 0770 /data/testshare && sudo chown root:'domain users' /data/testshare"
-    run_test "Create testshare NFS export file" \
-        ssh_nfs 'echo "/data/testshare *(rw,sec=krb5p,sync,no_subtree_check)" | sudo tee /etc/exports.d/testshare.exports && sudo exportfs -ra'
-    run_test "Verify testshare is exported" \
-        ssh_nfs "sudo exportfs -v | grep -q testshare"
-    run_test "Remove testshare NFS export" \
-        ssh_nfs "sudo rm -f /etc/exports.d/testshare.exports && sudo exportfs -ra"
-    run_test "Remove testshare directory" \
-        ssh_nfs "sudo rm -rf /data/testshare"
+    echo "--- Share Management (samba-automount.sh add-share/delete-share) ---"
+    run_test "add-share creates testshare directory on NFS host" \
+        ssh_dc "sudo samba-automount.sh add-share testshare"
+    run_test "add-share deployed testshare NFS export" \
+        ssh_nfs "sudo exportfs -v | grep -q /data/testshare"
+    run_test "add-share created testshare directory" \
+        ssh_nfs "test -d /data/testshare"
+    run_test "add-share published testshare auto.shares entry" \
+        ssh_dc "sudo samba-automount.sh list auto.shares | grep -q '^testshare'"
+    run_test "delete-share --remove-data tears testshare down" \
+        ssh_dc "sudo samba-automount.sh delete-share testshare --remove-data --force"
+    run_test "testshare export file is gone" \
+        ssh_nfs "! test -f /etc/exports.d/testshare.exports"
+    run_test "testshare data directory is gone" \
+        ssh_nfs "! test -d /data/testshare"
+    run_test "testshare auto.shares entry is gone" \
+        ssh_dc "! sudo samba-automount.sh list auto.shares | grep -q '^testshare'"
+
+    # Persistent share used by later fsid/autofs/permission tests.
+    run_test "Create persistent 'public' share via add-share --fsid=101" \
+        ssh_dc "sudo samba-automount.sh add-share public --fsid=101"
 }
 
-# Verify the stable NFS fsid= configured in group_vars actually lands in the
-# provisioned exports.  Unlike test_shares_basic (which hand-writes an export
-# line), this exercises the share.exports.j2 / homes.exports.j2 templates end
-# to end: setup.sh seeds fsid: 101 on the public share and
-# samba_nfs_homes_fsid: 100, provisioning renders them, and the kernel must
-# accept them.
+# Verify stable NFS fsid support at both layers:
+#  - the 'public' share created via `samba-automount.sh add-share public
+#    --fsid=101` (operational path) writes fsid=101 into its export file, and
+#  - the /home/ad homes export (still declarative, samba_nfs_homes_fsid: 100)
+#    carries fsid=100.
+# In both cases the kernel must accept the fsid (exportfs -v).
 test_export_fsid() {
     echo ""
     echo "--- NFS Export fsid ---"
@@ -233,17 +248,19 @@ test_permissions_setup() {
     run_test "Add perm_both to ShareWriters" \
         ssh_dc sudo samba-group.sh add-members ShareWriters perm_both
 
-    # ShareWriters was just created; the storage host's SSSD may not have it
-    # cached yet, so wait for an on-demand getgrnam to resolve it before the
+    # add-share creates the directory (0770 root:'Domain Users'), the NFS
+    # export, and the auto.shares entry in one shot.  We then tighten group
+    # ownership to ShareWriters with the setgid bit.  ShareWriters was just
+    # created, so wait for the storage host's SSSD to resolve it before the
     # chown (otherwise `chown root:ShareWriters` fails with "invalid group").
-    run_test "Create perm_rw_share directory with group permissions" \
-        ssh_nfs "sudo mkdir -p /data/perm_rw_share && sudo chmod 2770 /data/perm_rw_share && for i in \$(seq 1 30); do getent group ShareWriters >/dev/null 2>&1 && break; sleep 1; done && sudo chown root:ShareWriters /data/perm_rw_share"
-    run_test "Create perm_rw_share NFS export file" \
-        ssh_nfs 'echo "/data/perm_rw_share *(rw,sec=krb5p,sync,no_subtree_check)" | sudo tee /etc/exports.d/perm_rw_share.exports && sudo exportfs -ra'
-    run_test "Create perm_admin_share directory" \
-        ssh_nfs "sudo mkdir -p /data/perm_admin_share && sudo chmod 2770 /data/perm_admin_share && for i in \$(seq 1 30); do getent group ShareWriters >/dev/null 2>&1 && break; sleep 1; done && sudo chown root:ShareWriters /data/perm_admin_share"
-    run_test "Create perm_admin_share NFS export file" \
-        ssh_nfs 'echo "/data/perm_admin_share *(rw,sec=krb5p,sync,no_subtree_check)" | sudo tee /etc/exports.d/perm_admin_share.exports && sudo exportfs -ra'
+    run_test "Create perm_rw_share via add-share" \
+        ssh_dc "sudo samba-automount.sh add-share perm_rw_share"
+    run_test "Set perm_rw_share ownership to ShareWriters (setgid)" \
+        ssh_nfs "for i in \$(seq 1 30); do getent group ShareWriters >/dev/null 2>&1 && break; sleep 1; done && sudo chown root:ShareWriters /data/perm_rw_share && sudo chmod 2770 /data/perm_rw_share"
+    run_test "Create perm_admin_share via add-share" \
+        ssh_dc "sudo samba-automount.sh add-share perm_admin_share"
+    run_test "Set perm_admin_share ownership to ShareWriters (setgid)" \
+        ssh_nfs "for i in \$(seq 1 30); do getent group ShareWriters >/dev/null 2>&1 && break; sleep 1; done && sudo chown root:ShareWriters /data/perm_admin_share && sudo chmod 2770 /data/perm_admin_share"
     run_test "Create test file on NFS server" \
         ssh_nfs "echo 'permission test content' | sudo tee /tmp/perm-test-file.txt"
 }
@@ -255,10 +272,8 @@ test_permissions_setup() {
 test_permissions() {
     echo ""
     echo "--- NFS Share Permissions ---"
-    run_test "Add perm_rw_share to auto.shares in AD" \
-        ssh_dc sudo samba-automount.sh add-share perm_rw_share
-    run_test "Add perm_admin_share to auto.shares in AD" \
-        ssh_dc sudo samba-automount.sh add-share perm_admin_share
+    # perm_rw_share / perm_admin_share (directory + export + auto.shares entry)
+    # were already created via add-share in test_permissions_setup.
     run_test "Flush SSSD autofs cache on client" \
         ssh_client "sudo sss_cache -A && sudo systemctl restart autofs"
     # In separate mode the storage host runs its own SSSD whose user-side

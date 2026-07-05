@@ -1,9 +1,13 @@
 #!/usr/bin/env bash
-# samba-automount.sh - CLI tool for managing autofs maps in Samba AD.
+# samba-automount.sh - CLI tool for managing autofs maps and NFS shares.
 #
 # Creates, lists, shows, and deletes nisMap/nisObject entries under
 # OU=automount.  Clients with SSSD's autofs service enabled consume these
-# without any per-client map files.  Must run on the DC as root.
+# without any per-client map files.  The add-share/delete-share subcommands
+# additionally provision the share directory and NFSv4 export on the serving
+# host (this DC when colocated, or a dedicated storage host over SSH), making
+# this the single operational entry point for share management.  Must run on
+# the DC as root.
 set -euo pipefail
 # shellcheck disable=SC2154  # 's' is assigned at trap-firing time
 trap 's=$?; echo >&2 "$0: Error on line "$LINENO": $BASH_COMMAND"; exit $s' ERR
@@ -42,12 +46,23 @@ Entries (nisObject inside a map):
   modify <mapname> <key>                Replace an entry's value
     --value=<nisMapEntry>
 
-Convenience for NFSv4+Kerberos shares (auto.shares):
-  add-share <name>                      Add 'name -fstype=nfs4,sec=krb5p <dc>:<path>'
-    --server=HOST                       Override server (default: ${DEFAULT_NFS_SERVER})
-    --path=PATH                         Override path (default: \${SHARE_BASE}/<name>)
-    --sec=MODE                          Override Kerberos mode (default: ${DEFAULT_NFS_SEC})
-  delete-share <name>                   Remove a share entry from auto.shares
+Shares (auto.shares + directory + NFS export, end to end):
+  add-share <name>                      Create the share directory, deploy its
+                                        NFSv4 export, and publish the auto.shares
+                                        entry.  Directory/export land on the NFS
+                                        host (this DC when colocated, else the
+                                        dedicated storage host, reached via SSH).
+    --server=HOST                       NFS host (default: ${DEFAULT_NFS_SERVER})
+    --path=PATH                         Export path (default: \${SHARE_BASE}/<name>)
+    --sec=MODE                          Kerberos mode (default: ${DEFAULT_NFS_SEC})
+    --fsid=N                            Pin a stable NFS fsid (recommended on
+                                        ZFS/Btrfs; positive integer, not 0)
+  delete-share <name>                   Remove the auto.shares entry and the NFS
+                                        export.  Data directory is preserved
+                                        unless --remove-data is given.
+    --server=HOST                       Override NFS host (default: read from the
+                                        existing map entry)
+    --remove-data                       Also delete the share's data directory
 
 Inspection:
   list                                  List all maps
@@ -362,37 +377,129 @@ cmd_show() {
         | ldif_show_filter
 }
 
+# Read the nisMapEntry value of an existing auto.shares entry (empty if none).
+_share_entry_value() {
+    local name="$1" dn
+    dn=$(_entry_dn auto.shares "$name")
+    ldbsearch -H /var/lib/samba/private/sam.ldb -b "$dn" -s base nisMapEntry 2>/dev/null \
+        | ldif_unfold | sed -n 's/^nisMapEntry: //p'
+}
+
+# add-share provisions a share end to end: the directory and its NFSv4 export
+# on the serving host (this DC when colocated, else the dedicated storage host
+# reached over SSH as root), plus the auto.shares map entry consumed by every
+# client via SSSD.  Directory/export creation mirrors what the Ansible roles
+# used to do at provisioning time; management is now purely operational.
 cmd_add_share() {
     local name="$1"; shift
 
     validate_share_name "$name" || exit 2
 
     local -A opts
-    parse_kv_args opts "--server --path --sec" "$@"
+    parse_kv_args opts "--server --path --sec --fsid" "$@"
     # Defaults: NFS_SERVER from config (DC FQDN colocated, dedicated host
     # when samba_nfs_server is set); SHARE_BASE/<name> for path; krb5p sec.
     local server="${opts[--server]:-$DEFAULT_NFS_SERVER}"
     local path="${opts[--path]:-${SHARE_BASE:-/data}/${name}}"
     local sec="${opts[--sec]:-$DEFAULT_NFS_SEC}"
+    local fsid="${opts[--fsid]:-}"
 
     case "$sec" in
         krb5|krb5i|krb5p) ;;
         *) log_error "Invalid --sec '${sec}'; expected krb5, krb5i, or krb5p"; exit 2 ;;
     esac
+    # fsid must be a positive integer; 0 is reserved for the NFSv4 pseudo-root.
+    if [[ -n "$fsid" ]] && { [[ ! "$fsid" =~ ^[0-9]+$ ]] || [[ "$fsid" -eq 0 ]]; }; then
+        log_error "Invalid --fsid '${fsid}'; expected a positive integer (not 0)"
+        exit 2
+    fi
 
     if ! _map_exists "auto.shares"; then
         log_error "Map 'auto.shares' does not exist. Run DC provisioning, or 'add-map auto.shares' first."
         exit 3
     fi
+    if _entry_exists "auto.shares" "$name"; then
+        log_error "Share '${name}' already exists in auto.shares"
+        exit 1
+    fi
 
     local value="-fstype=nfs4,sec=${sec} ${server}:${path}"
+    local exopts="rw,sec=${sec},sync,no_subtree_check"
+    [[ -n "$fsid" ]] && exopts="${exopts},fsid=${fsid}"
+
+    if dry_run "Would create share '${name}': directory + NFS export at ${server}:${path} (${exopts}) and auto.shares entry '${value}'"; then
+        return
+    fi
+
+    # 1. Directory on the NFS host (idempotent; base left untouched if present).
+    local group="${DEFAULT_GROUP:-Domain Users}"
+    log_info "Creating share directory ${server}:${path}"
+    remote_op "$server" mkdir -p "${SHARE_BASE:-/data}"
+    remote_op "$server" mkdir -p "$path"
+    remote_op "$server" chown "root:${group}" "$path"
+    remote_op "$server" chmod 0770 "$path"
+
+    # 2. NFS export on the NFS host.
+    log_info "Deploying NFS export for '${name}' on ${server}"
+    remote_op "$server" mkdir -p /etc/exports.d
+    printf '%s\n' "${path} *(${exopts})" \
+        | remote_write_file "$server" "/etc/exports.d/${name}.exports"
+    remote_op "$server" exportfs -ra
+
+    # 3. Publish the autofs map entry in AD (consumed by all clients via SSSD).
     cmd_add_entry auto.shares "$name" --value="$value"
+    log_info "Share '${name}' exported from ${server}:${path}; clients mount it at ${AUTOMOUNT_BASE:-/data}/${name}"
 }
 
+# delete-share removes the auto.shares entry and the NFS export.  The serving
+# host and path are read back from the existing map entry (overridable with
+# --server).  The data directory is preserved unless --remove-data is passed.
 cmd_delete_share() {
-    local name="$1"
+    local name="$1"; shift
+
     validate_share_name "$name" || exit 2
-    cmd_delete_entry auto.shares "$name"
+
+    local -A opts
+    parse_kv_args opts "--server --remove-data" "$@"
+
+    if ! _entry_exists "auto.shares" "$name"; then
+        log_error "Share '${name}' not found in auto.shares"
+        exit 3
+    fi
+
+    # Recover the serving host and path from the map entry
+    # ('-fstype=nfs4,sec=X host:/path'); --server overrides the host.
+    local server="${opts[--server]:-}"
+    local path="" entry target
+    entry=$(_share_entry_value "$name")
+    if [[ -n "$entry" ]]; then
+        target="${entry##* }"          # host:/path (last whitespace field)
+        [[ -z "$server" ]] && server="${target%%:*}"
+        path="${target#*:}"
+    fi
+    [[ -z "$server" ]] && server="$DEFAULT_NFS_SERVER"
+    local remove_data="${opts[--remove-data]:-0}"
+
+    local extra=""
+    [[ "$remove_data" == "1" && -n "$path" ]] && extra=" and data directory ${path}"
+    if dry_run "Would delete share '${name}': auto.shares entry, NFS export on ${server}${extra}"; then
+        return
+    fi
+    confirm_action "Delete share '${name}'?" || exit 0
+
+    # Already confirmed at the share level; skip the inner entry confirm.
+    FORCE=1 cmd_delete_entry auto.shares "$name"
+
+    log_info "Removing NFS export for '${name}' on ${server}"
+    remote_op "$server" rm -f "/etc/exports.d/${name}.exports"
+    remote_op "$server" exportfs -ra
+
+    if [[ "$remove_data" == "1" && -n "$path" ]]; then
+        log_warn "Deleting share data directory ${server}:${path}"
+        remote_op "$server" rm -rf "$path"
+    elif [[ -n "$path" ]]; then
+        log_info "Data preserved at ${server}:${path} (pass --remove-data to delete it)"
+    fi
 }
 
 if [[ $# -eq 0 ]] || [[ "$1" == "help" ]] || [[ "$1" == "--help" ]]; then

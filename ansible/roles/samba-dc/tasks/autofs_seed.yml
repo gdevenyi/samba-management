@@ -82,21 +82,10 @@
           nisMapEntry: -fstype=nfs4,sec={{ samba_nfs_sec }} {{ _autofs_homes_target }}
   when: samba_nfs_export_homes | bool
 
-- name: Append per-share autofs entries
-  ansible.builtin.set_fact:
-    _autofs_entries: "{{ _autofs_entries + [_autofs_entry] }}"
-  vars:
-    _autofs_entry:
-      dn: "CN={{ item.name }},CN=auto.shares,{{ _autofs_base_dn }}"
-      ldif: |
-        objectClass: top
-        objectClass: nisObject
-        cn: {{ item.name }}
-        nisMapName: auto.shares
-        nisMapEntry: -fstype=nfs4,sec={{ samba_nfs_sec }} {{ _autofs_nfs_server }}:{{ samba_share_base }}/{{ item.name }}
-  loop: "{{ samba_shares }}"
-  loop_control:
-    label: "{{ item.name }}"
+# Per-share auto.shares entries are NOT seeded here.  Shares are created
+# operationally with bin/samba-automount.sh add-share, which adds the map
+# entry alongside the directory and NFS export.  This task only seeds the
+# base maps (auto.master / auto.shares / auto.home) that add-share writes into.
 
 # --- Check existence and create missing entries -----------------------------
 - name: Check which autofs entries already exist

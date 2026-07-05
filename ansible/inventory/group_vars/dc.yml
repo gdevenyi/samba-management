@@ -15,23 +15,15 @@ samba_admin_password: "CHANGE_ME_STRONG_PASSWORD"
 samba_dns_forwarder: "8.8.8.8"
 # TLS is disabled by default; enable only after deploying proper certificates.
 samba_tls_enabled: false
-# List of shares published in this domain.  Each entry seeds an autofs
-# map entry under CN=auto.shares,OU=automount in AD.  When NFS is
-# colocated on the DC (samba_nfs_server unset/empty) the DC also creates
-# the directory under /data and an NFS export file in
-# /etc/exports.d/<name>.exports; in split-NFS mode the directory and
-# export file are created on the storage host by the nfs-server role
-# (which reads nfs_server_shares from group_vars/nfs_servers.yml).
-# Access control is managed via POSIX permissions on the directory.
-# On ZFS/Btrfs, add a unique `fsid:` (small integer, not 0) to each share to
-# pin a stable NFS filesystem id and avoid client ESTALE errors across a reboot
-# or pool export/import.  Keep every fsid distinct, including samba_nfs_homes_fsid.
-samba_shares:
-  - name: public
-    comment: "Public share for all domain users"
-    fsid: 101
-  - name: finance
-    comment: "Finance department share"
-    fsid: 102
-# Stable NFS filesystem id for the /home/ad export (ZFS/Btrfs recommendation).
+#
+# Shares are NOT declared here.  Create them operationally on the DC with:
+#   samba-automount.sh add-share <name>            # dir + NFS export + autofs map
+#   samba-automount.sh add-share <name> --fsid=101 # pin a stable fsid on ZFS/Btrfs
+# See docs/SCENARIOS.md.  Access control is via POSIX permissions on the
+# directory (chown/chmod on the NFS host).
+#
+# Stable NFS filesystem id for the /home/ad export (homes are still exported
+# declaratively).  On ZFS/Btrfs set a unique small integer (not 0) to avoid
+# client ESTALE across a reboot or pool export/import; keep it distinct from
+# any per-share --fsid you assign.  Empty (default) lets the kernel derive it.
 samba_nfs_homes_fsid: 100

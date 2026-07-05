@@ -29,19 +29,13 @@
     'nfs/' + ansible_fqdn not in _keytab_check.stdout
   changed_when: true
 
+# /etc/exports.d holds the homes export (below) and per-share export files
+# deployed operationally by bin/samba-automount.sh add-share.
 - name: Create /etc/exports.d directory
   ansible.builtin.file:
     path: /etc/exports.d
     state: directory
     mode: "0755"
-
-- name: Deploy per-share NFS export files
-  ansible.builtin.template:
-    src: "{{ role_path }}/../common/templates/share.exports.j2"
-    dest: "/etc/exports.d/{{ item.name }}.exports"
-    mode: "0644"
-  loop: "{{ samba_shares }}"
-  notify: Reload NFS exports
 
 - name: Ensure home base directory exists
   ansible.builtin.file:

@@ -15,6 +15,9 @@
   failed_when: false
   changed_when: true
 
+# Only the share base (/data) is created at provisioning time.  Individual
+# share directories and their NFS exports are managed operationally with
+# bin/samba-automount.sh add-share, not declaratively here.
 - name: Create share base directory
   ansible.builtin.file:
     path: "{{ samba_share_base }}"
@@ -22,16 +25,6 @@
     mode: "0755"
     owner: root
     group: "domain users"
-  when: samba_nfs_server == ""
-
-- name: Create share directories
-  ansible.builtin.file:
-    path: "{{ item.path | default(samba_share_base ~ '/' ~ item.name) }}"
-    state: directory
-    mode: "0770"
-    owner: root
-    group: "domain users"
-  loop: "{{ samba_shares }}"
   when: samba_nfs_server == ""
 
 - name: Configure NFS server (DC-local)

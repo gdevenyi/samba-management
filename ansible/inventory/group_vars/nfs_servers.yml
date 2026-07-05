@@ -1,20 +1,15 @@
 # nfs_servers.yml - Group variables for dedicated NFS storage servers.
 #
 # Storage servers are domain members (SSSD join credentials inherited from
-# domain_members.yml).  This file defines what shares and home directories
-# the storage server exports via NFSv4/Kerberos.
+# domain_members.yml).  The role sets up the NFSv4/Kerberos server and the
+# home-directory export; individual shares are created operationally from the
+# DC with bin/samba-automount.sh add-share (which SSHes to this host to create
+# the directory and export).  Nothing per-share is declared here.
 #
 # These values override role defaults in roles/nfs-server/defaults/main.yml.
 ---
-# Shares to provision on this storage server.  Each entry creates the
-# directory under samba_share_base and an NFS export file in
-# /etc/exports.d/<name>.exports.  Access control is via POSIX permissions.
-# Uncomment and customize for your deployment:
-# nfs_server_shares:
-#   - name: public
-#     comment: "Public share for all domain users"
-#   - name: engineering
-#     comment: "Engineering department share"
-
 # Whether to export samba_home_base (default /home/ad) via NFS for home directory mounts.
 samba_nfs_export_homes: true
+# Stable NFS filesystem id for the /home/ad export (see dc.yml).  Set a unique
+# small integer (not 0) on ZFS/Btrfs; empty (default) lets the kernel derive it.
+samba_nfs_homes_fsid: 100

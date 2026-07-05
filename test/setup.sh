@@ -359,10 +359,6 @@ samba_tls_enabled: false
 healthcheck_realm: "${TEST_REALM}"
 healthcheck_dc_hostname: "dc01"
 ${dc_extra}
-samba_shares:
-  - name: public
-    comment: "Public share for all domain users"
-    fsid: 101
 samba_nfs_homes_fsid: 100
 EOF
 
@@ -389,10 +385,6 @@ EOF
     # NFS servers group_vars (separate mode only)
     if [[ "$TEST_MODE" == "separate" ]]; then
         cat > "${SCRIPT_DIR}/group_vars/nfs_servers.yml" <<EOF
-nfs_server_shares:
-  - name: public
-    comment: "Public share for all domain users"
-    fsid: 101
 samba_nfs_export_homes: true
 samba_nfs_homes_fsid: 100
 healthcheck_nfs_server: "storage01"

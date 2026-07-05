@@ -65,10 +65,10 @@ samba_domain: "YOURDOMAIN"
 samba_netbios: "YOURDOMAIN"
 samba_admin_password: "your-strong-password-here"
 samba_dns_forwarder: "8.8.8.8"   # upstream DNS for non-AD queries
-samba_shares:
-  - name: public
-    comment: "Public share"
 ```
+
+Shares are **not** declared here — after provisioning you create them on the DC
+with `samba-automount.sh add-share` (see [Share Management](#share-management-binsamba-automountsh)).
 
 **`ansible/inventory/group_vars/linux_clients.yml`:**
 ```yaml
@@ -102,8 +102,9 @@ This installs and configures:
 - NTP (time sync via `systemd-timesyncd` or `chrony`, whichever the image ships)
 - Reverse DNS zone for the DC's subnet
 - Organizational Units: Users, Groups, Computers, Shares, SUDOers
-- NFSv4 server with Kerberos (`sec=krb5p`) for shares and home directories
-- Any shares defined in `samba_shares` (directories under `/data` + NFS exports)
+- NFSv4 server with Kerberos (`sec=krb5p`) for home directories, plus the
+  `/data` share base and the base `auto.master`/`auto.shares`/`auto.home` maps
+  (individual shares are added later with `samba-automount.sh add-share`)
 - Password policy (complexity off, min length 14, max age 42, min age 1, history 24)
 - Account lockout policy (threshold 0/disabled, duration 30m, reset 30m)
 - Optional TLS (disabled by default)
@@ -123,11 +124,11 @@ To offload NFS storage from the DC to a dedicated server:
 1. Add the host to the `nfs_servers` group in `hosts.yml`
 2. Create `ansible/inventory/group_vars/nfs_servers.yml`:
 ```yaml
-nfs_server_shares:
-  - name: public
-    comment: "Public share"
-nfs_server_export_homes: true
+samba_nfs_export_homes: true
+samba_nfs_homes_fsid: 100   # optional; pin a stable fsid on ZFS/Btrfs
 ```
+   (Shares aren't declared here — you add them later with `samba-automount.sh
+   add-share`, which SSHes to this host to create the directory and export.)
 3. Set `samba_nfs_server: "storage01"` in `group_vars/dc.yml` (and optionally
    `samba_nfs_homes_server: "storage01"` to put user homes on the same host —
    defaults to `samba_nfs_server` when unset).
@@ -281,36 +282,44 @@ All scripts run **as root on the DC**. They source `lib/common.sh` then `lib/con
 ./bin/samba-group.sh delete DevOps
 ```
 
-### Share Management
+### Share Management (`bin/samba-automount.sh`)
 
-Shares are defined in `group_vars/dc.yml` and provisioned by Ansible. Each
-share creates a directory under `/data`, an NFS export file in
-`/etc/exports.d/<name>.exports`, and an autofs entry under
-`CN=auto.shares,OU=automount` in AD. Access control is managed via POSIX
-permissions on the directory (chown/chmod). All joined Linux clients see
-the share automatically via SSSD; no per-client configuration is needed.
+Shares are managed operationally on the DC — **one command** creates the share
+directory, deploys its NFSv4 export, and publishes the `auto.shares` entry that
+every client consumes via SSSD. There is no declarative `samba_shares` variable.
 
-When using a separate NFS server (`samba_nfs_server` set), the DC only
-seeds the autofs map entries in AD; share directories and NFS exports live
-on the storage server, managed by the `nfs-server` role.
-
-To add a new share after initial provisioning, you have two options:
-
-**One-off (no Ansible run needed):**
 ```bash
-# On the NFS server (DC in colocated mode, or the dedicated storage server):
-sudo mkdir -p /data/engineering && sudo chmod 0770 /data/engineering
-sudo chown root:'domain users' /data/engineering
-echo "/data/engineering *(rw,sec=krb5p,sync,no_subtree_check)" | \
-    sudo tee /etc/exports.d/engineering.exports && sudo exportfs -ra
-# On the DC: publish to autofs in AD
+# Colocated (DC serves NFS): directory + export created locally on the DC.
 sudo samba-automount.sh add-share engineering
-```
-Clients pick it up after the SSSD cache refresh (or `sudo sss_cache -A`).
 
-**Declarative (preferred for documented infrastructure):**
-1. Add the share to `samba_shares` in `group_vars/dc.yml`
-2. Re-run `ansible-playbook playbooks/provision-dc.yml` (idempotent)
+# On ZFS/Btrfs, pin a stable NFS fsid (unique per share, never 0):
+sudo samba-automount.sh add-share engineering --fsid=103
+
+# Override server / path / Kerberos flavour if needed:
+sudo samba-automount.sh add-share engineering --server=storage01 \
+    --path=/data/engineering --sec=krb5p
+
+# Inspect and remove:
+sudo samba-automount.sh list auto.shares
+sudo samba-automount.sh delete-share engineering                # keeps the data
+sudo samba-automount.sh delete-share engineering --remove-data  # also deletes it
+```
+
+When a dedicated NFS server is configured (`samba_nfs_server` set), `add-share`
+SSHes to that host to create the directory and export there (the DC's root key
+is installed on storage hosts at provisioning); the autofs entry is written in
+AD either way. Clients pick up the share after the SSSD cache refresh (or
+`sudo sss_cache -A`); a brand-new deployment's base maps already exist, so no
+client restart is needed for share entries.
+
+Access control is via POSIX permissions on the directory (`chown`/`chmod` on the
+NFS host). `add-share` creates it `0770 root:"Domain Users"`; for a group-
+writable team share, `chown root:<group>` and `chmod 2770` it afterward — see
+[docs/SCENARIOS.md](docs/SCENARIOS.md).
+
+> **Home directories are the exception** — `/home/ad` is still exported
+> declaratively by the roles (`samba_nfs_export_homes`, and `samba_nfs_homes_fsid`
+> for a stable fsid on ZFS/Btrfs).
 
 ### Global Flags (all bin scripts)
 
@@ -415,7 +424,7 @@ The test environment uses domain `samba.test` (RFC 2606 reserved TLD) on the def
 |---|---|
 | Users | create, list, show, disable, enable, set-password, delete |
 | Groups | create, add-members, list-members, show, remove-members, delete |
-| Shares | directory creation, NFS export deployment, export verification |
+| Shares | `samba-automount.sh add-share`/`delete-share` end to end: directory, NFS export, `auto.shares` entry, and `--remove-data` teardown |
 | NFS Permissions | POSIX-based read/write access via Kerberos+NFS from the client (group resolution via SSSD secondary groups) |
 | Autofs Maps | `samba-automount.sh` list/add-share/delete-share against AD-stored maps |
 | Autofs Mounts | client triggers `auto.shares` and `auto.home` via Kerberos NFS, verifies actual mount |

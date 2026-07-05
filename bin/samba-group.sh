@@ -65,8 +65,10 @@ cmd_add() {
     local gid="${opts[--gid]:-}"
     local ou="${opts[--ou]:-}"
 
-    if [[ -n "$gid" && ! "$gid" =~ ^[0-9]+$ ]]; then
-        log_error "Invalid --gid value: must be a non-negative integer"
+    # GID 0 is the local root group -- mapping an AD group onto it would be
+    # a privilege-escalation footgun on every domain member.
+    if [[ -n "$gid" ]] && { [[ ! "$gid" =~ ^[0-9]+$ ]] || [[ "$gid" -eq 0 ]]; }; then
+        log_error "Invalid --gid value: must be a positive integer (not 0)"
         exit 2
     fi
 
@@ -120,11 +122,12 @@ cmd_delete() {
         exit 4
     fi
 
-    confirm_action "Delete group '${groupname}'?" || exit 0
-
+    # Dry-run short-circuits before prompting (preview must never prompt).
     if dry_run "Would delete group: ${groupname}"; then
         return
     fi
+
+    confirm_action "Delete group '${groupname}'?" || exit 0
 
     log_info "Deleting group '${groupname}'..."
     if samba-tool group delete "$groupname"; then
@@ -183,11 +186,13 @@ cmd_add_members() {
 
     # Split the CSV string into a bash array; trim_ws strips surrounding
     # whitespace per element (xargs would be unsafe with quoted values).
+    # Members may be users OR groups -- nesting groups (e.g. class groups
+    # inside login-<host> anchors) is a first-class workflow here.
     IFS=',' read -ra member_array <<< "$members"
     for member in "${member_array[@]}"; do
         member="$(trim_ws "$member")"
-        if ! user_exists "$member"; then
-            log_warn "User '${member}' not found, skipping"
+        if ! user_exists "$member" && ! group_exists "$member"; then
+            log_warn "'${member}' is neither a user nor a group, skipping"
             continue
         fi
         if dry_run "Would add '${member}' to '${groupname}'"; then
@@ -288,6 +293,18 @@ if [[ $# -eq 0 ]] || [[ "$1" == "help" ]] || [[ "$1" == "--help" ]]; then
 fi
 
 subcommand="$1"; shift
+
+# Positional-argument guards: clear usage errors instead of unbound-
+# variable traps when arguments are missing.
+case "$subcommand" in
+    add|delete|show|list-members)
+        require_arg "${1:-}" "<groupname>"
+        ;;
+    add-members|remove-members)
+        require_arg "${1:-}" "<groupname>"
+        require_arg "${2:-}" "<user1,user2,...>"
+        ;;
+esac
 
 case "$subcommand" in
     add) cmd_add "$@" ;;

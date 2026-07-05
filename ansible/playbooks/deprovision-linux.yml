@@ -49,3 +49,40 @@
         regexp: '^automount:'
         state: absent
       failed_when: false
+
+    - name: Remove SSSD sudoers nsswitch routing
+      ansible.builtin.lineinfile:
+        path: /etc/nsswitch.conf
+        regexp: '^sudoers:'
+        state: absent
+      failed_when: false
+
+    # Without this, the client would keep routing AD-domain DNS queries at
+    # the (possibly decommissioned) DC after leaving the domain.
+    - name: Remove AD DNS routing drop-in
+      ansible.builtin.file:
+        path: /etc/systemd/resolved.conf.d/samba-ad.conf
+        state: absent
+
+    - name: Restart systemd-resolved to drop the AD DNS routing
+      ansible.builtin.systemd:
+        name: systemd-resolved
+        state: restarted
+      failed_when: false
+
+    # sshd would otherwise keep invoking sss_ssh_authorizedkeys against a
+    # stopped SSSD on every login attempt.
+    - name: Remove sshd SSSD AuthorizedKeysCommand snippet
+      ansible.builtin.file:
+        path: /etc/ssh/sshd_config.d/sssd.conf
+        state: absent
+      register: _deprov_sshd_snippet
+
+    # Not a handler on purpose: deprovision is a linear one-shot teardown
+    # and the restart must happen even if later tasks fail.
+    - name: Restart sshd after removing SSSD snippet # noqa: no-handler
+      ansible.builtin.systemd:
+        name: ssh
+        state: restarted
+      when: _deprov_sshd_snippet is changed
+      failed_when: false

@@ -10,6 +10,11 @@
     netbios name = {{ ansible_facts['hostname'] | upper }}
     server role = {{ samba_server_role }}
     dns forwarder = {{ samba_dns_forwarder }}
+    {# Mirror the interface binding passed to `samba-tool domain provision` #}
+    {# (--option=interfaces / bind interfaces only).  Without repeating it  #}
+    {# here, this template would silently widen the DC to all interfaces.  #}
+    interfaces = lo {{ ansible_facts['default_ipv4']['interface'] }}
+    bind interfaces only = yes
     {# rfc2307 enables POSIX UID/GID attributes in AD for NFS interop #}
     idmap_ldb:use rfc2307 = {{ 'yes' if samba_use_rfc2307 else 'no' }}
 {% if samba_tls_enabled %}

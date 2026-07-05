@@ -1,19 +1,25 @@
 # ous-shares-nfs.yml - AD organizational units, share directories, NFS.
 #
-# OU creation is first-run only.  Share directories only get created here
-# in colocated NFS mode (samba_nfs_server == "") -- when NFS is offloaded
-# to a dedicated host the nfs-server role owns those directories.  The
-# cross-host SSH keypair likewise only matters when samba-user.sh has to
-# manage /home over SSH.
+# OU creation runs whenever the domain exists (idempotent: "already exists"
+# is tolerated) rather than only on the provisioning play -- a first run
+# that died after the provision marker was written must still get its OUs
+# (OU=SUDOers etc.) on the next run.  Share directories only get created
+# here in colocated NFS mode (samba_nfs_server == "") -- when NFS is
+# offloaded to a dedicated host the nfs-server role owns those directories.
+# The cross-host SSH keypair likewise only matters when samba-user.sh has
+# to manage /home over SSH.
 ---
 - name: Create organizational units
   ansible.builtin.command: >-
     samba-tool ou create OU={{ item }}
     --description="Organizational Unit for {{ item }}"
   loop: "{{ samba_ous }}"
-  when: _samba_just_provisioned | default(false)
-  failed_when: false
-  changed_when: true
+  when: _samba_domain_exists | default(false)
+  register: _ou_create
+  failed_when:
+    - _ou_create.rc != 0
+    - "'already exists' not in (_ou_create.stderr | default(''))"
+  changed_when: _ou_create.rc == 0
 
 # Only the share base (/data) is created at provisioning time.  Individual
 # share directories and their NFS exports are managed operationally with
@@ -53,6 +59,9 @@
 
     # accept-new lets the DC trust the storage host's host key on first use
     # instead of failing the non-interactive ssh from samba-user.sh.
+    # Scoped to the configured storage hosts (short name and FQDN) -- a
+    # blanket `Host *` would weaken host-key checking for every outbound
+    # root SSH from the DC.
     - name: Configure ssh client to accept new storage host keys
       ansible.builtin.copy:
         dest: /root/.ssh/config
@@ -61,6 +70,9 @@
         group: root
         content: |
           # Deployed by samba-dc role for samba-user.sh cross-host operations.
-          Host *
+          Host {{ ([samba_nfs_server, samba_nfs_homes_server]
+                   | select | unique
+                   | map('regex_replace', '^(.*)$', '\1 \1.' + (samba_realm | lower))
+                   | join(' ')) }}
               StrictHostKeyChecking accept-new
               UserKnownHostsFile /root/.ssh/known_hosts

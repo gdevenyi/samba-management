@@ -206,6 +206,9 @@ All scripts run **as root on the DC**. They source `lib/common.sh` then `lib/con
 # Create with all options
 ./bin/samba-user.sh add jdoe --given-name=Jane --surname=Doe \
     --email=jane@example.com --password=TempPass123 --must-change-pw
+# (add also provisions /home/ad/<user> on the homes host: owned by the
+#  user, mode 0700.  --password on the CLI is visible in /proc/*/cmdline;
+#  prefer the interactive prompt.)
 
 # List all users
 ./bin/samba-user.sh list
@@ -223,11 +226,13 @@ All scripts run **as root on the DC**. They source `lib/common.sh` then `lib/con
 ./bin/samba-user.sh disable jsmith
 ./bin/samba-user.sh enable jsmith
 
-# Delete user (with home directory archive)
+# Delete user (with home directory archive; the tarball is written to
+# /home/ad/jsmith.tar.gz on the homes host, mode 0600, root-only)
 ./bin/samba-user.sh delete jsmith --archive-home
 
-# Modify user attributes
-./bin/samba-user.sh modify jsmith --given-name=Jonathan
+# Modify user attributes (any combination of the five options)
+./bin/samba-user.sh modify jsmith --given-name=Jonathan --surname=Smythe \
+    --email=jon@example.com --shell=/bin/zsh --department=Engineering
 
 # Password policy
 ./bin/samba-user.sh password-policy show
@@ -346,9 +351,7 @@ REALM=YOURDOMAIN.INTERNAL DC_HOST=dc01 NFS_HOST=storage01 \
 
 Reports pass/fail for DNS SRV records, A records, Kerberos ticket, SSSD/autofs status, user lookup, DC port connectivity (88/53/389), NFS port connectivity (2049 on `NFS_HOST`, which defaults to `DC_HOST`), and NTP sync. Non-zero exit when any HARD check fails, suitable for cron/monitoring integration.
 
-### User Session (`client/linux/user-session.sh`)
-
-Intended to be installed in `/etc/profile.d/` for domain users. Ensures a valid Kerberos ticket at login and logs session start to syslog.
+The healthcheck script is deployed to clients by the `sssd-client` role as `/usr/local/sbin/domain-healthcheck.sh` (controlled by `sssd_deploy_client_scripts`, default `true`).
 
 ## Windows Client Scripts
 

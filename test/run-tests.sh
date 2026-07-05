@@ -30,7 +30,7 @@ NC='\033[0m'
 # --- Test data --------------------------------------------------------------
 # Centralised so setup, exercise, and cleanup all reference the same names.
 TEST_USERS=(testuser1 testuser2 homeuser1 homeuser2 perm_reader perm_writer perm_both perm_outsider login_allowed login_denied)
-TEST_GROUPS=(TestGroup ShareReaders ShareWriters computenode-login login-delete-probe)
+TEST_GROUPS=(TestGroupNested TestGroup ShareReaders ShareWriters computenode-login login-delete-probe)
 TEST_SHARES=(perm_rw_share perm_admin_share public)
 TEST_SUDO_RULES=(admin-all users-nopasswd)
 TEST_SSH_KEY_COMMENT="samba-mgmt-test-data"
@@ -101,6 +101,14 @@ cleanup_test_state() {
         ssh_dc "sudo samba-user.sh delete '${user}' --force" 2>/dev/null || true
     done
 
+    # Home directories: samba-user.sh delete deliberately preserves home
+    # data, but a re-run recreates the accounts with NEW SIDs/uids -- the
+    # stale 0700 homes would then lock the recreated users out.  Remove
+    # them so consecutive runs start clean.
+    for user in "${TEST_USERS[@]}"; do
+        ssh_nfs "sudo rm -rf /home/ad/${user} /home/ad/${user}.tar.gz" 2>/dev/null || true
+    done
+
     # Stray temp files on the NFS host
     ssh_nfs "sudo rm -f /tmp/perm-test-file.txt" 2>/dev/null || true
 
@@ -120,6 +128,13 @@ test_users() {
             --password=TestPass123456 --must-change-pw --force
     run_test "List users contains testuser1" \
         ssh_dc "sudo samba-user.sh list | grep -q testuser1"
+    # --must-change-pw must survive the follow-up setpassword call:
+    # pwdLastSet stays 0 until the user changes the password themselves.
+    run_test "testuser1 must change password at next login (pwdLastSet=0)" \
+        ssh_dc "sudo ldbsearch -H /var/lib/samba/private/sam.ldb '(sAMAccountName=testuser1)' pwdLastSet | grep -q '^pwdLastSet: 0$'"
+    # Home directories are private: owned by the user, mode 0700.
+    run_test "testuser1 home directory is user-owned mode 0700" \
+        ssh_nfs "stat -c '%U %a' /home/ad/testuser1 | grep -qx 'testuser1 700'"
     run_test "Show user testuser1" \
         ssh_dc sudo samba-user.sh show testuser1
     run_test "Disable user testuser1" \
@@ -134,6 +149,12 @@ test_users() {
             --password=TestPass456789 --force
     run_test "List users contains testuser2" \
         ssh_dc "sudo samba-user.sh list | grep -q testuser2"
+    run_test "Modify testuser2 attributes" \
+        ssh_dc "sudo samba-user.sh modify testuser2 --surname=Renamed --email=second@samba.test --department=Testing"
+    run_test "Modified surname visible via ldbsearch" \
+        ssh_dc "sudo ldbsearch -H /var/lib/samba/private/sam.ldb '(sAMAccountName=testuser2)' sn mail department | grep -q '^sn: Renamed'"
+    run_test "Modified email visible via ldbsearch" \
+        ssh_dc "sudo ldbsearch -H /var/lib/samba/private/sam.ldb '(sAMAccountName=testuser2)' mail | grep -q '^mail: second@samba.test'"
 }
 
 test_groups() {
@@ -152,7 +173,17 @@ test_groups() {
     run_test "Remove testuser2 from TestGroup" \
         ssh_dc sudo samba-group.sh remove-members TestGroup testuser2 --force
     run_test "TestGroup members no longer contains testuser2" \
-        ssh_dc "sudo samba-group.sh list-members TestGroup | grep -qv testuser2 || false"
+        ssh_dc "! sudo samba-group.sh list-members TestGroup | grep -q testuser2"
+    # Nested groups are first-class members (needed by the login-anchor
+    # class-group workflow).
+    run_test "Create group TestGroupNested" \
+        ssh_dc 'sudo samba-group.sh add TestGroupNested --description="Nested group"'
+    run_test "Nest TestGroupNested inside TestGroup via add-members" \
+        ssh_dc sudo samba-group.sh add-members TestGroup TestGroupNested
+    run_test "TestGroup members contains nested group" \
+        ssh_dc "sudo samba-group.sh list-members TestGroup | grep -q TestGroupNested"
+    run_test "Un-nest TestGroupNested from TestGroup" \
+        ssh_dc sudo samba-group.sh remove-members TestGroup TestGroupNested --force
 }
 
 # Exercise samba-automount.sh add-share/delete-share end to end: a single
@@ -286,11 +317,17 @@ test_permissions() {
     # NFS access.  No-op in colocated mode (already handled by the
     # samba-group.sh flush_winbind_cache step on the same host).
     diag_dump "before warmup"
+    # After the restart, wait until the SSSD domain is back ONLINE before
+    # any lookups: a freshly restarted backend can flap offline for tens of
+    # seconds, during which initgroups is served (incomplete) from cache and
+    # the verify below would time out spuriously.
     run_test "Restart SSSD and warm initgroups on storage host" \
-        ssh_nfs "sudo systemctl restart sssd && sudo bash -c 'for f in /proc/net/rpc/auth.unix.gid /proc/net/rpc/nfs4.nametoid /proc/net/rpc/nfs4.idtoname; do [ -e \"\$f/flush\" ] && date +%s > \"\$f/flush\"; done' && for u in perm_writer perm_both perm_reader; do getent initgroups \"\$u\" >/dev/null; done"
+        ssh_nfs "sudo systemctl restart sssd && for i in \$(seq 1 30); do sudo sssctl domain-status samba.test 2>/dev/null | grep -q 'Online status: Online' && break; sleep 2; done && sudo bash -c 'for f in /proc/net/rpc/auth.unix.gid /proc/net/rpc/nfs4.nametoid /proc/net/rpc/nfs4.idtoname; do [ -e \"\$f/flush\" ] && date +%s > \"\$f/flush\"; done' && for u in perm_writer perm_both perm_reader; do getent initgroups \"\$u\" >/dev/null; done"
     diag_dump "after warmup"
+    # 60s budget, with a cache-expiry nudge every 10s in case the first
+    # post-restart initgroups was cached while the backend was still offline.
     run_test "Verify ShareWriters visible in perm_writer initgroups" \
-        ssh_nfs "SW_GID=\$(getent group ShareWriters | cut -d: -f3) && [ -n \"\$SW_GID\" ] && for i in \$(seq 1 30); do getent initgroups perm_writer 2>/dev/null | grep -qw \"\$SW_GID\" && exit 0; sleep 1; done; echo 'ShareWriters GID not found in initgroups after 30s' >&2; exit 1"
+        ssh_nfs "SW_GID=\$(getent group ShareWriters | cut -d: -f3) && [ -n \"\$SW_GID\" ] && for i in \$(seq 1 60); do getent initgroups perm_writer 2>/dev/null | grep -qw \"\$SW_GID\" && exit 0; [ \$((i % 10)) -eq 0 ] && sudo sss_cache -E; sleep 1; done; echo 'ShareWriters GID not found in initgroups after 60s' >&2; exit 1"
     diag_dump "after initgroups verify"
     # Re-chown share directories with the now-fresh SSSD GID for ShareWriters.
     # The initial chown in test_permissions_setup may have used a stale GID
@@ -330,14 +367,21 @@ test_autofs_kerberos() {
     run_test "kdestroy perm_writer ticket" \
         ssh_client "kdestroy"
 
-    run_test "kinit as homeuser1 on client" \
-        ssh_client "echo 'H0mePass1!2345' | kinit homeuser1@SAMBA.TEST"
+    # Home directories are 0700 owner-only, so the access must genuinely be
+    # homeuser1.  The kernel caches ONE GSS context per local uid per NFS
+    # server; running kinit as `ubuntu` after the perm_writer tests above
+    # would silently reuse the cached perm_writer context and get EACCES.
+    # `sudo -u homeuser1` gives the access its own local uid (resolved via
+    # SSSD) and its own per-uid ccache/GSS context -- exactly the real-world
+    # case where a user logs in as their AD account.
+    run_test "kinit as homeuser1 (own uid) on client" \
+        ssh_client "echo 'H0mePass1!2345' | sudo -u homeuser1 kinit homeuser1@SAMBA.TEST"
     run_test "Trigger autofs home mount for homeuser1 and verify NFS" \
-        ssh_client "ls /home/ad/homeuser1/ && mount | grep 'homeuser1.*nfs4'"
+        ssh_client "sudo -u homeuser1 ls /home/ad/homeuser1/ && mount | grep 'homeuser1.*nfs4'"
     run_test "Write and read file via autofs-mounted home directory" \
-        ssh_client "echo 'autofs home test' > /home/ad/homeuser1/autofs_home_test.txt && cat /home/ad/homeuser1/autofs_home_test.txt && rm /home/ad/homeuser1/autofs_home_test.txt"
+        ssh_client "sudo -u homeuser1 bash -c 'echo autofs-home-test > /home/ad/homeuser1/autofs_home_test.txt && cat /home/ad/homeuser1/autofs_home_test.txt && rm /home/ad/homeuser1/autofs_home_test.txt'"
     run_test "kdestroy homeuser1 ticket" \
-        ssh_client "kdestroy"
+        ssh_client "sudo -u homeuser1 kdestroy"
 
     run_test "Verify pre-provisioned public share is accessible via autofs" \
         ssh_client "echo 'H0mePass1!2345' | kinit homeuser1@SAMBA.TEST && ls /data/public/ && kdestroy"
@@ -397,10 +441,13 @@ test_ssh_keys() {
     run_test "Flush SSSD cache so the new key and filter take effect" \
         ssh_client "sudo sss_cache -E"
     sleep 3
+    # `whoami`, not `id`: id exits non-zero if any secondary GID can't be
+    # resolved to a name yet (SSSD cache warm-up race on freshly created
+    # groups), which would fail the test even though the login worked.
     run_test "End-to-end: SSH to client as testuser1 with AD-stored key" \
         ssh -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null \
             -o ConnectTimeout=10 -o BatchMode=yes -o IdentitiesOnly=yes \
-            -i "${e2e_key}" "testuser1@${SMB_TEST_CLIENT_IP}" "id"
+            -i "${e2e_key}" "testuser1@${SMB_TEST_CLIENT_IP}" "whoami"
     run_test "Remove testuser1 from login-all" \
         ssh_dc "sudo samba-group.sh remove-members login-all testuser1 --force"
     run_test "Remove real SSH key from testuser1" \

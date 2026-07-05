@@ -139,7 +139,8 @@ foreach ($line in $content) {
         continue
     }
 
-    if (-not $inMapping -or [string]::IsNullOrWhiteSpace($line) -or $line.StartsWith('#')) {
+    # '#' and ';' both start comments (';' is the INI-file convention).
+    if (-not $inMapping -or [string]::IsNullOrWhiteSpace($line) -or $line.StartsWith('#') -or $line.StartsWith(';')) {
         continue
     }
 

@@ -2,7 +2,8 @@
 # common.sh - Shared library for the Samba AD DC management suite.
 #
 # Provides: logging (console + file), privilege checks, input validation,
-# Samba config backup/reload helpers, and global CLI flag parsing.
+# LDIF/DN helpers, cache flushing, cross-host (SSH) operation wrappers,
+# and global CLI flag parsing.
 # Sourced by all bin/* scripts -- not intended to be run directly.
 set -euo pipefail
 trap 's=$?; echo >&2 "$0: Error on line "$LINENO": $BASH_COMMAND"; exit $s' ERR
@@ -78,35 +79,6 @@ confirm_action() {
 }
 
 # ---------------------------------------------------------------------------
-# Samba config helpers
-# ---------------------------------------------------------------------------
-
-# Timestamped backup via cp -a (preserves ownership, permissions, xattrs)
-backup_smb_conf() {
-    local conf="${SAMBA_CONF:-/etc/samba/smb.conf}"
-    if [[ -f "$conf" ]]; then
-        local backup
-        backup="${conf}.$(date +%Y%m%d%H%M%S)"
-        cp -a "$conf" "$backup"
-        log_info "Backed up smb.conf to ${backup}"
-    fi
-}
-
-# smbcontrol sends an in-process reload signal so no downtime is needed.
-# We check for samba-ad-dc first (DC mode) then fall back to standalone smbd.
-reload_samba() {
-    if systemctl is-active --quiet samba-ad-dc 2>/dev/null; then
-        smbcontrol all reload-config
-        log_info "Reloaded Samba configuration"
-    elif systemctl is-active --quiet smbd 2>/dev/null; then
-        smbcontrol smbd reload-config
-        log_info "Reloaded smbd configuration"
-    else
-        log_warn "No Samba service appears to be running"
-    fi
-}
-
-# ---------------------------------------------------------------------------
 # Input validation - constraints mirror AD/SamDB schema rules:
 #   - Usernames:  sAMAccountName format (max 32, lowercase, rfc2307-compatible)
 #   - Groupnames: more permissive (spaces allowed, up to 63 chars)
@@ -148,16 +120,20 @@ validate_ldif_value() {
     esac
 }
 
-# Invalidate Samba's gencache.tdb (historically called "winbind cache").  Group
-# membership changes via samba-tool are persisted in the LDB immediately,
-# but `net cache flush` drops any locally cached lookups so a follow-up
-# `id` / `getent` / NFS access check sees the new state.
-# Note: on a DC that uses SSSD for NSS (the default since the sssd.yml
-# task file was added), `sss_cache -E` would also be required for full
-# correctness; callers can run it explicitly if they need that guarantee.
-# Best-effort: ignored on hosts without the `net` tool.
+# Invalidate the local identity caches after AD changes.  Group membership
+# changes via samba-tool are persisted in the LDB immediately, but cached
+# lookups mask them:
+#   - `net cache flush` drops Samba's gencache.tdb (historically called
+#     the "winbind cache").
+#   - `sss_cache -E` expires SSSD's cache -- the DC's NSS runs through
+#     SSSD (nsswitch `files sss`), so without this a follow-up `id` /
+#     `getent` / NFS access check can still see the old state.
+# Both are best-effort: ignored on hosts without the respective tool.
 flush_winbind_cache() {
     net cache flush 2>/dev/null || true
+    if command -v sss_cache >/dev/null 2>&1; then
+        sss_cache -E 2>/dev/null || true
+    fi
 }
 
 # Returns true when the given host (arg 1) refers to this machine, or is
@@ -198,11 +174,6 @@ remote_write_file() {
     else
         ssh -o BatchMode=yes -o ConnectTimeout=5 "root@${target}" "cat > $(printf '%q' "$dest")"
     fi
-}
-
-# Backward-compatible wrapper: true when NFS_HOMES_SERVER points at this host.
-is_local_homes_server() {
-    is_local_host "${NFS_HOMES_SERVER:-}"
 }
 
 # Run a home-directory command locally (homes colocated) or via SSH to
@@ -290,11 +261,25 @@ parse_kv_args() {
     done
 }
 
+# Escape a value for safe interpolation into an LDAP search filter
+# (RFC 4515): backslash first, then parens and asterisk.  Without this a
+# name containing filter metacharacters could widen or break the search.
+ldap_filter_escape() {
+    local v="$1"
+    v="${v//\\/\\5c}"
+    v="${v//\*/\\2a}"
+    v="${v//(/\\28}"
+    v="${v//)/\\29}"
+    printf '%s' "$v"
+}
+
 # Resolve a user's actual DN by sAMAccountName (handles users in any OU).
+# The name is filter-escaped, so mixed-case or exotic-but-legal account
+# names (e.g. Administrator) resolve safely.
 user_dn() {
     local username="$1"
     ldbsearch -H /var/lib/samba/private/sam.ldb \
-        -s sub "(sAMAccountName=${username})" dn 2>/dev/null \
+        -s sub "(sAMAccountName=$(ldap_filter_escape "$username"))" dn 2>/dev/null \
         | ldif_unfold \
         | grep '^dn:' \
         | sed 's/^dn: //'
@@ -371,6 +356,17 @@ group_exists() {
     samba-tool group show "$1" &>/dev/null
 }
 
+# Guard for required positional arguments.  Called before subcommand
+# dispatch so a missing argument produces a clear usage error instead of
+# an opaque "$1: unbound variable" from the ERR trap.
+#   require_arg "${1:-}" "<username>"
+require_arg() {
+    if [[ -z "${1:-}" ]]; then
+        log_error "Missing required argument: $2"
+        exit 2
+    fi
+}
+
 # ---------------------------------------------------------------------------
 # Dry-run gate - returns 0 (success) when DRY_RUN=1 so callers can
 # short-circuit with:  if dry_run "msg"; then return; fi
@@ -381,22 +377,6 @@ dry_run() {
         return 0
     fi
     return 1
-}
-
-# ---------------------------------------------------------------------------
-# Usage text - generic placeholder; each script overrides with its own.
-# ---------------------------------------------------------------------------
-usage() {
-    local script="$1"
-    cat <<EOF
-Usage: $(basename "$script") <subcommand> [options]
-
-Subcommands and options vary per script. Run with 'help' for details.
-Global options:
-  --force       Skip confirmation prompts
-  --dry-run     Show what would be done without making changes
-  --debug       Enable debug output
-EOF
 }
 
 # ---------------------------------------------------------------------------

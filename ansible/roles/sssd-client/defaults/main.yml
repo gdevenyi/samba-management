@@ -85,6 +85,10 @@ sssd_enable_sudo: true
 # have been provisioned with samba_enable_autofs_seed: true (default).
 sssd_enable_autofs: true
 
+# Deploy the client-side helper script from client/linux/:
+#   healthcheck.sh -> /usr/local/sbin/domain-healthcheck.sh (executable)
+sssd_deploy_client_scripts: true
+
 # --- Post-join verification retries ---
 # How long to wait for SSSD to start returning AD identities after a fresh
 # realm join.  The user lookup is the more aggressive of the two because it

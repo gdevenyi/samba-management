@@ -28,10 +28,24 @@
     - not _sudo_schema_marker.stat.exists
     - _sudo_schema_exists.stdout | int == 0
   block:
+    # Unpredictable temp paths (vs fixed /tmp names, which are open to
+    # symlink attacks on multi-user hosts).
+    - name: Create temporary file for schema attributes LDIF
+      ansible.builtin.tempfile:
+        suffix: .ldif
+      register: _sudo_schema_attrs_tmp
+      changed_when: false
+
+    - name: Create temporary file for schema class LDIF
+      ansible.builtin.tempfile:
+        suffix: .ldif
+      register: _sudo_schema_class_tmp
+      changed_when: false
+
     - name: Generate sudo schema attributes LDIF
       ansible.builtin.template:
         src: ldif/sudo_schema_attrs.ldif.j2
-        dest: /tmp/sudo_schema_attrs.ldif
+        dest: "{{ _sudo_schema_attrs_tmp.path }}"
         owner: root
         group: root
         mode: "0600"
@@ -39,7 +53,7 @@
     - name: Generate sudo schema class LDIF
       ansible.builtin.template:
         src: ldif/sudo_schema_class.ldif.j2
-        dest: /tmp/sudo_schema_class.ldif
+        dest: "{{ _sudo_schema_class_tmp.path }}"
         owner: root
         group: root
         mode: "0600"
@@ -52,13 +66,13 @@
 
     - name: Apply sudo schema attributes to AD
       ansible.builtin.command:
-        cmd: ldbadd -H /var/lib/samba/private/sam.ldb /tmp/sudo_schema_attrs.ldif --option="dsdb:schema update allowed"=true
+        cmd: ldbadd -H /var/lib/samba/private/sam.ldb {{ _sudo_schema_attrs_tmp.path }} --option="dsdb:schema update allowed"=true
       register: _sudo_schema_attrs_apply
       changed_when: _sudo_schema_attrs_apply.rc == 0
 
     - name: Apply sudo schema class to AD
       ansible.builtin.command:
-        cmd: ldbadd -H /var/lib/samba/private/sam.ldb /tmp/sudo_schema_class.ldif --option="dsdb:schema update allowed"=true
+        cmd: ldbadd -H /var/lib/samba/private/sam.ldb {{ _sudo_schema_class_tmp.path }} --option="dsdb:schema update allowed"=true
       register: _sudo_schema_class_apply
       changed_when: _sudo_schema_class_apply.rc == 0
 
@@ -98,14 +112,6 @@
         group: root
         mode: "0644"
 
-    - name: Clean up sudo schema LDIFs
-      ansible.builtin.file:
-        path: "{{ item }}"
-        state: absent
-      loop:
-        - /tmp/sudo_schema_attrs.ldif
-        - /tmp/sudo_schema_class.ldif
-
   rescue:
     - name: Ensure Samba is started after sudo schema failure
       ansible.builtin.systemd:
@@ -113,14 +119,18 @@
         state: started
       when: _samba_stopped_for_sudo_schema is defined and _samba_stopped_for_sudo_schema is changed
 
-    - name: Clean up sudo schema LDIFs on failure
+    - name: Fail with sudo schema error
+      ansible.builtin.fail:
+        msg: "Failed to apply sudo schema extension. Check logs above for details."
+
+  # Temp LDIFs are removed on success and failure alike.
+  always:
+    - name: Clean up sudo schema LDIFs
       ansible.builtin.file:
         path: "{{ item }}"
         state: absent
       loop:
-        - /tmp/sudo_schema_attrs.ldif
-        - /tmp/sudo_schema_class.ldif
-
-    - name: Fail with sudo schema error
-      ansible.builtin.fail:
-        msg: "Failed to apply sudo schema extension. Check logs above for details."
+        - "{{ _sudo_schema_attrs_tmp.path | default('') }}"
+        - "{{ _sudo_schema_class_tmp.path | default('') }}"
+      when: item | length > 0
+      changed_when: false

@@ -115,6 +115,28 @@ validate_share_name() {
     fi
 }
 
+# Export paths are written verbatim into /etc/exports.d/<name>.exports and
+# autofs map entries: absolute, no whitespace, safe charset only.  Validated
+# BEFORE any side effect (directory/export creation) so a bad value can't
+# leave a malformed export behind.
+validate_export_path() {
+    local path="$1"
+    if [[ ! "$path" =~ ^/[A-Za-z0-9._/-]+$ || "$path" == *..* ]]; then
+        log_error "Invalid --path '${path}': must be absolute, using letters, digits, ., _, /, - (no whitespace, no ..)"
+        return 1
+    fi
+}
+
+# Server names flow into `ssh root@<server>` and export/map entries: plain
+# hostname/FQDN charset only (no @, whitespace, or leading dash).
+validate_server_name() {
+    local server="$1"
+    if [[ ! "$server" =~ ^[A-Za-z0-9][A-Za-z0-9.-]{0,253}$ ]]; then
+        log_error "Invalid --server '${server}': expected a hostname or FQDN"
+        return 1
+    fi
+}
+
 _map_dn() {
     ad_dn "$AUTOMOUNT_OU" "$1"
 }
@@ -404,6 +426,8 @@ cmd_add_share() {
     local sec="${opts[--sec]:-$DEFAULT_NFS_SEC}"
     local fsid="${opts[--fsid]:-}"
 
+    validate_server_name "$server" || exit 2
+    validate_export_path "$path" || exit 2
     case "$sec" in
         krb5|krb5i|krb5p) ;;
         *) log_error "Invalid --sec '${sec}'; expected krb5, krb5i, or krb5p"; exit 2 ;;
@@ -440,6 +464,12 @@ cmd_add_share() {
     remote_op "$server" chmod 0770 "$path"
 
     # 2. NFS export on the NFS host.
+    # fsids must be unique per host; a duplicate makes the kernel serve the
+    # wrong filesystem to clients.  Warn (don't abort) since the operator
+    # may be intentionally re-using a freed id.
+    if [[ -n "$fsid" ]] && remote_op "$server" grep -rqs "fsid=${fsid}[,)]" /etc/exports.d/; then
+        log_warn "fsid=${fsid} already appears in an export on ${server}; fsids must be unique per host"
+    fi
     log_info "Deploying NFS export for '${name}' on ${server}"
     remote_op "$server" mkdir -p /etc/exports.d
     printf '%s\n' "${path} *(${exopts})" \
@@ -478,6 +508,9 @@ cmd_delete_share() {
         path="${target#*:}"
     fi
     [[ -z "$server" ]] && server="$DEFAULT_NFS_SERVER"
+    # Whether from --server or recovered from the map entry, the value goes
+    # into `ssh root@<server>` -- validate before any remote operation.
+    validate_server_name "$server" || exit 2
     local remove_data="${opts[--remove-data]:-0}"
 
     local extra=""
@@ -487,9 +520,10 @@ cmd_delete_share() {
     fi
     confirm_action "Delete share '${name}'?" || exit 0
 
-    # Already confirmed at the share level; skip the inner entry confirm.
-    FORCE=1 cmd_delete_entry auto.shares "$name"
-
+    # Remove the export (and optionally the data) BEFORE the AD map entry:
+    # the entry is the record delete-share reads the server/path back from,
+    # so if the SSH leg fails here, a re-run can still find and finish the
+    # job.  Deleting the entry first would orphan the export on failure.
     log_info "Removing NFS export for '${name}' on ${server}"
     remote_op "$server" rm -f "/etc/exports.d/${name}.exports"
     remote_op "$server" exportfs -ra
@@ -500,6 +534,9 @@ cmd_delete_share() {
     elif [[ -n "$path" ]]; then
         log_info "Data preserved at ${server}:${path} (pass --remove-data to delete it)"
     fi
+
+    # Already confirmed at the share level; skip the inner entry confirm.
+    FORCE=1 cmd_delete_entry auto.shares "$name"
 }
 
 if [[ $# -eq 0 ]] || [[ "$1" == "help" ]] || [[ "$1" == "--help" ]]; then
@@ -508,6 +545,21 @@ if [[ $# -eq 0 ]] || [[ "$1" == "help" ]] || [[ "$1" == "--help" ]]; then
 fi
 
 subcommand="$1"; shift
+
+# Positional-argument guards: clear usage errors instead of unbound-
+# variable traps when arguments are missing.
+case "$subcommand" in
+    add-map|delete-map)
+        require_arg "${1:-}" "<mapname>"
+        ;;
+    add-entry|delete-entry|modify|show)
+        require_arg "${1:-}" "<mapname>"
+        require_arg "${2:-}" "<key>"
+        ;;
+    add-share|delete-share)
+        require_arg "${1:-}" "<name>"
+        ;;
+esac
 
 case "$subcommand" in
     add-map) cmd_add_map "$@" ;;

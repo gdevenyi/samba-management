@@ -26,3 +26,13 @@
         line: "sudoers: files sss"
         create: true
         mode: "0644"
+
+# Client helper scripts from client/linux/.
+- name: Deploy domain healthcheck script
+  ansible.builtin.copy:
+    src: "{{ role_path }}/../../../client/linux/healthcheck.sh"
+    dest: /usr/local/sbin/domain-healthcheck.sh
+    mode: "0755"
+    owner: root
+    group: root
+  when: sssd_deploy_client_scripts | bool

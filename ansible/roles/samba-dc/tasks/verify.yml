@@ -8,15 +8,21 @@
   delay: 2
   until: "'has SRV record' in dns_srv.stdout"
 
+# A verification step must be allowed to fail the play -- a kinit that
+# can't get a TGT means the KDC is broken and downstream joins would fail
+# anyway.  Retried because the KDC may still be settling right after start.
 - name: Verify Kerberos authentication
   ansible.builtin.command:
     cmd: kinit Administrator
     # stdin: feeds the password into kinit's password prompt without ever
     # placing the value on a command line.
     stdin: "{{ samba_admin_password }}"
+  register: _verify_kinit
   no_log: true
   changed_when: false
-  failed_when: false
+  retries: 5
+  delay: 3
+  until: _verify_kinit.rc == 0
 
 - name: Verify netlogon share
   ansible.builtin.command: "smbclient //localhost/netlogon -U Administrator -c ls"

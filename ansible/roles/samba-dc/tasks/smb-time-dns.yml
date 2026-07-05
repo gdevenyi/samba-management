@@ -92,11 +92,26 @@
 - name: Flush handlers before service start
   ansible.builtin.meta: flush_handlers
 
+# Stale runtime files (pid/tdb) are only "stale" while samba-ad-dc is NOT
+# running -- deleting them from under a live service breaks systemd's
+# MAINPID tracking and can corrupt Samba's runtime tdb state.  Check first;
+# on re-runs the service is typically already active and cleanup is skipped.
+# noqa below: this is a status *query*, not state management -- the systemd
+# module cannot report is-active without also asserting a state.
+- name: Check whether samba-ad-dc is currently active # noqa: command-instead-of-module
+  ansible.builtin.command: systemctl is-active {{ samba_dc_service }}
+  register: _samba_dc_active
+  changed_when: false
+  failed_when: false
+  when: samba_cleanup_runtime_files | default(true) | bool
+
 - name: Clean stale Samba runtime files
   ansible.builtin.command: /bin/true
   notify: Clean Samba runtime files
   changed_when: true
-  when: samba_cleanup_runtime_files | default(true) | bool
+  when:
+    - samba_cleanup_runtime_files | default(true) | bool
+    - _samba_dc_active.rc != 0
 
 - name: Flush cleanup handler
   ansible.builtin.meta: flush_handlers

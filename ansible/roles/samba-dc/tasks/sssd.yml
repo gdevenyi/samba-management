@@ -40,6 +40,24 @@
   when: (ansible_hostname | upper) + '$@' not in (_samba_keytab_check.stdout | upper)
   changed_when: true
 
+# SSSD's GSSAPI bind to LDAP fails on hosts whose reverse DNS points at a
+# name other than their AD identity -- a DC may be reachable at a site name
+# in externally-owned DNS while its AD name lives in the Samba zone.  With
+# MIT Kerberos' default rdns=true, the krb5 layer reverse-resolves the LDAP
+# server's IP to the site name and asks the KDC for ldap/<site-name>, which
+# has no SPN -> "Server not found in Kerberos database" -> SSSD marks the
+# domain offline and NSS returns nothing.  Disabling rdns makes Kerberos use
+# the (forward) name SSSD actually connected to, which does carry an ldap/
+# SPN.  Samba's generated krb5.conf sets no rdns key, so add it idempotently.
+- name: Disable Kerberos reverse-DNS canonicalization in krb5.conf
+  ansible.builtin.lineinfile:
+    path: /etc/krb5.conf
+    insertafter: '^\[libdefaults\]'
+    regexp: '^\s*rdns\s*='
+    line: "    rdns = false"
+    mode: "0644"
+  notify: Restart sssd
+
 - name: Deploy SSSD configuration for the DC
   ansible.builtin.template:
     src: sssd.conf.j2

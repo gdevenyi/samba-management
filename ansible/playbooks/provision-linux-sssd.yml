@@ -6,6 +6,15 @@
 # keys, configures SSSD as a sudo provider, and optionally sets up home
 # directory mounting via NFS (sssd_homedir_mode=mounted).
 ---
+# Gather the DC's facts first so the sssd-client role can resolve the DC's
+# IPv4 for the systemd-resolved DNS-routing drop-in (see the role's "Resolve
+# DC IP" task).  Without this, a client-only run has no DC facts and you must
+# set sssd_dc_ip in group_vars.  NOTE: a `--limit` that excludes the dc group
+# skips this play, so sssd_dc_ip remains the reliable override for limited runs.
+- name: Gather Domain Controller facts for client DNS-routing IP resolution
+  hosts: dc
+  gather_facts: true
+
 - name: Provision Linux workstation with SSSD
   hosts: linux_clients
   become: true

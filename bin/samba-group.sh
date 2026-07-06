@@ -30,6 +30,11 @@ Subcommands:
 
   delete <groupname>                   Delete an AD group
 
+  modify <groupname>                   Modify group attributes
+    --description=DESC                  Group description
+    --gid=N                            GID number (rfc2307)
+    --clear=attr1,attr2                 Remove attributes (valid: description, gid)
+
   list [--pattern=STR]                 List groups (optionally filtered)
 
   show <groupname>                     Show group details and members
@@ -138,6 +143,105 @@ cmd_delete() {
     else
         log_error "Failed to delete group '${groupname}'"
         exit 1
+    fi
+}
+
+# ---------------------------------------------------------------------------
+# Group modification - applies attribute changes via ldbmodify on sam.ldb.
+# samba-tool group has no generic "modify" verb, so build the LDIF directly
+# (mirrors samba-user.sh's cmd_modify).
+# ---------------------------------------------------------------------------
+cmd_modify() {
+    local groupname="$1"; shift
+
+    if ! group_exists "$groupname"; then
+        log_error "Group '${groupname}' not found"
+        exit 3
+    fi
+
+    local -A opts
+    parse_kv_args opts "--description --gid --clear" "$@"
+    local description="${opts[--description]:-}"
+    local gid="${opts[--gid]:-}"
+    local clear_list="${opts[--clear]:-}"
+
+    # GID 0 is the local root group -- see cmd_add for the rationale.
+    if [[ -n "$gid" ]] && { [[ ! "$gid" =~ ^[0-9]+$ ]] || [[ "$gid" -eq 0 ]]; }; then
+        log_error "Invalid --gid value: must be a positive integer (not 0)"
+        exit 2
+    fi
+
+    # Parse --clear (valid keys: description, gid).
+    local clear_description=0 clear_gid=0 tok
+    if [[ -n "$clear_list" ]]; then
+        local -a _toks
+        IFS=',' read -ra _toks <<< "$clear_list"
+        for tok in "${_toks[@]}"; do
+            tok="$(trim_ws "$tok")"
+            case "$tok" in
+                "") ;;
+                description) clear_description=1 ;;
+                gid) clear_gid=1 ;;
+                *) log_error "Unknown --clear attribute: '${tok}' (valid: description, gid)"; exit 2 ;;
+            esac
+        done
+    fi
+
+    # Setting and clearing the same attribute is contradictory.
+    if [[ -n "$description" && "$clear_description" -eq 1 ]]; then
+        log_error "Cannot set and clear the same attribute: description"
+        exit 2
+    fi
+    if [[ -n "$gid" && "$clear_gid" -eq 1 ]]; then
+        log_error "Cannot set and clear the same attribute: gid"
+        exit 2
+    fi
+
+    if [[ -z "$description" && -z "$gid" && "$clear_description" -eq 0 && "$clear_gid" -eq 0 ]]; then
+        log_error "Must specify at least one change (--description, --gid, or --clear=...)"
+        exit 2
+    fi
+
+    if [[ -n "$description" ]]; then
+        validate_ldif_value "$description" "description" || exit 2
+    fi
+
+    dry_run "Would modify group: ${groupname}" && return
+
+    log_info "Modifying group '${groupname}'..."
+
+    local target_dn
+    target_dn=$(group_dn "$groupname")
+    [[ -n "$target_dn" ]] || { log_error "Could not resolve DN for '${groupname}'"; exit 3; }
+
+    local ldif="dn: ${target_dn}
+changetype: modify
+"
+    if [[ -n "$description" ]]; then
+        ldif+="replace: description"$'\n'"description: ${description}"$'\n'"-"$'\n'
+    fi
+    if [[ "$clear_description" -eq 1 ]]; then
+        ldif+="replace: description"$'\n'"-"$'\n'
+    fi
+    # rfc2307: keep gidNumber paired with msSFU30NisDomain (as cmd_add does via
+    # --gid-number/--nis-domain), so the group stays a valid NIS object.
+    if [[ -n "$gid" ]]; then
+        ldif+="replace: gidNumber"$'\n'"gidNumber: ${gid}"$'\n'"-"$'\n'
+        ldif+="replace: msSFU30NisDomain"$'\n'"msSFU30NisDomain: ${NETBIOS,,}"$'\n'"-"$'\n'
+    fi
+    if [[ "$clear_gid" -eq 1 ]]; then
+        ldif+="replace: gidNumber"$'\n'"-"$'\n'
+        ldif+="replace: msSFU30NisDomain"$'\n'"-"$'\n'
+    fi
+
+    printf '%s' "$ldif" | ldb_exec modify \
+        "Group '${groupname}' modified" \
+        "Failed to modify group '${groupname}'"
+
+    # A gidNumber change affects NSS/NFS GID resolution; flush caches so
+    # follow-up lookups see it immediately (same rationale as add-members).
+    if [[ -n "$gid" || "$clear_gid" -eq 1 ]]; then
+        flush_winbind_cache
     fi
 }
 
@@ -300,7 +404,7 @@ subcommand="$1"; shift
 # Positional-argument guards: clear usage errors instead of unbound-
 # variable traps when arguments are missing.
 case "$subcommand" in
-    add|delete|show|list-members)
+    add|delete|modify|show|list-members)
         require_arg "${1:-}" "<groupname>"
         ;;
     add-members|remove-members)
@@ -312,6 +416,7 @@ esac
 case "$subcommand" in
     add) cmd_add "$@" ;;
     delete) cmd_delete "$@" ;;
+    modify) cmd_modify "$@" ;;
     list) cmd_list "$@" ;;
     show) cmd_show "$@" ;;
     add-members) cmd_add_members "$@" ;;

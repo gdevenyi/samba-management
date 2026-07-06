@@ -20,6 +20,23 @@ require_root
 parse_global_args "$@"
 set -- "${GLOBAL_REMAINING_ARGS[@]}"
 
+# Map of editable profile flags to their AD attribute names.  Shared by
+# cmd_add (post-create) and cmd_modify so the two never drift.  The `--clear`
+# vocabulary is these same keys with the leading `--` stripped.
+declare -A USER_ATTR_MAP=(
+    [--given-name]=givenName
+    [--surname]=sn
+    [--email]=mail
+    [--shell]=loginShell
+    [--department]=department
+    [--display-name]=displayName
+    [--description]=description
+    [--title]=title
+    [--telephone]=telephoneNumber
+    [--company]=company
+    [--office]=physicalDeliveryOfficeName
+)
+
 cmd_usage() {
     cat <<EOF
 Usage: $(basename "$0") <subcommand> [options]
@@ -34,6 +51,13 @@ Subcommands:
                                          /proc/*/cmdline -- prefer the prompt)
     --must-change-pw                     Force password change at first login
     --shell=SHELL                        Login shell (default: ${DEFAULT_SHELL})
+    --department=DEPT                    Department
+    --display-name=NAME                  Display name
+    --description=TEXT                    Description
+    --title=TITLE                        Job title
+    --telephone=NUMBER                   Telephone number
+    --company=NAME                       Company
+    --office=NAME                        Office location
     --group=GROUP                        Add to group after creation
     --ssh-key=PUBLIC_KEY                 Add SSH public key to user
 
@@ -41,11 +65,17 @@ Subcommands:
     --archive-home                       Archive home directory to tarball
 
   modify <username>                     Modify user attributes
-    --given-name=NAME
-    --surname=NAME
-    --email=ADDR
-    --shell=SHELL
-    --department=DEPT
+    --given-name=NAME  --surname=NAME  --email=ADDR  --shell=SHELL
+    --department=DEPT  --display-name=NAME  --description=TEXT  --title=TITLE
+    --telephone=NUMBER  --company=NAME  --office=NAME
+    --clear=attr1,attr2                  Remove attributes (e.g. --clear=email,title;
+                                         valid keys are the modify flag names
+                                         without the leading --)
+    --must-change-pw                     Force password change at next login
+
+  set-expiry <username>                Set account expiry
+    --days=N                             Expire N days from now
+    --never                              Never expire
 
   list [--pattern=STR]                 List users (optionally filtered)
   show <username>                      Show detailed user information
@@ -197,7 +227,7 @@ cmd_add() {
 
     local -A opts
     parse_kv_args opts \
-        "--given-name --surname --email --password --must-change-pw --shell --group --ssh-key" \
+        "--given-name --surname --email --password --must-change-pw --shell --group --ssh-key --department --display-name --description --title --telephone --company --office" \
         "$@"
     local given_name="${opts[--given-name]:-}"
     local surname="${opts[--surname]:-}"
@@ -207,6 +237,18 @@ cmd_add() {
     local shell="${opts[--shell]:-$DEFAULT_SHELL}"
     local group="${opts[--group]:-}"
     local ssh_key="${opts[--ssh-key]:-}"
+
+    # Profile attributes not settable via `samba-tool user create`; applied
+    # with a single post-create ldbmodify from the shared USER_ATTR_MAP.
+    local -A extra_attrs=(
+        [department]="${opts[--department]:-}"
+        [displayName]="${opts[--display-name]:-}"
+        [description]="${opts[--description]:-}"
+        [title]="${opts[--title]:-}"
+        [telephoneNumber]="${opts[--telephone]:-}"
+        [company]="${opts[--company]:-}"
+        [physicalDeliveryOfficeName]="${opts[--office]:-}"
+    )
 
     if user_exists "$username"; then
         log_error "User '${username}' already exists"
@@ -219,6 +261,14 @@ cmd_add() {
         log_error "Group '${group}' not found"
         exit 3
     fi
+
+    # Validate every LDIF-bound value before any side effect, so a bad profile
+    # attribute fails fast rather than after the account is half-created.
+    local _attr
+    for _attr in "${!extra_attrs[@]}"; do
+        [[ -n "${extra_attrs[$_attr]}" ]] || continue
+        validate_ldif_value "${extra_attrs[$_attr]}" "$_attr" || exit 2
+    done
 
     if dry_run "Would create user: ${username}"; then
         return
@@ -247,6 +297,32 @@ cmd_add() {
     fi
     if [[ -n "$ssh_key" ]]; then
         _add_sshkey "$username" "$ssh_key"
+    fi
+
+    # Apply profile attributes not covered by `samba-tool user create`.
+    local have_extra=0
+    for _attr in "${!extra_attrs[@]}"; do
+        if [[ -n "${extra_attrs[$_attr]}" ]]; then
+            have_extra=1
+        fi
+    done
+    if [[ "$have_extra" -eq 1 ]]; then
+        local target_dn
+        target_dn=$(user_dn "$username")
+        if [[ -z "$target_dn" ]]; then
+            log_error "Could not resolve DN for '${username}' to set profile attributes (user was created)"
+            exit 1
+        fi
+        local ldif="dn: ${target_dn}
+changetype: modify
+"
+        for _attr in "${!extra_attrs[@]}"; do
+            [[ -n "${extra_attrs[$_attr]}" ]] || continue
+            ldif+="replace: ${_attr}"$'\n'"${_attr}: ${extra_attrs[$_attr]}"$'\n'"-"$'\n'
+        done
+        printf '%s' "$ldif" | ldb_exec modify \
+            "Profile attributes set for '${username}'" \
+            "Failed to set profile attributes for '${username}' (user was created)"
     fi
 }
 
@@ -321,24 +397,55 @@ cmd_modify() {
     fi
 
     local -A opts
-    parse_kv_args opts "--given-name --surname --email --shell --department" "$@"
-    local given_name="${opts[--given-name]:-}"
-    local surname="${opts[--surname]:-}"
-    local email="${opts[--email]:-}"
-    local shell="${opts[--shell]:-}"
-    local department="${opts[--department]:-}"
+    parse_kv_args opts \
+        "--given-name --surname --email --shell --department --display-name --description --title --telephone --company --office --clear --must-change-pw" \
+        "$@"
+    local clear_list="${opts[--clear]:-}"
+    local must_change_pw="${opts[--must-change-pw]:-0}"
 
-    if [[ -z "$given_name" && -z "$surname" && -z "$email" && -z "$shell" && -z "$department" ]]; then
-        log_error "Must specify at least one attribute to modify (--given-name, --surname, --email, --shell, --department)"
+    # Collect the profile attributes that were actually supplied (flag -> value).
+    local -A set_attrs=()
+    local flag
+    for flag in "${!USER_ATTR_MAP[@]}"; do
+        if [[ -n "${opts[$flag]:-}" ]]; then
+            set_attrs[$flag]="${opts[$flag]}"
+        fi
+    done
+
+    # Parse --clear into a list of flags to delete.  The clear vocabulary is
+    # the USER_ATTR_MAP keys without the leading `--`.
+    local -a clear_flags=()
+    if [[ -n "$clear_list" ]]; then
+        local valid_keys tok cflag
+        valid_keys="$(for flag in "${!USER_ATTR_MAP[@]}"; do printf '%s ' "${flag#--}"; done)"
+        local -a _clear_tokens
+        IFS=',' read -ra _clear_tokens <<< "$clear_list"
+        for tok in "${_clear_tokens[@]}"; do
+            tok="$(trim_ws "$tok")"
+            [[ -z "$tok" ]] && continue
+            cflag="--${tok}"
+            if [[ -z "${USER_ATTR_MAP[$cflag]:-}" ]]; then
+                log_error "Unknown --clear attribute: '${tok}' (valid: ${valid_keys})"
+                exit 2
+            fi
+            # Setting and clearing the same attribute is contradictory.
+            if [[ -n "${set_attrs[$cflag]:-}" ]]; then
+                log_error "Cannot set and clear the same attribute: '${tok}'"
+                exit 2
+            fi
+            clear_flags+=("$cflag")
+        done
+    fi
+
+    if [[ ${#set_attrs[@]} -eq 0 && ${#clear_flags[@]} -eq 0 && "$must_change_pw" != "1" ]]; then
+        log_error "Must specify at least one change (a profile attribute, --clear=..., or --must-change-pw)"
         exit 2
     fi
 
-    # Validate every value before building any LDIF.
-    [[ -n "$given_name" ]] && { validate_ldif_value "$given_name" "given name" || exit 2; }
-    [[ -n "$surname" ]] && { validate_ldif_value "$surname" "surname" || exit 2; }
-    [[ -n "$email" ]] && { validate_ldif_value "$email" "email" || exit 2; }
-    [[ -n "$shell" ]] && { validate_ldif_value "$shell" "shell" || exit 2; }
-    [[ -n "$department" ]] && { validate_ldif_value "$department" "department" || exit 2; }
+    # Validate every set value before building any LDIF.
+    for flag in "${!set_attrs[@]}"; do
+        validate_ldif_value "${set_attrs[$flag]}" "${flag#--}" || exit 2
+    done
 
     dry_run "Would modify user: ${username}" && return
 
@@ -352,11 +459,21 @@ cmd_modify() {
     local ldif="dn: ${target_dn}
 changetype: modify
 "
-    [[ -n "$given_name" ]] && ldif+="replace: givenName"$'\n'"givenName: ${given_name}"$'\n'"-"$'\n'
-    [[ -n "$surname" ]] && ldif+="replace: sn"$'\n'"sn: ${surname}"$'\n'"-"$'\n'
-    [[ -n "$email" ]] && ldif+="replace: mail"$'\n'"mail: ${email}"$'\n'"-"$'\n'
-    [[ -n "$shell" ]] && ldif+="replace: loginShell"$'\n'"loginShell: ${shell}"$'\n'"-"$'\n'
-    [[ -n "$department" ]] && ldif+="replace: department"$'\n'"department: ${department}"$'\n'"-"$'\n'
+    local attr
+    for flag in "${!set_attrs[@]}"; do
+        attr="${USER_ATTR_MAP[$flag]}"
+        ldif+="replace: ${attr}"$'\n'"${attr}: ${set_attrs[$flag]}"$'\n'"-"$'\n'
+    done
+    # An empty-value replace deletes the attribute (RFC 4511 replace semantics).
+    for flag in "${clear_flags[@]}"; do
+        attr="${USER_ATTR_MAP[$flag]}"
+        ldif+="replace: ${attr}"$'\n'"-"$'\n'
+    done
+    # pwdLastSet=0 forces a password change at next login without resetting the
+    # current password (setpassword can't do that without a new password).
+    if [[ "$must_change_pw" == "1" ]]; then
+        ldif+="replace: pwdLastSet"$'\n'"pwdLastSet: 0"$'\n'"-"$'\n'
+    fi
 
     printf '%s' "$ldif" | ldb_exec modify \
         "User '${username}' modified" \
@@ -445,6 +562,54 @@ cmd_set_password() {
     fi
     _set_user_password "$username" "$password"
     log_info "Password set for '${username}'"
+}
+
+# ---------------------------------------------------------------------------
+# Account expiry
+# ---------------------------------------------------------------------------
+# accountExpires is an AD FILETIME (100ns ticks since 1601); let samba-tool
+# do the conversion rather than hand-building LDIF.
+cmd_set_expiry() {
+    local username="$1"; shift
+
+    if ! user_exists "$username"; then
+        log_error "User '${username}' not found"
+        exit 3
+    fi
+
+    local -A opts
+    parse_kv_args opts "--days --never" "$@"
+    local days="${opts[--days]:-}"
+    local never="${opts[--never]:-0}"
+
+    if [[ -n "$days" && "$never" == "1" ]]; then
+        log_error "Specify only one of --days or --never"
+        exit 2
+    fi
+    if [[ -z "$days" && "$never" != "1" ]]; then
+        log_error "Must specify --days=N or --never"
+        exit 2
+    fi
+    if [[ -n "$days" && ! "$days" =~ ^[0-9]+$ ]]; then
+        log_error "Invalid --days value: must be a non-negative integer"
+        exit 2
+    fi
+
+    local -a cmd=(samba-tool user setexpiry "$username")
+    if [[ "$never" == "1" ]]; then
+        cmd+=(--noexpiry)
+    else
+        cmd+=(--days="$days")
+    fi
+
+    dry_run "Would set account expiry for: ${username}" && return
+
+    if "${cmd[@]}"; then
+        log_info "Account expiry updated for '${username}'"
+    else
+        log_error "Failed to set account expiry for '${username}'"
+        exit 1
+    fi
 }
 
 # ---------------------------------------------------------------------------
@@ -653,7 +818,7 @@ subcommand="$1"; shift
 # first positional -- fail with a clear message instead of an unbound-
 # variable trap when it's missing.
 case "$subcommand" in
-    add|delete|modify|show|enable|disable|set-password|add-sshkey|remove-sshkey|list-sshkeys)
+    add|delete|modify|show|enable|disable|set-password|set-expiry|add-sshkey|remove-sshkey|list-sshkeys)
         require_arg "${1:-}" "<username>"
         ;;
 esac
@@ -667,6 +832,7 @@ case "$subcommand" in
     enable) cmd_enable "$@" ;;
     disable) cmd_disable "$@" ;;
     set-password) cmd_set_password "$@" ;;
+    set-expiry) cmd_set_expiry "$@" ;;
     add-sshkey) cmd_add_sshkey "$@" ;;
     remove-sshkey) cmd_remove_sshkey "$@" ;;
     list-sshkeys) cmd_list_sshkeys "$@" ;;

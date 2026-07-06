@@ -684,11 +684,17 @@ test_user_edge_cases() {
     run_test "Create group EdgeGroup" \
         ssh_dc 'sudo samba-group.sh add EdgeGroup --description="Edge case group"'
     run_test "Create edgeuser with attributes and --group" \
-        ssh_dc "sudo samba-user.sh add edgeuser --given-name=Edge --surname=Case --email=edge@samba.test --shell=/bin/sh --group=EdgeGroup --password=EdgePass123456 --force"
+        ssh_dc "sudo samba-user.sh add edgeuser --given-name=Edge --surname=Case --email=edge@samba.test --shell=/bin/sh --group=EdgeGroup --title=Founder --office=HQ --department=QA --password=EdgePass123456 --force"
     run_test "edgeuser loginShell recorded in AD" \
         ssh_dc "sudo ldbsearch -H /var/lib/samba/private/sam.ldb '(sAMAccountName=edgeuser)' loginShell | grep -q '^loginShell: /bin/sh'"
     run_test "edgeuser mail recorded in AD" \
         ssh_dc "sudo ldbsearch -H /var/lib/samba/private/sam.ldb '(sAMAccountName=edgeuser)' mail | grep -q '^mail: edge@samba.test'"
+    # add applies profile attributes not covered by `samba-tool user create`
+    # via a post-create ldbmodify -- verify a couple landed.
+    run_test "edgeuser title recorded in AD (add post-create attrs)" \
+        ssh_dc "sudo ldbsearch -H /var/lib/samba/private/sam.ldb '(sAMAccountName=edgeuser)' title | grep -q '^title: Founder'"
+    run_test "edgeuser office recorded in AD (add post-create attrs)" \
+        ssh_dc "sudo ldbsearch -H /var/lib/samba/private/sam.ldb '(sAMAccountName=edgeuser)' physicalDeliveryOfficeName | grep -q '^physicalDeliveryOfficeName: HQ'"
     run_test "edgeuser is member of EdgeGroup" \
         ssh_dc "sudo samba-group.sh list-members EdgeGroup | grep -qx edgeuser"
     run_test "Duplicate user creation fails" \
@@ -699,6 +705,34 @@ test_user_edge_cases() {
         ssh_dc "sudo samba-user.sh show nosuchuser123 >/dev/null 2>&1; test \$? -eq 3"
     run_test "modify with no attributes exits 2" \
         ssh_dc "sudo samba-user.sh modify edgeuser >/dev/null 2>&1; test \$? -eq 2"
+    run_test "Modify edgeuser profile attributes" \
+        ssh_dc "sudo samba-user.sh modify edgeuser --display-name='Edge C' --title=Engineer --telephone=555-1234 --company=Acme --description='edge desc'"
+    run_test "displayName recorded in AD" \
+        ssh_dc "sudo ldbsearch -H /var/lib/samba/private/sam.ldb '(sAMAccountName=edgeuser)' displayName | grep -q '^displayName: Edge C'"
+    run_test "telephoneNumber recorded in AD" \
+        ssh_dc "sudo ldbsearch -H /var/lib/samba/private/sam.ldb '(sAMAccountName=edgeuser)' telephoneNumber | grep -q '^telephoneNumber: 555-1234'"
+    run_test "modify --clear removes attributes" \
+        ssh_dc "sudo samba-user.sh modify edgeuser --clear=title,description"
+    run_test "cleared title absent from AD" \
+        ssh_dc "! sudo ldbsearch -H /var/lib/samba/private/sam.ldb '(sAMAccountName=edgeuser)' title | grep -q '^title:'"
+    run_test "unknown --clear key exits 2" \
+        ssh_dc "sudo samba-user.sh modify edgeuser --clear=bogus >/dev/null 2>&1; test \$? -eq 2"
+    run_test "set and clear same attribute exits 2" \
+        ssh_dc "sudo samba-user.sh modify edgeuser --title=X --clear=title >/dev/null 2>&1; test \$? -eq 2"
+    run_test "modify --must-change-pw sets pwdLastSet=0" \
+        ssh_dc "sudo samba-user.sh modify edgeuser --must-change-pw && sudo ldbsearch -H /var/lib/samba/private/sam.ldb '(sAMAccountName=edgeuser)' pwdLastSet | grep -q '^pwdLastSet: 0$'"
+    run_test "set-expiry --days sets a finite expiry" \
+        ssh_dc "sudo samba-user.sh set-expiry edgeuser --days=100 && sudo ldbsearch -H /var/lib/samba/private/sam.ldb '(sAMAccountName=edgeuser)' accountExpires | grep '^accountExpires:' | grep -vqE ': (0|9223372036854775807)\$'"
+    run_test "set-expiry --never clears expiry (sentinel value)" \
+        ssh_dc "sudo samba-user.sh set-expiry edgeuser --never && sudo ldbsearch -H /var/lib/samba/private/sam.ldb '(sAMAccountName=edgeuser)' accountExpires | grep '^accountExpires:' | grep -qE ': (0|9223372036854775807)\$'"
+    run_test "set-expiry with no option exits 2" \
+        ssh_dc "sudo samba-user.sh set-expiry edgeuser >/dev/null 2>&1; test \$? -eq 2"
+    run_test "set-expiry --days and --never together exits 2" \
+        ssh_dc "sudo samba-user.sh set-expiry edgeuser --days=5 --never >/dev/null 2>&1; test \$? -eq 2"
+    run_test "set-expiry non-integer --days exits 2" \
+        ssh_dc "sudo samba-user.sh set-expiry edgeuser --days=abc >/dev/null 2>&1; test \$? -eq 2"
+    run_test "set-expiry of nonexistent user exits 3" \
+        ssh_dc "sudo samba-user.sh set-expiry nosuchuser123 --never >/dev/null 2>&1; test \$? -eq 3"
     run_test "list --pattern filters users" \
         ssh_dc "sudo samba-user.sh list --pattern=edgeu | grep -qx edgeuser"
     run_test "add-sshkey via --key-file" \
@@ -745,6 +779,30 @@ test_group_edge_cases() {
         ssh_dc "sudo samba-group.sh add GidGroup --gid=15000"
     run_test "gidNumber recorded in AD" \
         ssh_dc "sudo ldbsearch -H /var/lib/samba/private/sam.ldb '(sAMAccountName=GidGroup)' gidNumber | grep -q '^gidNumber: 15000'"
+    run_test "Modify GidGroup description" \
+        ssh_dc "sudo samba-group.sh modify GidGroup --description='updated gid group'"
+    run_test "Modified group description in AD" \
+        ssh_dc "sudo ldbsearch -H /var/lib/samba/private/sam.ldb '(sAMAccountName=GidGroup)' description | grep -q '^description: updated gid group'"
+    run_test "Modify GidGroup gidNumber" \
+        ssh_dc "sudo samba-group.sh modify GidGroup --gid=15001"
+    run_test "Updated gidNumber in AD" \
+        ssh_dc "sudo ldbsearch -H /var/lib/samba/private/sam.ldb '(sAMAccountName=GidGroup)' gidNumber | grep -q '^gidNumber: 15001'"
+    run_test "gidNumber stays paired with msSFU30NisDomain" \
+        ssh_dc "sudo ldbsearch -H /var/lib/samba/private/sam.ldb '(sAMAccountName=GidGroup)' msSFU30NisDomain | grep -qi '^msSFU30NisDomain: '"
+    run_test "group modify --gid=0 exits 2" \
+        ssh_dc "sudo samba-group.sh modify GidGroup --gid=0 >/dev/null 2>&1; test \$? -eq 2"
+    run_test "group modify with no attributes exits 2" \
+        ssh_dc "sudo samba-group.sh modify GidGroup >/dev/null 2>&1; test \$? -eq 2"
+    run_test "group modify unknown --clear key exits 2" \
+        ssh_dc "sudo samba-group.sh modify GidGroup --clear=bogus >/dev/null 2>&1; test \$? -eq 2"
+    run_test "group modify set+clear same attr exits 2" \
+        ssh_dc "sudo samba-group.sh modify GidGroup --description=X --clear=description >/dev/null 2>&1; test \$? -eq 2"
+    run_test "group modify of nonexistent group exits 3" \
+        ssh_dc "sudo samba-group.sh modify NoSuchGroup --description=x >/dev/null 2>&1; test \$? -eq 3"
+    run_test "Clear GidGroup description" \
+        ssh_dc "sudo samba-group.sh modify GidGroup --clear=description"
+    run_test "Cleared group description absent from AD" \
+        ssh_dc "! sudo ldbsearch -H /var/lib/samba/private/sam.ldb '(sAMAccountName=GidGroup)' description | grep -q '^description:'"
     run_test "group list --pattern filters" \
         ssh_dc "sudo samba-group.sh list --pattern=GidG | grep -qx GidGroup"
     run_test "Duplicate group creation fails" \

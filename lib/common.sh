@@ -285,6 +285,18 @@ user_dn() {
         | sed 's/^dn: //'
 }
 
+# Resolve a group's actual DN by sAMAccountName (handles groups in any OU).
+# Constrained to group objects with an objectClass filter so intent is
+# explicit (sAMAccountName is already unique domain-wide).  Mirrors user_dn.
+group_dn() {
+    local groupname="$1"
+    ldbsearch -H /var/lib/samba/private/sam.ldb \
+        -s sub "(&(objectClass=group)(sAMAccountName=$(ldap_filter_escape "$groupname")))" dn 2>/dev/null \
+        | ldif_unfold \
+        | grep '^dn:' \
+        | sed 's/^dn: //'
+}
+
 # Strip non-essential AD metadata from an LDIF stream (comments, blanks, and
 # the standard objectClass / GUID / timestamp attributes that every AD entry
 # carries).  Reads stdin, writes stdout.  Callers that also want to drop the

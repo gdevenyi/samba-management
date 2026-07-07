@@ -10,3 +10,10 @@
 # Control" for the operator workflow (creating class groups, etc.).
 # sssd_login_anchor_group: "login-{{ ansible_hostname }}"
 # sssd_login_anchor_catchall: "login-all"
+
+# krb5 [domain_realm] mappings -- REQUIRED when the DC/NFS servers are reached
+# by a site FQDN that isn't under the AD realm's DNS domain (otherwise NFSv4
+# sec=krb5p home/share mounts fail with "Server not found in Kerberos
+# database").  Map each server's site FQDN to the AD realm:
+# sssd_krb5_realm_map:
+#   dc01.site.example.com: AD.EXAMPLE.COM

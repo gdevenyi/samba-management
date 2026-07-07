@@ -8,3 +8,22 @@
       - sssd_admin_password | length > 0
       - sssd_homedir_mode in ['local', 'mounted']
     fail_msg: "sssd_realm, sssd_domain, sssd_admin_password are required. sssd_homedir_mode must be 'local' or 'mounted'"
+
+# NetBIOS caps a computer's sAMAccountName at 15 characters.  A longer
+# hostname is silently truncated at join time, producing a machine account
+# whose Kerberos principals no longer match the host's real name.  getent
+# still works (SSSD has its own credential path), but rpc.gssd -- which
+# derives the machine principal from the hostname -- can't obtain machine
+# credentials, so every NFSv4 sec=krb5p mount (home dirs, shares) fails with
+# "access denied by server".  Catch it here instead of at a user's first login.
+- name: Assert the hostname fits the 15-character NetBIOS limit
+  ansible.builtin.assert:
+    that:
+      - ansible_hostname | length <= 15
+    fail_msg: >-
+      Hostname '{{ ansible_hostname }}' is {{ ansible_hostname | length }}
+      characters; AD/NetBIOS machine-account names are capped at 15 and a
+      longer name is truncated at join time, breaking rpc.gssd machine
+      credentials and NFSv4 sec=krb5p mounts.  Rename this host to <=15
+      characters (system hostname, /etc/hosts, and inventory) and re-provision.
+    success_msg: "Hostname '{{ ansible_hostname }}' is within the 15-character NetBIOS limit"

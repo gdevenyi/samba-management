@@ -24,3 +24,44 @@
     - getent_group.rc == 0
     - "'domain users:' in getent_group.stdout"
     - getent_group.stdout.split(':')[2] | int != 100
+
+# rpc.gssd uses the host's *machine* credential (from /etc/krb5.keytab) to
+# mount NFSv4 shares/homes with sec=krb5p.  getent passing above only proves
+# SSSD's own credential path works -- it does NOT prove the machine account is
+# consistent.  A join that truncated/mismatched the account (e.g. a >15-char
+# hostname) leaves a keytab whose hostname-derived principal the KDC won't
+# honour, so every krb5p mount fails with "access denied by server" at first
+# login.  kinit as the account principal rpc.gssd would derive, so that break
+# surfaces during provisioning instead.  Only relevant when autofs/NFS is on.
+- name: Verify the machine can obtain Kerberos credentials from its keytab
+  ansible.builtin.command:
+    argv:
+      - kinit
+      - "-k"
+      - "{{ ansible_hostname | upper }}$@{{ sssd_realm }}"
+  register: _kinit_machine
+  changed_when: false
+  failed_when: false
+  when: sssd_configure_autofs | bool
+
+- name: Release the verification ticket
+  ansible.builtin.command: kdestroy
+  changed_when: false
+  failed_when: false
+  when: sssd_configure_autofs | bool
+
+- name: Assert the machine credential works (required for NFSv4 sec=krb5p)
+  ansible.builtin.assert:
+    that:
+      - _kinit_machine.rc == 0
+    fail_msg: >-
+      The host could not obtain Kerberos credentials as
+      '{{ ansible_hostname | upper }}$@{{ sssd_realm }}' from /etc/krb5.keytab
+      (kinit rc={{ _kinit_machine.rc }}: {{ _kinit_machine.stderr | default('') | trim }}).
+      This is the credential rpc.gssd needs for NFSv4 sec=krb5p mounts, so home
+      and share automounts will fail with "access denied by server" even though
+      user lookups work.  The usual cause is a machine account whose name does
+      not match the host (commonly a hostname truncated at the 15-char NetBIOS
+      limit).  Verify the hostname (<=15 chars) and re-join the domain.
+    success_msg: "Machine Kerberos credential OK ({{ ansible_hostname | upper }}$)"
+  when: sssd_configure_autofs | bool

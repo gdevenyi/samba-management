@@ -143,6 +143,11 @@ test_users() {
     # Home directories are private: owned by the user, mode 0700.
     run_test "testuser1 home directory is user-owned mode 0700" \
         ssh_nfs "stat -c '%U %a' /home/ad/testuser1 | grep -qx 'testuser1 700'"
+    # Home is seeded from /etc/skel (like useradd -m) and the skeleton files
+    # are owned by the user, not left root-owned by the copy.
+    # sudo: the home is 0700, so only root (or the user) can traverse into it.
+    run_test "testuser1 home seeded from /etc/skel (.bashrc present, user-owned)" \
+        ssh_nfs "sudo stat -c %U /home/ad/testuser1/.bashrc 2>/dev/null | grep -qx testuser1"
     run_test "Show user testuser1" \
         ssh_dc sudo samba-user.sh show testuser1
     run_test "Disable user testuser1" \

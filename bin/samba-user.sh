@@ -159,10 +159,10 @@ _set_user_password() {
 # created at this point.
 #
 # Ownership: the directory is owned by the user (mode 0700) like a
-# conventional Unix home.  The freshly-created account may take a few
-# seconds to become resolvable through the homes host's SSSD, so we poll
-# getent before the chown -- chowning to a not-yet-resolvable name would
-# fail outright.
+# conventional Unix home, and is seeded from /etc/skel like `useradd -m`.
+# The freshly-created account may take a few seconds to become resolvable
+# through the homes host's SSSD, so we poll getent before the chown --
+# chowning to a not-yet-resolvable name would fail outright.
 _provision_home_dir() {
     local username="$1"
     local home_dir="${HOME_BASE}/${username}"
@@ -198,13 +198,19 @@ _provision_home_dir() {
         fi
         return
     fi
+    # Populate from /etc/skel like `useradd -m` (skipped gracefully if the
+    # homes host has no /etc/skel).  cp -aT copies skel's *contents* into the
+    # already-created home; the recursive chown then transfers ownership of
+    # those skeleton files to the user, while chmod 0700 locks down only the
+    # top directory (skel files keep their own modes, as useradd does).
     if ! home_op mkdir -p "$home_dir" \
-        || ! home_op chown "${username}:${DEFAULT_GROUP}" "$home_dir" \
+        || ! home_op sh -c 'test ! -d /etc/skel || cp -aT /etc/skel "$1"' _ "$home_dir" \
+        || ! home_op chown -R "${username}:${DEFAULT_GROUP}" "$home_dir" \
         || ! home_op chmod 0700 "$home_dir"; then
         log_error "Failed to provision home directory ${NFS_HOMES_SERVER:-localhost}:${home_dir} (user was created)"
         exit 1
     fi
-    log_info "Created home directory: ${NFS_HOMES_SERVER:-localhost}:${home_dir} (${username}, mode 0700)"
+    log_info "Created home directory: ${NFS_HOMES_SERVER:-localhost}:${home_dir} (${username}, mode 0700, /etc/skel populated)"
 }
 
 # Add a freshly-created user to an AD group.  Group existence is the

@@ -14,6 +14,26 @@
 - name: Set up shared NFS-common baseline (NEED_GSSD, unit workaround, rpc-gssd)
   ansible.builtin.include_tasks: "{{ role_path }}/../common/tasks/nfs-common-unit.yml"
 
+# Map AD servers reached by a non-AD DNS name to the AD realm.  When the DC or
+# an NFS server is addressed by an externally-owned site FQDN (e.g.
+# host.uhnres.utoronto.ca) that doesn't sit under the AD realm's domain, krb5
+# guesses the realm from the DNS domain and rpc.gssd requests
+# nfs/<host>@<wrong-realm> -> "Server not found in Kerberos database", so
+# NFSv4 sec=krb5p mounts fail even though user lookups work.  An explicit
+# [domain_realm] entry pins those hosts to the AD realm.  No-op when the map
+# is empty (the common case where servers use the AD DNS domain).
+- name: Pin non-AD-domain server FQDNs to the AD realm in krb5.conf
+  ansible.builtin.blockinfile:
+    path: /etc/krb5.conf
+    marker: "# {mark} ANSIBLE MANAGED [domain_realm] (sssd-client)"
+    block: |
+      [domain_realm]
+      {% for host, realm in sssd_krb5_realm_map.items() %}
+          {{ host }} = {{ realm }}
+      {% endfor %}
+  when: sssd_krb5_realm_map | length > 0
+  notify: Restart rpc-gssd
+
 # Maps are stored in AD under OU=automount and consumed by SSSD's autofs
 # service; no per-client map files are written.  We only set up the
 # mount-base directories, the NSS routing, and start the service.

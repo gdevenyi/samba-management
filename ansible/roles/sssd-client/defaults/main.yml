@@ -73,6 +73,22 @@ sssd_dc_hostname: "dc01"
 sssd_configure_autofs: true
 sssd_autofs_base: "/data"
 
+# Extra krb5 [domain_realm] mappings for the client's /etc/krb5.conf.  Needed
+# when AD servers (the DC or NFS servers) are reached by a DNS name that is NOT
+# under the AD realm's domain -- e.g. an externally-owned site FQDN like
+# host.uhnres.utoronto.ca serving a realm AD.GENETLAB.INTERNAL.  Without a
+# mapping, krb5 derives the realm from the DNS domain, rpc.gssd asks for
+# nfs/<host>@<wrong-realm>, and NFSv4 sec=krb5p mounts fail with "Server not
+# found in Kerberos database" (user/getent lookups still work).  Keys are host
+# FQDNs (or ".suffix" domains); values are the Kerberos realm.  Prefer specific
+# host FQDNs over a broad ".suffix" so you don't hijack legitimate Kerberos
+# services elsewhere in that domain.  Empty = no extra mappings (the common
+# case, where servers use the AD DNS domain).
+sssd_krb5_realm_map: {}
+#   sssd_krb5_realm_map:
+#     dc01.site.example.com: AD.EXAMPLE.COM
+#     nfs01.site.example.com: AD.EXAMPLE.COM
+
 # --- NFS mount options (shared with samba-dc role; same defaults) ---
 # Kerberos security flavour: krb5 (auth), krb5i (auth+integrity), krb5p (full encryption)
 samba_nfs_sec: "krb5p"

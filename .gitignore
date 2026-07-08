@@ -4,6 +4,8 @@ test/test-config.env
 test/inventory.yml
 test/group_vars/
 test/.ssh/
+# Per-combo logs from test/run-matrix.sh.
+test/logs/
 
 # Local Ansible Galaxy collection install path created by
 # `ansible-galaxy collection install -r requirements.yml -p ansible/.ansible/collections`.

@@ -48,14 +48,26 @@
 # has no SPN -> "Server not found in Kerberos database" -> SSSD marks the
 # domain offline and NSS returns nothing.  Disabling rdns makes Kerberos use
 # the (forward) name SSSD actually connected to, which does carry an ldap/
-# SPN.  Samba's generated krb5.conf sets no rdns key, so add it idempotently.
-- name: Disable Kerberos reverse-DNS canonicalization in krb5.conf
+# SPN.  Delivered as a krb5.conf.d drop-in rather than editing the Samba-
+# generated /etc/krb5.conf in place.
+- name: Ensure krb5.conf pulls in the drop-in directory
   ansible.builtin.lineinfile:
     path: /etc/krb5.conf
-    insertafter: '^\[libdefaults\]'
-    regexp: '^\s*rdns\s*='
-    line: "    rdns = false"
+    line: "includedir /etc/krb5.conf.d/"
+    regexp: '^\s*includedir\s+/etc/krb5\.conf\.d/?\s*$'
+    insertbefore: BOF
     mode: "0644"
+
+- name: Deploy Kerberos behaviour drop-in for the DC
+  ansible.builtin.copy:
+    dest: /etc/krb5.conf.d/samba-dc.conf
+    mode: "0644"
+    owner: root
+    group: root
+    content: |
+      # Managed by the samba-dc role -- do not edit.
+      [libdefaults]
+          rdns = false
   notify: Restart sssd
 
 - name: Deploy SSSD configuration for the DC

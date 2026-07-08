@@ -14,25 +14,42 @@
 - name: Set up shared NFS-common baseline (NEED_GSSD, unit workaround, rpc-gssd)
   ansible.builtin.include_tasks: "{{ role_path }}/../common/tasks/nfs-common-unit.yml"
 
-# Map AD servers reached by a non-AD DNS name to the AD realm.  When the DC or
-# an NFS server is addressed by an externally-owned site FQDN (e.g.
-# host.uhnres.utoronto.ca) that doesn't sit under the AD realm's domain, krb5
-# guesses the realm from the DNS domain and rpc.gssd requests
-# nfs/<host>@<wrong-realm> -> "Server not found in Kerberos database", so
-# NFSv4 sec=krb5p mounts fail even though user lookups work.  An explicit
-# [domain_realm] entry pins those hosts to the AD realm.  No-op when the map
-# is empty (the common case where servers use the AD DNS domain).
-- name: Pin non-AD-domain server FQDNs to the AD realm in krb5.conf
+# Kerberos client behaviour for this stack, delivered as a krb5.conf.d drop-in
+# (the stock /etc/krb5.conf already carries `includedir /etc/krb5.conf.d/`).
+#   - rdns=false / dns_canonicalize_hostname=false: don't let krb5 rewrite the
+#     server name when acquiring service tickets -- the AD servers are reached
+#     by site FQDNs whose forward/reverse DNS doesn't match their SPNs.
+#   - [domain_realm] (from sssd_krb5_realm_map): pin those site FQDNs to the AD
+#     realm.  Without it krb5 guesses the realm from the DNS domain (e.g.
+#     UTORONTO.CA for a *.utoronto.ca host) and rpc.gssd/LDAP request
+#     <svc>/<host>@<wrong-realm> -> "Server not found in Kerberos database", so
+#     NFSv4 sec=krb5p mounts (and any GSSAPI to those hosts) fail even though
+#     user lookups work.  See AGENTS.md > "krb5 realm mapping for site-named
+#     servers".
+- name: Ensure krb5.conf pulls in the drop-in directory
+  ansible.builtin.lineinfile:
+    path: /etc/krb5.conf
+    line: "includedir /etc/krb5.conf.d/"
+    regexp: '^\s*includedir\s+/etc/krb5\.conf\.d/?\s*$'
+    insertbefore: BOF
+    mode: "0644"
+
+- name: Deploy Kerberos behaviour drop-in for the client
+  ansible.builtin.template:
+    src: krb5-samba-ad.conf.j2
+    dest: /etc/krb5.conf.d/samba-ad.conf
+    mode: "0644"
+    owner: root
+    group: root
+  notify: Restart rpc-gssd
+
+# Migration: earlier versions edited /etc/krb5.conf in place with a marked
+# block; remove it so the drop-in is the single source of truth.
+- name: Remove the legacy in-place [domain_realm] block from krb5.conf
   ansible.builtin.blockinfile:
     path: /etc/krb5.conf
     marker: "# {mark} ANSIBLE MANAGED [domain_realm] (sssd-client)"
-    block: |
-      [domain_realm]
-      {% for host, realm in sssd_krb5_realm_map.items() %}
-          {{ host }} = {{ realm }}
-      {% endfor %}
-  when: sssd_krb5_realm_map | length > 0
-  notify: Restart rpc-gssd
+    state: absent
 
 # Maps are stored in AD under OU=automount and consumed by SSSD's autofs
 # service; no per-client map files are written.  We only set up the

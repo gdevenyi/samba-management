@@ -15,7 +15,12 @@
 
 [sssd]
 domains = {{ samba_realm }}
-services = nss, pam
+{# No `services` line: responders are socket-activated on systemd hosts
+   (sssd-<service>.socket units), the upstream-recommended model and the
+   Ubuntu 24.04+ default.  Listing a responder here *and* having its socket
+   enabled trips sssd_check_socket_activated_responders (exit-code 17) at
+   boot.  The sssd-nss / sssd-pam sockets are enabled by the samba-dc role
+   (tasks/sssd.yml). #}
 
 [domain/{{ samba_realm }}]
 id_provider = ad

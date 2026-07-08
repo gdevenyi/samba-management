@@ -3,14 +3,54 @@
 # SSSD must come up before autofs so the autofs service can resolve maps
 # via the sss NSS module on first start (the maps live in AD, not on disk).
 ---
+# Socket activation: SSSD's responders start on demand.  We deliberately do
+# NOT list them in sssd.conf's `services` line -- listing a responder there
+# AND having its socket enabled trips sssd_check_socket_activated_responders
+# (exit-code 17) so the socket fails to listen at boot.  Enabling only the
+# sockets we need (and leaving the package-default `pac` socket, which the
+# AD provider auto-uses via implicit_pac_responder, alone) is the modern,
+# conflict-free model.  See sssd.conf(5) "services".
+- name: Reload systemd so packaged sssd responder socket units are known
+  ansible.builtin.systemd:
+    daemon_reload: true
+
 - name: Enable and start sssd
   ansible.builtin.systemd:
     name: sssd
     enabled: true
     state: started
 
-- name: Flush handlers (restart SSSD if config changed)
+- name: Flush handlers (restart SSSD with the new sssd.conf)
   ansible.builtin.meta: flush_handlers
+
+# `realm join` (and the sssd package install) enable the responder sockets
+# before the clean, no-`services`-line sssd.conf from configure.yml is in
+# place.  During that window the package-enabled sockets can trip
+# sssd_check_socket_activated_responders and be left in a "failed" state; the
+# transient also leaves "Misconfiguration found ..." lines in the journal.
+# Now that the clean config is live, clear any residual failed state so the
+# next activation (and the test_sssd_socket_activation checks) is clean.
+- name: Reset any failed SSSD responder sockets from the join window
+  ansible.builtin.command: systemctl reset-failed 'sssd-*.socket' # noqa: command-instead-of-module
+  changed_when: false
+  failed_when: false
+
+# Enable+start only the responder sockets we need.  `state: started` also
+# recovers a unit from a prior failed state.  `pac` is left to its package
+# default (the AD provider uses it via implicit_pac_responder) and is no
+# longer failed thanks to the reset-failed above.
+- name: Enable required SSSD responder sockets (socket activation)
+  ansible.builtin.systemd:
+    name: "{{ item }}"
+    enabled: true
+    state: started
+  loop: >-
+    {{
+      ['sssd-nss.socket', 'sssd-pam.socket']
+      + (['sssd-sudo.socket']   if (sssd_enable_sudo   | bool) else [])
+      + (['sssd-ssh.socket']    if (sssd_enable_ssh    | bool) else [])
+      + (['sssd-autofs.socket'] if (sssd_enable_autofs | bool) else [])
+    }}
 
 - name: Enable and start autofs
   ansible.builtin.systemd:

@@ -55,6 +55,16 @@ ad_access_filter = DOM:{{ sssd_domain }}:(memberOf:1.2.840.113556.1.4.1941:=CN={
 {# matches Samba AD's stock schema -- no ldap_autofs_* overrides needed. #}
 autofs_provider = ad
 {% endif %}
+{% if sssd_enable_sudo | bool %}
+{# AD-stored sudo rules are sudoRole objects in OU=SUDOers, written by     #}
+{# bin/samba-sudorule.sh.  Pin the search base there explicitly: with no   #}
+{# base SSSD auto-discovers one, and on a real Samba DC that produced a    #}
+{# sudo full refresh that downloaded 0 rules -- so AD sudo rules silently  #}
+{# never reached clients (`sudo -l` was always empty) even though the      #}
+{# rules, membership, and host filter were all correct.                    #}
+sudo_provider = ad
+ldap_sudo_search_base = OU=SUDOers,DC={{ sssd_domain.replace('.', ',DC=') }}
+{% endif %}
 {% if sssd_enable_ssh | bool %}
 {# SSH key retrieval from AD altSecurityIdentities attribute.  Keys are #}
 {# stored as raw OpenSSH-format values (no prefix): SSSD's ssh responder #}

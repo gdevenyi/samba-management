@@ -1,0 +1,13 @@
+# Managed by the sssd-client role -- do not edit.
+# Kerberos client behaviour for the Samba AD stack (see idmapd-autofs.yml).
+[libdefaults]
+    rdns = false
+    dns_canonicalize_hostname = false
+{% if sssd_krb5_realm_map | length > 0 %}
+
+# Pin AD servers reached by a non-AD DNS name (site FQDNs) to the AD realm.
+[domain_realm]
+{% for host, realm in sssd_krb5_realm_map.items() %}
+    {{ host }} = {{ realm }}
+{% endfor %}
+{% endif %}

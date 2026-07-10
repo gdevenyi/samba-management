@@ -16,6 +16,10 @@
 - name: Discover and join the AD domain
   ansible.builtin.import_tasks: join.yml
 
+- name: Register this host's A/PTR in Samba DNS (delegated to the DC)
+  ansible.builtin.import_tasks: dns-register.yml
+  when: sssd_register_dns | bool
+
 - name: Bootstrap login anchor group on the DC
   ansible.builtin.import_tasks: dc-bootstrap.yml
   when:

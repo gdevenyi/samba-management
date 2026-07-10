@@ -4,7 +4,7 @@
 # it), so a first run that died after the provision marker was written
 # still gets its reverse zone on the next run.  Idempotent: each object is
 # queried first and only created when missing, mirroring the pattern in
-# nfs-server/tasks/dns-register.yml.  Genuine failures surface instead of
+# sssd-client/tasks/dns-register.yml.  Genuine failures surface instead of
 # being swallowed by a blanket failed_when: false.
 ---
 - name: Compute reverse DNS zone name

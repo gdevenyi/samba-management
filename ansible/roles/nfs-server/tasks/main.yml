@@ -24,8 +24,9 @@
     masked: true
   failed_when: false
 
-- name: Register this host in Samba DNS so the DC and clients can resolve it
-  ansible.builtin.import_tasks: dns-register.yml
+# A/PTR registration now lives in the sssd-client role (applied first on every
+# domain member, storage hosts included), so the storage host is already
+# registered in Samba DNS by the time this role runs.
 
 - name: Provision NFS service principal and keytab
   ansible.builtin.import_tasks: keytab.yml

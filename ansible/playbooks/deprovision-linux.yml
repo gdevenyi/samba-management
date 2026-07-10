@@ -25,12 +25,13 @@
       changed_when: _realm_leave.rc == 0
 
     # Best-effort removal of the client's A/PTR from Samba DNS.  realm leave
-    # removes the computer object but not the DNS records SSSD dynamic DNS
-    # (sssd_dyndns_update) published, so they'd otherwise linger in the AD zone.
-    # Run unconditionally (not gated on the toggle) so records left by a host
-    # that had DDNS enabled are still cleaned up; delete keys off hostname +
-    # IP, matching what DDNS registers.  failed_when:false because the record
-    # or the DC may already be gone.  Mirrors deprovision-nfs-server.yml.
+    # removes the computer object but not the DNS records (whether registered
+    # explicitly via sssd_register_dns or by SSSD dynamic DNS), so they'd
+    # otherwise linger in the AD zone.  Run unconditionally so records from
+    # either mechanism are cleaned up; the delete keys off hostname + IP and
+    # the PTR value is the AD name (hostname + sssd_domain), matching how
+    # dns-register.yml writes them.  failed_when:false because the record or
+    # the DC may already be gone.  Mirrors deprovision-nfs-server.yml.
     - name: Remove client A record from Samba DNS
       ansible.builtin.command:
         argv:
@@ -71,7 +72,7 @@
           - "{{ _deprov_reverse_zone }}"
           - "{{ ansible_facts['default_ipv4'].address.split('.')[3] }}"
           - PTR
-          - "{{ ansible_facts['fqdn'] }}"
+          - "{{ ansible_facts['hostname'] }}.{{ sssd_domain }}"
           - "-U"
           - Administrator
       environment:

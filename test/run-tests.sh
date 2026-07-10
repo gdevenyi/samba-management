@@ -606,36 +606,34 @@ test_login_access_filter() {
 
 test_client_dns_registration() {
     echo ""
-    echo "--- Client DDNS Self-Registration ---"
-    # Clients enable sssd_dyndns_update, so SSSD registers the client's A/PTR in
-    # the DC's AD-integrated zone via GSS-TSIG.  Verify through auth-free `host`
-    # lookups (the client resolves the samba.test zone via the DC), so no admin
-    # credential handling is needed.  DDNS is async on SSSD startup, so nudge it
-    # and poll.
+    echo "--- Client DNS Registration ---"
+    # By default the client's A/PTR are registered in the DC's AD zone by the
+    # explicit, DC-delegated sssd_register_dns mechanism (runs at provision
+    # time).  Verify through auth-free `host` lookups (the client resolves the
+    # samba.test zone via the DC), so no admin credential handling is needed.
+    # A short retry absorbs DNS cache warm-up; if DDNS were used instead the
+    # same lookups would still pass (mechanism-agnostic).
     local chost
     chost=$(ssh_client "hostname -s" 2>/dev/null)
-    run_test "Client sssd.conf has dyndns_update = true" \
-        ssh_client "sudo grep -qx 'dyndns_update = true' /etc/sssd/sssd.conf"
-    ssh_client "sudo systemctl restart sssd" >/dev/null 2>&1 || true
     local i=0 ok=""
-    while [[ $i -lt 24 ]]; do
+    while [[ $i -lt 12 ]]; do
         if ssh_client "host -t A ${chost}.${SMB_TEST_DOMAIN} 2>/dev/null | grep -q '${SMB_TEST_CLIENT_IP}'"; then
             ok=1; break
         fi
         i=$((i + 1)); sleep 5
     done
-    run_test "DC resolves client '${chost}' A record self-registered via DDNS" \
+    run_test "DC resolves client '${chost}' A record registered in AD DNS" \
         test -n "$ok"
-    # PTR is best-effort in the role but the DC's /24 reverse zone exists in the
-    # test topology (client shares the DC subnet), so it should register too.
+    # PTR uses the DC's /24 reverse zone, which exists in the test topology
+    # (client shares the DC subnet) and points back at the client's AD name.
     i=0; ok=""
     while [[ $i -lt 12 ]]; do
-        if ssh_client "host ${SMB_TEST_CLIENT_IP} 2>/dev/null | grep -qi '${chost}'"; then
+        if ssh_client "host ${SMB_TEST_CLIENT_IP} 2>/dev/null | grep -qi '${chost}.${SMB_TEST_DOMAIN}'"; then
             ok=1; break
         fi
         i=$((i + 1)); sleep 5
     done
-    run_test "DC resolves client PTR self-registered via DDNS" \
+    run_test "DC resolves client PTR registered in AD DNS" \
         test -n "$ok"
 }
 

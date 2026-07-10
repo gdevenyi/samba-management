@@ -188,7 +188,7 @@
           - "{{ _deprov_reverse_zone }}"
           - "{{ ansible_facts['default_ipv4'].address.split('.')[3] }}"
           - PTR
-          - "{{ ansible_facts['fqdn'] }}"
+          - "{{ ansible_facts['hostname'] }}.{{ sssd_domain }}"
           - "-U"
           - Administrator
       environment:

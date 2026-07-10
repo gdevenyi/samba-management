@@ -3,6 +3,13 @@
 # SSSD join credentials are inherited from domain_members.yml.
 # Only client-specific overrides go here.
 ---
+# Clients self-register their A/PTR in the DC's AD-integrated DNS zone via SSSD
+# dynamic DNS (GSS-TSIG), so the DC can resolve them by name.  NFS servers keep
+# this off (they register explicitly) and the DC keeps it off (samba-ad-dc owns
+# its records).  Set sssd_dyndns_iface per-host if the AD-facing NIC isn't the
+# default-route interface.
+sssd_dyndns_update: true
+
 # Per-machine login restrictions using a chain-matched anchor group.
 # Uncomment to enable; on first provision each client's anchor group
 # (login-<hostname>) is auto-created on the DC, and if a catchall is

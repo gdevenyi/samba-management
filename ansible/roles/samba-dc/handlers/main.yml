@@ -22,6 +22,12 @@
     state: restarted
   listen: restart chrony
 
+- name: Restart systemd-resolved
+  ansible.builtin.systemd:
+    name: systemd-resolved
+    state: restarted
+  listen: Restart systemd-resolved
+
 - name: Clean Samba runtime files
   ansible.builtin.shell: |
     rm -f /var/run/samba/*.pid /var/run/samba/*.tdb 2>/dev/null || true

@@ -9,7 +9,7 @@
     realm = {{ samba_realm }}
     netbios name = {{ ansible_facts['hostname'] | upper }}
     server role = {{ samba_server_role }}
-    dns forwarder = {{ samba_dns_forwarder }}
+    dns forwarder = {{ samba_dns_forwarders | join(' ') }}
     {# Mirror the interface binding passed to `samba-tool domain provision` #}
     {# (--option=interfaces / bind interfaces only).  Without repeating it  #}
     {# here, this template would silently widen the DC to all interfaces.  #}

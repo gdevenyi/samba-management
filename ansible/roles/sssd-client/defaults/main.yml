@@ -32,6 +32,14 @@ sssd_cache_credentials: true
 # Access provider "ad" respects AD userAccountControl flags (disabled,
 # locked, etc.) and optionally GPO-based access control.
 sssd_access_provider: "ad"
+# SSSD dynamic DNS: when true the host self-registers its A/PTR in the DC's
+# AD-integrated zone via GSS-TSIG.  Off by default (safe for NFS servers, which
+# register explicitly, and any host that shouldn't publish records); enabled for
+# plain clients in group_vars/linux_clients.yml.
+sssd_dyndns_update: false
+# Interface whose address DDNS publishes.  Defaults to the primary (default
+# route) interface; override per-host when the AD-facing NIC isn't the default.
+sssd_dyndns_iface: ""
 
 # --- Login access control (ad_access_filter) ---
 # Restricts which AD users may authenticate, via a per-host "anchor"

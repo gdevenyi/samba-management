@@ -604,6 +604,41 @@ test_login_access_filter() {
         ssh_dc '! sudo samba-tool group show login-delete-probe 2>/dev/null'
 }
 
+test_client_dns_registration() {
+    echo ""
+    echo "--- Client DDNS Self-Registration ---"
+    # Clients enable sssd_dyndns_update, so SSSD registers the client's A/PTR in
+    # the DC's AD-integrated zone via GSS-TSIG.  Verify through auth-free `host`
+    # lookups (the client resolves the samba.test zone via the DC), so no admin
+    # credential handling is needed.  DDNS is async on SSSD startup, so nudge it
+    # and poll.
+    local chost
+    chost=$(ssh_client "hostname -s" 2>/dev/null)
+    run_test "Client sssd.conf has dyndns_update = true" \
+        ssh_client "sudo grep -qx 'dyndns_update = true' /etc/sssd/sssd.conf"
+    ssh_client "sudo systemctl restart sssd" >/dev/null 2>&1 || true
+    local i=0 ok=""
+    while [[ $i -lt 24 ]]; do
+        if ssh_client "host -t A ${chost}.${SMB_TEST_DOMAIN} 2>/dev/null | grep -q '${SMB_TEST_CLIENT_IP}'"; then
+            ok=1; break
+        fi
+        i=$((i + 1)); sleep 5
+    done
+    run_test "DC resolves client '${chost}' A record self-registered via DDNS" \
+        test -n "$ok"
+    # PTR is best-effort in the role but the DC's /24 reverse zone exists in the
+    # test topology (client shares the DC subnet), so it should register too.
+    i=0; ok=""
+    while [[ $i -lt 12 ]]; do
+        if ssh_client "host ${SMB_TEST_CLIENT_IP} 2>/dev/null | grep -qi '${chost}'"; then
+            ok=1; break
+        fi
+        i=$((i + 1)); sleep 5
+    done
+    run_test "DC resolves client PTR self-registered via DDNS" \
+        test -n "$ok"
+}
+
 test_dns_persistence() {
     echo ""
     echo "--- DNS Persistence Across Reboot ---"
@@ -1116,6 +1151,7 @@ main() {
     test_password_policy_set
     test_client_healthcheck
     test_login_access_filter
+    test_client_dns_registration
     # Keep DNS persistence last because it reboots the client; tests
     # that depend on the client running need to have completed by then.
     test_dns_persistence

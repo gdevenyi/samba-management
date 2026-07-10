@@ -64,7 +64,9 @@ samba_realm: "YOURDOMAIN.INTERNAL"
 samba_domain: "YOURDOMAIN"
 samba_netbios: "YOURDOMAIN"
 samba_admin_password: "your-strong-password-here"
-samba_dns_forwarder: "8.8.8.8"   # upstream DNS for non-AD queries
+samba_dns_forwarders:            # upstream DNS for non-AD queries (list, tried in order)
+  - "8.8.8.8"
+  - "8.8.4.4"
 ```
 
 Shares are **not** declared here — after provisioning you create them on the DC
@@ -484,7 +486,7 @@ TEST_DIAG=1 ./test/run-tests.sh
 | `NFS_SERVER` | DC FQDN | Default NFS host baked into autofs entries (set to `samba_nfs_server` when split) |
 | `NFS_HOMES_SERVER` | DC FQDN | Host where `/home/ad/<user>` lives; used by `samba-user.sh` (SSHs there for create/archive when remote) |
 
-DNS forwarder, NTP servers, and TLS settings are Ansible role variables only (`samba_dns_forwarder`, `samba_ntp_servers`, `samba_tls_enabled`) — the `bin/*` scripts don't consume them, so they're not in `samba-mgmt.conf`.
+DNS forwarders, NTP servers, and TLS settings are Ansible role variables only (`samba_dns_forwarders`, `samba_ntp_servers`, `samba_tls_enabled`) — the `bin/*` scripts don't consume them, so they're not in `samba-mgmt.conf`.
 
 ### Ansible Role Variables
 

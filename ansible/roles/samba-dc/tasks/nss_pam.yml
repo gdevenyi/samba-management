@@ -1,12 +1,40 @@
 # Configure PAM session hooks for the DC.
 # NSS configuration (nsswitch.conf) is handled in sssd.yml so it lands
 # before SSSD's group cache is queried by downstream tasks.
+#
+# PAM is managed through pam-auth-update (never by editing /etc/pam.d/common-*
+# directly): a hand-inserted line lands inside pam-auth-update's managed block
+# and corrupts its checksum tracking, after which it detects "local
+# modifications" and refuses to cleanly manage the stack on package upgrades.
+# The stock `mkhomedir` profile (shipped by libpam-modules) emits
+# `session optional pam_mkhomedir.so`; skel=/etc/skel and umask=0022 are the
+# module's built-in defaults, so this is functionally identical to the legacy
+# hand-inserted line.
 ---
-- name: Configure pam_mkhomedir for automatic home creation
+# Upgrade path: remove the line older revisions hand-inserted after
+# pam_unix.so. The regexp is anchored to that line's option string, so it can
+# never match the pam-auth-update-managed line (which carries no options).
+# Removing exactly the injected line restores the managed block to its
+# pristine content, so pam-auth-update's checksum matches again and the
+# --enable below runs cleanly and non-interactively. No-op on fresh installs.
+- name: Remove legacy hand-inserted pam_mkhomedir line
   ansible.builtin.lineinfile:
     path: /etc/pam.d/common-session
-    line: "session optional        pam_mkhomedir.so skel=/etc/skel umask=0022"
-    regexp: '^session\s+.*pam_mkhomedir\.so'
-    insertafter: '^session\s+required\s+pam_unix\.so'
-    state: present
-    backup: true
+    regexp: '^session\s+optional\s+pam_mkhomedir\.so\s+skel=/etc/skel\s+umask=0022\s*$'
+    state: absent
+
+# Check whether pam_mkhomedir is currently active in common-session so
+# changed_when reflects reality rather than masking it as `false`. Runs after
+# the removal task so a just-cleaned file correctly reports "not active".
+- name: Check if pam_mkhomedir is currently active
+  ansible.builtin.command: grep -q pam_mkhomedir /etc/pam.d/common-session
+  register: _pam_mkhomedir_state
+  changed_when: false
+  failed_when: false
+
+# The DC provisions homedirs locally, so pam_mkhomedir is always enabled here
+# (unlike clients, where the sssd-client role toggles it per sssd_homedir_mode).
+- name: Enable pam_mkhomedir via pam-auth-update
+  ansible.builtin.command: pam-auth-update --enable mkhomedir
+  when: _pam_mkhomedir_state.rc != 0
+  changed_when: true

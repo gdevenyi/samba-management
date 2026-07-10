@@ -1062,6 +1062,25 @@ test_sssd_socket_activation() {
     fi
 }
 
+# Verifies the DC's pam_mkhomedir hook is managed by pam-auth-update, not a
+# raw /etc/pam.d edit.  A hand-inserted line lands inside pam-auth-update's
+# managed block and corrupts its checksum tracking, so we assert (a) the
+# mkhomedir line is present, (b) it is NOT the legacy option-laden form
+# (skel=/etc/skel umask=0022) -- its absence proves the line is the stock
+# pam-auth-update-managed one -- and (c) the mkhomedir profile is registered
+# with pam-auth-update via debconf, proving the stack is in a managed state.
+test_dc_pam_mkhomedir() {
+    echo ""
+    echo "--- DC PAM (pam-auth-update managed) ---"
+
+    run_test "dc: pam_mkhomedir active in common-session" \
+        ssh_dc "sudo grep -q pam_mkhomedir /etc/pam.d/common-session"
+    run_test "dc: no legacy hand-inserted pam_mkhomedir line" \
+        ssh_dc "! sudo grep -qE '^session\s+optional\s+pam_mkhomedir\.so\s+skel=/etc/skel\s+umask=0022\s*\$' /etc/pam.d/common-session"
+    run_test "dc: mkhomedir profile registered with pam-auth-update" \
+        ssh_dc "sudo debconf-show libpam-runtime 2>/dev/null | grep -E 'libpam-runtime/profiles:' | grep -q mkhomedir"
+}
+
 # --- Main -------------------------------------------------------------------
 main() {
     # Cleanup runs on every exit path -- successful completion, assertion
@@ -1083,6 +1102,7 @@ main() {
     test_password_policy
     test_client_verification
     test_sssd_socket_activation
+    test_dc_pam_mkhomedir
     test_ssh_keys
     test_sudo_rules
     test_autofs_maps

@@ -141,7 +141,7 @@ _create_user_object() {
 # clear the flag that `user create --must-change-at-next-login` just set --
 # so the caller's --must-change-pw intent has to be re-applied here.
 _set_user_password() {
-    local username="$1" password="$2" must_change="${3:-0}" context="${4:-}"
+    local username="$1" password="$2" must_change="${3:-0}" context="${4:-}" rollback_on_fail="${5:-0}"
     local -a cmd=(samba-tool user setpassword "$username")
     [[ "$must_change" == "1" ]] && cmd+=(--must-change-at-next-login)
     # Capture stderr so the real rejection reason (length, complexity, etc.)
@@ -150,6 +150,19 @@ _set_user_password() {
     local err_out
     if ! err_out=$(printf '%s\n%s\n' "$password" "$password" \
         | "${cmd[@]}" 2>&1 1>/dev/null); then
+        # In cmd_add the AD object already exists but no home dir was
+        # provisioned yet.  _validate_password_against_policy is best-effort
+        # (samba-tool is the final arbiter), so a password can still be
+        # rejected here for a reason the pre-check can't mirror (displayName
+        # tokens, history, etc.).  Roll the object back so we never leave a
+        # half-created user with a random password.
+        if [[ "$rollback_on_fail" == "1" ]]; then
+            if samba-tool user delete "$username" &>/dev/null; then
+                context="user creation rolled back"
+            else
+                log_warn "Failed to roll back '${username}' after password error; delete it manually"
+            fi
+        fi
         log_error "Failed to set password for '${username}'${context:+ ($context)}: ${err_out}"
         exit 1
     fi
@@ -344,7 +357,7 @@ cmd_add() {
     _validate_password_against_policy "$password" "$username" || exit 2
 
     _create_user_object "$username" "$given_name" "$surname" "$email" "$shell" "$must_change_pw"
-    _set_user_password "$username" "$password" "$must_change_pw" "user was created"
+    _set_user_password "$username" "$password" "$must_change_pw" "user was created" 1
     log_info "User '${username}' created successfully"
     _provision_home_dir "$username"
     # `[[ -n "$x" ]] && _helper` trips `set -e` when the test is false, since

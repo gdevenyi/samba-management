@@ -39,6 +39,26 @@
         enabled: false
       failed_when: false
 
+    # Socket-activated responder sockets are enabled by the sssd package and by
+    # the sssd-client role.  If left enabled after sssd.service is stopped and
+    # sssd.conf removed, systemd would re-activate a responder against a
+    # missing config on the next NSS/PAM/etc. lookup -> noise + errors.  Tear
+    # them down alongside the main service.  failed_when:false keeps the
+    # playbook idempotent on partially-provisioned hosts.
+    - name: Stop and disable SSSD responder sockets
+      ansible.builtin.systemd:
+        name: "{{ item }}"
+        state: stopped
+        enabled: false
+      loop:
+        - sssd-nss.socket
+        - sssd-pam.socket
+        - sssd-sudo.socket
+        - sssd-ssh.socket
+        - sssd-autofs.socket
+        - sssd-pac.socket
+      failed_when: false
+
     - name: Remove NFS export files
       ansible.builtin.file:
         path: "{{ item }}"

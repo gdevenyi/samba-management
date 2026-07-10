@@ -79,6 +79,10 @@
     group: root
   notify: Restart sssd
 
+- name: Reload systemd so packaged sssd responder socket units are known
+  ansible.builtin.systemd:
+    daemon_reload: true
+
 - name: Enable and start sssd
   ansible.builtin.systemd:
     name: sssd
@@ -87,6 +91,27 @@
 
 - name: Flush handlers so SSSD picks up the new config before NSS uses it
   ansible.builtin.meta: flush_handlers
+
+# The sssd package enables responder sockets at install time; before this
+# template (no `services` line) is in place they can trip
+# sssd_check_socket_activated_responders and be left "failed".  Clear that
+# residual so the next activation (and the socket-activation test) is clean.
+- name: Reset any failed SSSD responder sockets from the install window
+  ansible.builtin.command: systemctl reset-failed 'sssd-*.socket' # noqa: command-instead-of-module
+  changed_when: false
+  failed_when: false
+
+# Socket activation: enable the two responders the DC needs (see the
+# sssd.conf.j2 note).  `state: started` also recovers a unit from a prior
+# failed state.  The others are left to their package default.
+- name: Enable SSSD nss and pam responder sockets (socket activation)
+  ansible.builtin.systemd:
+    name: "{{ item }}"
+    enabled: true
+    state: started
+  loop:
+    - sssd-nss.socket
+    - sssd-pam.socket
 
 # Deploy the SSSD-using nsswitch.conf NOW, before the resolution-warmup
 # checks below.  Otherwise libnss-winbind (pulled in by samba-ad-dc as a

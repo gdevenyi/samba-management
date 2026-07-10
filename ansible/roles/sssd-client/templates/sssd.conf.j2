@@ -5,7 +5,14 @@
 
 [sssd]
 domains = {{ sssd_domain }}
-services = nss, pam{% if sssd_enable_ssh | bool %}, ssh{% endif %}{% if sssd_enable_sudo | bool %}, sudo{% endif %}{% if sssd_enable_autofs | bool %}, autofs{% endif %}
+{# No `services` line: on systemd hosts SSSD's responders are socket-activated
+   (sssd-<service>.socket units), which is the upstream-recommended model and
+   the default on Ubuntu 24.04+.  Listing a responder here *and* having its
+   socket enabled trips sssd_check_socket_activated_responders (exit-code 17)
+   at boot, so every conflicting socket fails to listen.  Which responder
+   sockets to enable is asserted by the sssd-client role (services.yml); the
+   per-responder config below (sudo_provider / autofs_provider / ssh keys)
+   is read by the responders regardless of how they were started. #}
 
 [domain/{{ sssd_domain }}]
 default_shell = {{ sssd_default_shell }}

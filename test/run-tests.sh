@@ -988,6 +988,70 @@ test_client_healthcheck() {
         _run_client_healthcheck
 }
 
+# Verifies the socket-activation responder model.  Core invariant: sssd.conf
+# has NO `services` line (listing a responder there AND having its socket
+# enabled trips sssd_check_socket_activated_responders -> exit 17 -> the
+# socket fails to listen).  We assert that directly on the config file, plus
+# runtime health: the nss/pam responder sockets are enabled, no sssd socket
+# is currently failed, and sssd.service is active.  (We deliberately do NOT
+# grep the boot journal: `realm join`/package-install transiently conflict
+# before the clean template lands, leaving harmless historical journal lines
+# that don't reflect the final state.  The direct config + current-state
+# checks catch both the regression and any ongoing failure.)  Checked on the
+# client, the DC, and (separate mode) the storage host.
+test_sssd_socket_activation() {
+    echo ""
+    echo "--- SSSD Socket Activation ---"
+
+    # The responder sockets governed by the socket-activation model.  These
+    # are exactly the ones the old `services` line listed, so a regression
+    # (re-adding that line) would conflict-fail these -- catching that is the
+    # point of this check.  `sssd-pac.socket` is deliberately excluded: pac is
+    # driven by `implicit_pac_responder` (never in the services line, so it
+    # can't conflict-fail), and on an NFS server it can be left "failed" after
+    # rpc.svcgssd triggers PAC validation during Kerberos NFS mounts -- a
+    # separate SSSD/Samba PAC-validation concern, not a socket-activation
+    # regression.  pac is still torn down by deprovision-tests.sh.
+    local all_sockets="sssd-nss.socket sssd-pam.socket sssd-sudo.socket sssd-ssh.socket sssd-autofs.socket"
+
+    run_test "client: no 'services' line in /etc/sssd/sssd.conf" \
+        ssh_client "! sudo grep -qE '^[[:space:]]*services[[:space:]]*=' /etc/sssd/sssd.conf"
+    run_test "client: sssd-nss.socket enabled" \
+        ssh_client "systemctl is-enabled --quiet sssd-nss.socket"
+    run_test "client: sssd-pam.socket enabled" \
+        ssh_client "systemctl is-enabled --quiet sssd-pam.socket"
+    run_test "client: no failed sssd responder sockets" \
+        ssh_client "! systemctl is-failed ${all_sockets}"
+    run_test "client: sssd.service active" \
+        ssh_client "systemctl is-active --quiet sssd"
+
+    run_test "dc: no 'services' line in /etc/sssd/sssd.conf" \
+        ssh_dc "! sudo grep -qE '^[[:space:]]*services[[:space:]]*=' /etc/sssd/sssd.conf"
+    run_test "dc: sssd-nss.socket enabled" \
+        ssh_dc "systemctl is-enabled --quiet sssd-nss.socket"
+    run_test "dc: sssd-pam.socket enabled" \
+        ssh_dc "systemctl is-enabled --quiet sssd-pam.socket"
+    run_test "dc: no failed sssd responder sockets" \
+        ssh_dc "! systemctl is-failed ${all_sockets}"
+    run_test "dc: sssd.service active" \
+        ssh_dc "systemctl is-active --quiet sssd"
+
+    # The storage host is an SSSD client too (sssd-client role applied by
+    # provision-nfs-server.yml); the same model must hold there.
+    if [[ "${SMB_TEST_MODE:-colocated}" == "separate" ]]; then
+        run_test "storage: no 'services' line in /etc/sssd/sssd.conf" \
+            ssh_nfs "! sudo grep -qE '^[[:space:]]*services[[:space:]]*=' /etc/sssd/sssd.conf"
+        run_test "storage: sssd-nss.socket enabled" \
+            ssh_nfs "systemctl is-enabled --quiet sssd-nss.socket"
+        run_test "storage: sssd-pam.socket enabled" \
+            ssh_nfs "systemctl is-enabled --quiet sssd-pam.socket"
+        run_test "storage: no failed sssd responder sockets" \
+            ssh_nfs "! systemctl is-failed ${all_sockets}"
+        run_test "storage: sssd.service active" \
+            ssh_nfs "systemctl is-active --quiet sssd"
+    fi
+}
+
 # --- Main -------------------------------------------------------------------
 main() {
     # Cleanup runs on every exit path -- successful completion, assertion
@@ -1008,6 +1072,7 @@ main() {
     test_autofs_kerberos
     test_password_policy
     test_client_verification
+    test_sssd_socket_activation
     test_ssh_keys
     test_sudo_rules
     test_autofs_maps

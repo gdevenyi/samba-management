@@ -11,8 +11,11 @@ samba_domain: "EXAMPLE"
 samba_netbios: "EXAMPLE"
 # Initial Administrator password - CHANGE THIS before provisioning.
 samba_admin_password: "CHANGE_ME_STRONG_PASSWORD"
-# DNS forwarder for queries outside the AD zone (Samba INTERNAL_DNS backend).
-samba_dns_forwarder: "8.8.8.8"
+# DNS forwarders for queries outside the AD zone (Samba INTERNAL_DNS backend).
+# List multiple upstreams for resiliency; Samba tries them in order.
+samba_dns_forwarders:
+  - "8.8.8.8"
+  - "8.8.4.4"
 # TLS is disabled by default; enable only after deploying proper certificates.
 samba_tls_enabled: false
 #

@@ -24,6 +24,66 @@
       failed_when: false
       changed_when: _realm_leave.rc == 0
 
+    # Best-effort removal of the client's A/PTR from Samba DNS.  realm leave
+    # removes the computer object but not the DNS records SSSD dynamic DNS
+    # (sssd_dyndns_update) published, so they'd otherwise linger in the AD zone.
+    # Run unconditionally (not gated on the toggle) so records left by a host
+    # that had DDNS enabled are still cleaned up; delete keys off hostname +
+    # IP, matching what DDNS registers.  failed_when:false because the record
+    # or the DC may already be gone.  Mirrors deprovision-nfs-server.yml.
+    - name: Remove client A record from Samba DNS
+      ansible.builtin.command:
+        argv:
+          - samba-tool
+          - dns
+          - delete
+          - "{{ groups['dc'][0] }}"
+          - "{{ sssd_domain }}"
+          - "{{ ansible_facts['hostname'] }}"
+          - A
+          - "{{ ansible_facts['default_ipv4'].address }}"
+          - "-U"
+          - Administrator
+      environment:
+        PASSWD: "{{ sssd_admin_password }}"
+      delegate_to: "{{ groups['dc'][0] }}"
+      become: true
+      register: _deprov_dns_a
+      failed_when: false
+      # rc==0 means the record existed and was deleted; non-zero (record
+      # already gone, DC unreachable) is tolerated and reported unchanged.
+      changed_when: _deprov_dns_a.rc == 0
+      no_log: true
+
+    - name: Compute client's reverse zone name
+      ansible.builtin.set_fact:
+        _deprov_reverse_zone: >-
+          {%- set o = ansible_facts['default_ipv4'].address.split('.') -%}
+          {{ o[2] }}.{{ o[1] }}.{{ o[0] }}.in-addr.arpa
+
+    - name: Remove client PTR record from Samba DNS
+      ansible.builtin.command:
+        argv:
+          - samba-tool
+          - dns
+          - delete
+          - "{{ groups['dc'][0] }}"
+          - "{{ _deprov_reverse_zone }}"
+          - "{{ ansible_facts['default_ipv4'].address.split('.')[3] }}"
+          - PTR
+          - "{{ ansible_facts['fqdn'] }}"
+          - "-U"
+          - Administrator
+      environment:
+        PASSWD: "{{ sssd_admin_password }}"
+      delegate_to: "{{ groups['dc'][0] }}"
+      become: true
+      register: _deprov_dns_ptr
+      failed_when: false
+      # Same tolerance as the A-record delete above.
+      changed_when: _deprov_dns_ptr.rc == 0
+      no_log: true
+
     - name: Stop and disable autofs
       ansible.builtin.systemd:
         name: autofs

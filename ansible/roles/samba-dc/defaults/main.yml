@@ -11,7 +11,10 @@ samba_admin_password: ""
 
 # --- Samba server configuration ---
 samba_dns_backend: "SAMBA_INTERNAL"
-samba_dns_forwarder: "8.8.8.8"
+# Upstream resolvers for queries outside the AD zone (Samba INTERNAL_DNS
+# backend accepts a space-separated list; Samba tries them in order).
+samba_dns_forwarders:
+  - "8.8.8.8"
 samba_server_role: "dc"
 samba_use_rfc2307: true
 samba_tls_enabled: false

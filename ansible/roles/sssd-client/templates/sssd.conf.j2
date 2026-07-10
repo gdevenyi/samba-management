@@ -31,13 +31,23 @@ access_provider = {{ sssd_access_provider }}
 {# them costs round trips and reveals no extra data on a single-forest    #}
 {# Samba domain.  Explicit is better than relying on provider defaults.   #}
 ldap_referrals = false
-{# Disable DDNS for determinism: SSSD's GSS-TSIG updates do reach the     #}
-{# DC's AD-integrated zone (this works regardless of the site DNS being   #}
-{# unmodifiable), but any A/PTR our stack actually relies on -- the DC's  #}
-{# own PTR, the NFS server's A/PTR for rpc.gssd reverse resolution -- is  #}
-{# registered explicitly during provisioning.  Leaving DDNS on adds       #}
-{# nothing here and just produces background traffic and journald noise.  #}
+{# DDNS: SSSD's GSS-TSIG updates reach the DC's AD-integrated zone         #}
+{# (authenticated by the machine account, independent of the unmodifiable  #}
+{# site DNS).  Plain clients (sssd_dyndns_update = true, set in            #}
+{# group_vars/linux_clients.yml) self-register their A/PTR so the DC can   #}
+{# resolve them by name.  NFS servers keep it off and register explicitly  #}
+{# (they need synchronous, deterministic records for rpc.gssd reverse      #}
+{# resolution and DC->host SSH); the DC keeps it off too (samba-ad-dc      #}
+{# owns its own records).  dyndns_iface is pinned so a multi-homed host    #}
+{# can't publish an address the AD network can't reach.                    #}
+{% if sssd_dyndns_update %}
+dyndns_update = true
+dyndns_iface = {{ sssd_dyndns_iface | default(ansible_facts['default_ipv4']['interface'], true) }}
+dyndns_update_ptr = true
+dyndns_auth = gss-tsig
+{% else %}
 dyndns_update = false
+{% endif %}
 {% if sssd_access_provider == 'ad' %}
 {# permissive mode: log GPO denials but don't enforce them, avoiding #}
 {# lockouts from misconfigured or absent GPOs in a Samba AD domain #}

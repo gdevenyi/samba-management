@@ -64,40 +64,59 @@
             enabled: true
             state: started
 
-- name: Configure DNS resolver
+# Keep systemd-resolved running and forward all queries into Samba's internal
+# DNS (127.0.0.1) via a resolved.conf.d drop-in, rather than clobbering
+# /etc/resolv.conf and disabling resolved.  There is no port conflict: Samba
+# binds 127.0.0.1:53 (interfaces = lo <iface> + bind interfaces only) while
+# resolved's stub listens on 127.0.0.53:53.  Samba is authoritative for the AD
+# zone and forwards everything else to samba_dns_forwarders.
+- name: Configure DNS resolver (forward through systemd-resolved to Samba)
   when: ansible_facts['distribution'] in ['Ubuntu', 'Debian']
   block:
-    - name: Check whether /etc/resolv.conf is a symlink
-      ansible.builtin.stat:
-        path: /etc/resolv.conf
-      register: _resolv_conf_stat
+    # resolved must be running before /run/systemd/resolve/stub-resolv.conf
+    # (the symlink target below) is guaranteed to exist.
+    - name: Ensure systemd-resolved is enabled and running
+      ansible.builtin.systemd:
+        name: systemd-resolved
+        enabled: true
+        state: started
 
-    # Only remove the systemd-resolved stub symlink; once the regular file
-    # below is in place, unconditionally deleting and recreating it on every
-    # run would report spurious changes and leave a window with no
-    # resolv.conf at all.
-    - name: Remove systemd-resolved resolv.conf symlink
+    - name: Ensure systemd-resolved drop-in directory exists
       ansible.builtin.file:
-        path: /etc/resolv.conf
-        state: absent
-      when: _resolv_conf_stat.stat.islnk | default(false)
-
-    - name: Deploy resolv.conf pointing to local Samba DNS
-      ansible.builtin.copy:
-        content: |
-          nameserver 127.0.0.1
-          search {{ samba_realm | lower }}
-        dest: /etc/resolv.conf
-        mode: "0644"
+        path: /etc/systemd/resolved.conf.d
+        state: directory
+        mode: "0755"
         owner: root
         group: root
 
-    - name: Disable systemd-resolved
-      ansible.builtin.systemd:
-        name: systemd-resolved
-        enabled: false
-        state: stopped
-      failed_when: false
+    - name: Route DC DNS through Samba internal DNS
+      ansible.builtin.copy:
+        dest: /etc/systemd/resolved.conf.d/samba-dc.conf
+        mode: "0644"
+        owner: root
+        group: root
+        content: |
+          # Managed by samba-dc role -- do not edit by hand.
+          # The DC resolves through its own Samba internal DNS (127.0.0.1),
+          # which is authoritative for the AD zone and forwards the rest to
+          # samba_dns_forwarders.  "~." forces ALL queries through Samba even
+          # when the link (DHCP) advertises its own resolver.
+          [Resolve]
+          DNS=127.0.0.1
+          Domains={{ samba_realm | lower }} ~.
+          DNSStubListener=yes
+      notify: Restart systemd-resolved
+
+    # Migration for DCs provisioned by the old code path, where /etc/resolv.conf
+    # is a static regular file (nameserver 127.0.0.1) rather than the resolved
+    # stub symlink.  state:link is idempotent once it already points at the
+    # stub, so steady-state re-runs report no change.
+    - name: Point /etc/resolv.conf back at the systemd-resolved stub
+      ansible.builtin.file:
+        src: /run/systemd/resolve/stub-resolv.conf
+        dest: /etc/resolv.conf
+        state: link
+        force: true
 
 - name: Flush handlers before service start
   ansible.builtin.meta: flush_handlers

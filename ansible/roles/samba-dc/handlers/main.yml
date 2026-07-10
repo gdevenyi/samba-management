@@ -22,11 +22,6 @@
     state: restarted
   listen: restart chrony
 
-- name: Reload resolv
-  ansible.builtin.shell: resolvconf -u || true
-  changed_when: true
-  listen: reload resolv
-
 - name: Clean Samba runtime files
   ansible.builtin.shell: |
     rm -f /var/run/samba/*.pid /var/run/samba/*.tdb 2>/dev/null || true
@@ -35,9 +30,3 @@
     executable: /bin/bash
   changed_when: true
   listen: Clean Samba runtime files
-
-- name: Restart nfs-server
-  ansible.builtin.systemd:
-    name: nfs-server
-    state: restarted
-  listen: Restart nfs-server

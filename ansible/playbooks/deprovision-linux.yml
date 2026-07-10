@@ -15,11 +15,14 @@
           - sssd_domain is defined
         fail_msg: "sssd_domain must be defined"
 
-    # realm leave removes the computer object from AD and cleans up local config.
+    # realm leave removes the computer object from AD and cleans up local
+    # config.  rc==0 means the host actually left; a non-zero rc (already
+    # unjoined, DC unreachable) is tolerated and reported as no change.
     - name: Leave the domain
       ansible.builtin.command: "realm leave {{ sssd_domain }}"
+      register: _realm_leave
       failed_when: false
-      changed_when: false
+      changed_when: _realm_leave.rc == 0
 
     - name: Stop and disable autofs
       ansible.builtin.systemd:
@@ -83,11 +86,15 @@
       ansible.builtin.file:
         path: /etc/systemd/resolved.conf.d/samba-ad.conf
         state: absent
+      register: _deprov_dns_dropin
 
-    - name: Restart systemd-resolved to drop the AD DNS routing
+    # Only when the drop-in was actually removed -- an already-clean host
+    # (re-run) doesn't need its resolver bounced.
+    - name: Restart systemd-resolved to drop the AD DNS routing # noqa: no-handler
       ansible.builtin.systemd:
         name: systemd-resolved
         state: restarted
+      when: _deprov_dns_dropin is changed
       failed_when: false
 
     # sshd would otherwise keep invoking sss_ssh_authorizedkeys against a

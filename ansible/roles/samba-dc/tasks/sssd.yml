@@ -70,13 +70,19 @@
           rdns = false
   notify: Restart sssd
 
+# Group/mode must match what the SSSD service itself converges the file to
+# (root:sssd 0640 where the daemon runs unprivileged, root:root 0600 where
+# it runs as root) -- see the shared task file for the full rationale.
+- name: Compute converged sssd.conf ownership
+  ansible.builtin.include_tasks: "{{ role_path }}/../common/tasks/sssd-conf-attrs.yml"
+
 - name: Deploy SSSD configuration for the DC
   ansible.builtin.template:
     src: sssd.conf.j2
     dest: /etc/sssd/sssd.conf
-    mode: "0600"
+    mode: "{{ _common_sssd_conf_mode }}"
     owner: root
-    group: root
+    group: "{{ _common_sssd_conf_group }}"
   notify: Restart sssd
 
 - name: Reload systemd so packaged sssd responder socket units are known

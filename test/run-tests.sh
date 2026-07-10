@@ -1020,6 +1020,12 @@ test_sssd_socket_activation() {
         ssh_client "systemctl is-enabled --quiet sssd-nss.socket"
     run_test "client: sssd-pam.socket enabled" \
         ssh_client "systemctl is-enabled --quiet sssd-pam.socket"
+    # Enabled is persistent config; also assert the sockets are actively
+    # listening -- a socket left enabled-but-dead (e.g. a regression dropping
+    # `state: started` from the role) would silently break NSS/PAM yet still
+    # pass the is-enabled checks above.
+    run_test "client: sssd-nss/pam sockets active (listening)" \
+        ssh_client "systemctl is-active --quiet sssd-nss.socket && systemctl is-active --quiet sssd-pam.socket"
     run_test "client: no failed sssd responder sockets" \
         ssh_client "! systemctl is-failed ${all_sockets}"
     run_test "client: sssd.service active" \
@@ -1031,6 +1037,8 @@ test_sssd_socket_activation() {
         ssh_dc "systemctl is-enabled --quiet sssd-nss.socket"
     run_test "dc: sssd-pam.socket enabled" \
         ssh_dc "systemctl is-enabled --quiet sssd-pam.socket"
+    run_test "dc: sssd-nss/pam sockets active (listening)" \
+        ssh_dc "systemctl is-active --quiet sssd-nss.socket && systemctl is-active --quiet sssd-pam.socket"
     run_test "dc: no failed sssd responder sockets" \
         ssh_dc "! systemctl is-failed ${all_sockets}"
     run_test "dc: sssd.service active" \
@@ -1045,6 +1053,8 @@ test_sssd_socket_activation() {
             ssh_nfs "systemctl is-enabled --quiet sssd-nss.socket"
         run_test "storage: sssd-pam.socket enabled" \
             ssh_nfs "systemctl is-enabled --quiet sssd-pam.socket"
+        run_test "storage: sssd-nss/pam sockets active (listening)" \
+            ssh_nfs "systemctl is-active --quiet sssd-nss.socket && systemctl is-active --quiet sssd-pam.socket"
         run_test "storage: no failed sssd responder sockets" \
             ssh_nfs "! systemctl is-failed ${all_sockets}"
         run_test "storage: sssd.service active" \

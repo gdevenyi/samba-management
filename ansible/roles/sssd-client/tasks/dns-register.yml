@@ -1,0 +1,123 @@
+# dns-register.yml - Register this host's A and PTR records in the Samba DC's
+# AD-integrated DNS zone, delegated to the DC (no client-side Kerberos).
+#
+# `realm join` via SSSD/adcli creates the AD computer object but does NOT
+# register a DNS A record (that is a Windows-specific behaviour of the MS join
+# client).  Without an A record the DC can't resolve the host by name (e.g. to
+# `ssh` to a storage host for home-directory management), and clients can't
+# mount autofs entries that reference a host by short name.
+#
+# This is the default registration mechanism (sssd_register_dns).  It runs the
+# `samba-tool dns` calls ON THE DC (delegate_to) using the Administrator
+# credential, so unlike SSSD dynamic DNS (sssd_dyndns_update) it needs no
+# GSS-TSIG update from the host -- which is essential on split-identity sites
+# where the DC's network name lives outside the AD realm and the client's
+# GSS-TSIG DNS update fails ("Server not found in Kerberos database").  The
+# PTR value is the host's AD name (hostname + sssd_domain), never its (possibly
+# foreign) DNS FQDN, so it stays consistent with the forward record.
+#
+# Idempotent: `samba-tool dns query` succeeds when the record exists and
+# returns non-zero (with "Record does not exist") when it doesn't.
+---
+# `samba-tool dns query/add` defaults to interactive Kerberos auth -- on the
+# DC running as root we don't have a TGT, so without -U Administrator + the
+# PASSWD env var the command sits waiting for a password forever.  Same
+# pattern as the reverse-DNS tasks in the samba-dc role.
+- name: Check if this host's A record already exists in Samba DNS
+  ansible.builtin.command:
+    argv:
+      - samba-tool
+      - dns
+      - query
+      - "{{ groups['dc'][0] }}"
+      - "{{ sssd_domain }}"
+      - "{{ ansible_facts['hostname'] }}"
+      - A
+      - "-U"
+      - Administrator
+  environment:
+    PASSWD: "{{ sssd_admin_password }}"
+  register: _sssd_dns_check
+  changed_when: false
+  failed_when: false
+  delegate_to: "{{ groups['dc'][0] }}"
+  become: true
+  no_log: true
+
+- name: Register this host's A record in Samba DNS
+  ansible.builtin.command:
+    argv:
+      - samba-tool
+      - dns
+      - add
+      - "{{ groups['dc'][0] }}"
+      - "{{ sssd_domain }}"
+      - "{{ ansible_facts['hostname'] }}"
+      - A
+      - "{{ ansible_facts['default_ipv4'].address }}"
+      - "-U"
+      - Administrator
+  environment:
+    PASSWD: "{{ sssd_admin_password }}"
+  delegate_to: "{{ groups['dc'][0] }}"
+  become: true
+  when: _sssd_dns_check.rc != 0
+  changed_when: true
+  no_log: true
+
+# PTR record uses the reverse zone the samba-dc role created
+# (<third>.<second>.<first>.in-addr.arpa for the DC's /24).
+- name: Compute this host's reverse-zone components
+  ansible.builtin.set_fact:
+    _sssd_rev_octets: "{{ ansible_facts['default_ipv4'].address.split('.') }}"
+
+- name: Compute this host's reverse zone name
+  ansible.builtin.set_fact:
+    _sssd_reverse_zone: "{{ _sssd_rev_octets[2] }}.{{ _sssd_rev_octets[1] }}.{{ _sssd_rev_octets[0] }}.in-addr.arpa"
+
+- name: Check if this host's PTR record already exists in Samba DNS
+  ansible.builtin.command:
+    argv:
+      - samba-tool
+      - dns
+      - query
+      - "{{ groups['dc'][0] }}"
+      - "{{ _sssd_reverse_zone }}"
+      - "{{ _sssd_rev_octets[3] }}"
+      - PTR
+      - "-U"
+      - Administrator
+  environment:
+    PASSWD: "{{ sssd_admin_password }}"
+  register: _sssd_ptr_check
+  changed_when: false
+  failed_when: false
+  delegate_to: "{{ groups['dc'][0] }}"
+  become: true
+  no_log: true
+
+# Best-effort: a host on a subnet whose reverse zone the DC does not host
+# (e.g. an off-subnet client) simply can't get a PTR -- tolerate that rather
+# than failing the play.  The forward A record above is the one we depend on.
+- name: Register this host's PTR record in Samba DNS
+  ansible.builtin.command:
+    argv:
+      - samba-tool
+      - dns
+      - add
+      - "{{ groups['dc'][0] }}"
+      - "{{ _sssd_reverse_zone }}"
+      - "{{ _sssd_rev_octets[3] }}"
+      - PTR
+      - "{{ ansible_facts['hostname'] }}.{{ sssd_domain }}"
+      - "-U"
+      - Administrator
+  environment:
+    PASSWD: "{{ sssd_admin_password }}"
+  delegate_to: "{{ groups['dc'][0] }}"
+  become: true
+  register: _sssd_ptr_add
+  when: _sssd_ptr_check.rc != 0
+  failed_when: false
+  changed_when: _sssd_ptr_add.rc == 0
+  no_log: true

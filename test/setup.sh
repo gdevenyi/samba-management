@@ -382,16 +382,14 @@ healthcheck_dc_hostname: "dc01"
 ${members_extra}
 EOF
 
-    # Linux clients group_vars: enable ad_access_filter so the test
-    # suite can exercise per-machine login restrictions (see AGENTS.md >
-    # "Login Access Control"), and enable SSSD dynamic DNS so the client
-    # self-registers its A/PTR in the DC's AD zone (matches the production
-    # default in inventory/group_vars/linux_clients.yml; exercised by
-    # test_client_dns_registration).
+    # Linux clients group_vars: enable ad_access_filter so the test suite can
+    # exercise per-machine login restrictions (see AGENTS.md > "Login Access
+    # Control").  Client A/PTR registration uses the default explicit,
+    # DC-delegated mechanism (sssd_register_dns); exercised by
+    # test_client_dns_registration.
     cat > "${SCRIPT_DIR}/group_vars/linux_clients.yml" <<EOF
 sssd_login_anchor_group: "login-{{ ansible_facts['hostname'] }}"
 sssd_login_anchor_catchall: "login-all"
-sssd_dyndns_update: true
 EOF
 
     # NFS servers group_vars (separate mode only)

@@ -67,10 +67,20 @@
 - name: Configure DNS resolver
   when: ansible_facts['distribution'] in ['Ubuntu', 'Debian']
   block:
+    - name: Check whether /etc/resolv.conf is a symlink
+      ansible.builtin.stat:
+        path: /etc/resolv.conf
+      register: _resolv_conf_stat
+
+    # Only remove the systemd-resolved stub symlink; once the regular file
+    # below is in place, unconditionally deleting and recreating it on every
+    # run would report spurious changes and leave a window with no
+    # resolv.conf at all.
     - name: Remove systemd-resolved resolv.conf symlink
       ansible.builtin.file:
         path: /etc/resolv.conf
         state: absent
+      when: _resolv_conf_stat.stat.islnk | default(false)
 
     - name: Deploy resolv.conf pointing to local Samba DNS
       ansible.builtin.copy:

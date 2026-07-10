@@ -1,0 +1,23 @@
+# sssd-conf-attrs.yml - Compute the converged ownership/mode for sssd.conf.
+#
+# Ubuntu 26.04 ships SSSD 2.12, which runs the daemon as the unprivileged
+# `sssd` user (User=sssd in sssd.service) and re-owns /etc/sssd/sssd.conf to
+# root:sssd 0640 at service start.  Deploying the template as root:root 0600
+# on such hosts flips the attributes back on every Ansible run -- a spurious
+# change plus a needless SSSD restart, never converging.  Older releases
+# (Ubuntu 22.04/24.04, Debian 12; SSSD <= 2.9) run the daemon as root and
+# leave the file alone, so root:root 0600 is the converged state there.
+# Key off the service unit's User= -- the same signal that determines which
+# state SSSD's own startup will enforce.  The sssd package must already be
+# installed when this runs (the unit file has to exist).
+---
+- name: Detect the user the sssd service runs as
+  ansible.builtin.command: systemctl show sssd.service -p User --value # noqa: command-instead-of-module
+  register: _common_sssd_unit_user
+  changed_when: false
+  failed_when: false
+
+- name: Set sssd.conf ownership facts
+  ansible.builtin.set_fact:
+    _common_sssd_conf_group: "{{ 'sssd' if (_common_sssd_unit_user.stdout | default('') | trim) == 'sssd' else 'root' }}"
+    _common_sssd_conf_mode: "{{ '0640' if (_common_sssd_unit_user.stdout | default('') | trim) == 'sssd' else '0600' }}"

@@ -93,17 +93,33 @@
       ansible.builtin.file:
         path: /etc/systemd/resolved.conf.d/samba-ad.conf
         state: absent
+      register: _deprov_dns_dropin
 
-    - name: Restart systemd-resolved to drop the AD DNS routing
+    # Only when the drop-in was actually removed -- an already-clean host
+    # (re-run) doesn't need its resolver bounced.
+    - name: Restart systemd-resolved to drop the AD DNS routing # noqa: no-handler
       ansible.builtin.systemd:
         name: systemd-resolved
         state: restarted
+      when: _deprov_dns_dropin is changed
       failed_when: false
 
+    # sshd would otherwise keep invoking sss_ssh_authorizedkeys against a
+    # stopped SSSD on every login attempt.
     - name: Remove sshd SSSD AuthorizedKeysCommand snippet
       ansible.builtin.file:
         path: /etc/ssh/sshd_config.d/sssd.conf
         state: absent
+      register: _deprov_sshd_snippet
+
+    # Not a handler on purpose: deprovision is a linear one-shot teardown
+    # and the restart must happen even if later tasks fail.
+    - name: Restart sshd after removing SSSD snippet # noqa: no-handler
+      ansible.builtin.systemd:
+        name: ssh
+        state: restarted
+      when: _deprov_sshd_snippet is changed
+      failed_when: false
 
     - name: Remove SSSD sudoers nsswitch routing
       ansible.builtin.lineinfile:
@@ -121,10 +137,13 @@
         state: absent
       failed_when: false
 
+    # rc==0 means the host actually left; a non-zero rc (already unjoined,
+    # DC unreachable) is tolerated and reported as no change.
     - name: Leave the domain
       ansible.builtin.command: "realm leave {{ sssd_domain }}"
+      register: _realm_leave
       failed_when: false
-      changed_when: false
+      changed_when: _realm_leave.rc == 0
 
     # Best-effort cleanup of DC-side records for this host: DNS A/PTR and
     # the nfs/<fqdn> SPN.  failed_when: false because the DC may itself be
@@ -146,8 +165,11 @@
         PASSWD: "{{ sssd_admin_password }}"
       delegate_to: "{{ groups['dc'][0] }}"
       become: true
+      register: _deprov_dns_a
       failed_when: false
-      changed_when: true
+      # rc==0 means the record existed and was deleted; non-zero (record
+      # already gone, DC unreachable) is tolerated and reported unchanged.
+      changed_when: _deprov_dns_a.rc == 0
       no_log: true
 
     - name: Compute storage host's reverse zone name
@@ -173,6 +195,8 @@
         PASSWD: "{{ sssd_admin_password }}"
       delegate_to: "{{ groups['dc'][0] }}"
       become: true
+      register: _deprov_dns_ptr
       failed_when: false
-      changed_when: true
+      # Same tolerance as the A-record delete above.
+      changed_when: _deprov_dns_ptr.rc == 0
       no_log: true

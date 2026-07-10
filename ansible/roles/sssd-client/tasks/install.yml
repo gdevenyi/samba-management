@@ -111,8 +111,25 @@
       [Resolve]
       DNS={{ _sssd_dc_ip }}
       Domains={{ sssd_domain }} ~{{ _sssd_dc_reverse_zone }}
+  register: _sssd_dns_dropin
   notify: Reload systemd-resolved
 
+# Probe whether AD DNS routing is already live in the running resolver, so
+# the immediate-effect override below only runs when something actually
+# needs fixing.  On re-runs the persistent drop-in (picked up when the
+# notified handler restarted systemd-resolved on the run that wrote it)
+# already answers this query, keeping the play idempotent.
+- name: Check whether the AD domain currently resolves
+  ansible.builtin.command: "resolvectl query --type=SRV _ldap._tcp.{{ sssd_domain }}"
+  register: _sssd_ad_dns_check
+  changed_when: false
+  failed_when: false
+
+# Apply the routing to the running stub-resolver without waiting for the
+# handler (which only fires at the next flush point -- too late for realm
+# discover/join below).  Runs when the drop-in just changed (first run or
+# config drift) or the AD zone doesn't resolve (e.g. an earlier run wrote
+# the drop-in but died before systemd-resolved restarted).
 - name: Set DNS server to DC for domain resolution (immediate effect)
   ansible.builtin.shell: >-
     resolvectl dns {{ ansible_facts['default_ipv4']['interface'] }} {{ _sssd_dc_ip }}
@@ -120,3 +137,4 @@
   args:
     executable: /bin/bash
   changed_when: true
+  when: (_sssd_dns_dropin is changed) or (_sssd_ad_dns_check.rc != 0)

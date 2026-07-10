@@ -59,11 +59,13 @@ For integration testing, see `test/` below.
 ```bash
 ./test/setup.sh              # Download image, create VMs, wait for SSH
 TEST_MODE=separate ./test/setup.sh       # Same, with a separate storage VM
-                          ./test/provision.sh   # Run Ansible playbooks against the VMs
+                          ./test/provision.sh   # Run Ansible playbooks against the VMs (incl. idempotence second pass)
                           ./test/run-tests.sh   # Exercise bin/* scripts, verify client resolution
                           ./test/deprovision-tests.sh  # Exercise the deprovision playbooks + assert teardown (run BEFORE teardown.sh)
 ./test/teardown.sh    # Destroy VMs, clean up
 ```
+
+**Playbook idempotence is enforced by `provision.sh`**: after the initial provisioning it re-runs every provisioning playbook and fails unless the second pass reports `changed=0` for every host. A task that fires on every run must either be gated on a real state check (query-then-fix, `creates:`, stat + `when:`) or have an accurate `changed_when:`; never paper over it with `changed_when: false` on a task that does change the system.
 
 The full single-combo pipeline is `setup → provision → run-tests → deprovision-tests → teardown`. `deprovision-tests.sh` runs the deprovision playbooks against the live VMs and asserts each host was torn down, so it must run **before** `teardown.sh` (it leaves hosts domain-unjoined). To run the whole pipeline across both modes (`colocated`, `separate`) and all supported Ubuntu variants, use the matrix driver:
 

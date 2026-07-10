@@ -17,8 +17,8 @@
 - name: Set autofs DN facts
   ansible.builtin.set_fact:
     _autofs_base_dn: "OU=automount,{{ _autofs_domain_dn }}"
-    _autofs_nfs_server: "{{ samba_nfs_server if samba_nfs_server else ansible_fqdn }}"
-    _autofs_homes_nfs_server: "{{ samba_nfs_homes_server if samba_nfs_homes_server else (samba_nfs_server if samba_nfs_server else ansible_fqdn) }}"
+    _autofs_nfs_server: "{{ samba_nfs_server if samba_nfs_server else ansible_facts['fqdn'] }}"
+    _autofs_homes_nfs_server: "{{ samba_nfs_homes_server if samba_nfs_homes_server else (samba_nfs_server if samba_nfs_server else ansible_facts['fqdn']) }}"
 
 - name: Set autofs homes target fact
   ansible.builtin.set_fact:

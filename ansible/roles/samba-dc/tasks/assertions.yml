@@ -3,19 +3,19 @@
 - name: Validate supported operating system
   ansible.builtin.assert:
     that:
-      - ansible_distribution in ['Ubuntu', 'Debian']
+      - ansible_facts['distribution'] in ['Ubuntu', 'Debian']
       - >-
-        (ansible_distribution == 'Ubuntu' and ansible_distribution_version in ['22.04', '24.04', '26.04']) or
-        (ansible_distribution == 'Debian' and ansible_distribution_major_version == '12')
+        (ansible_facts['distribution'] == 'Ubuntu' and ansible_facts['distribution_version'] in ['22.04', '24.04', '26.04']) or
+        (ansible_facts['distribution'] == 'Debian' and ansible_facts['distribution_major_version'] == '12')
     fail_msg: >-
-      Only Ubuntu 22.04/24.04/26.04 and Debian 12 are supported. Current: {{ ansible_distribution }} {{ ansible_distribution_version }}
-    success_msg: 'OS {{ ansible_distribution }} {{ ansible_distribution_version }} is supported'
+      Only Ubuntu 22.04/24.04/26.04 and Debian 12 are supported. Current: {{ ansible_facts['distribution'] }} {{ ansible_facts['distribution_version'] }}
+    success_msg: "OS {{ ansible_facts['distribution'] }} {{ ansible_facts['distribution_version'] }} is supported"
 
 - name: Validate hostname length and reserved names
   ansible.builtin.assert:
     that:
-      - ansible_hostname | length <= 15
-      - ansible_hostname | lower not in ['pdc', 'bdc']
+      - ansible_facts['hostname'] | length <= 15
+      - ansible_facts['hostname'] | lower not in ['pdc', 'bdc']
     fail_msg: "Hostname must be <= 15 chars and not use NT4 reserved names (PDC, BDC)"
 
 - name: Validate required variables
@@ -27,7 +27,7 @@
     fail_msg: "samba_realm, samba_domain, and samba_admin_password are required"
 
 - name: Check /etc/hosts resolves FQDN to LAN IP
-  ansible.builtin.command: "getent hosts {{ ansible_fqdn }}"
+  ansible.builtin.command: "getent hosts {{ ansible_facts['fqdn'] }}"
   register: hosts_check
   changed_when: false
   failed_when: "'127.0.0.1' in hosts_check.stdout"

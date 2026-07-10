@@ -64,7 +64,7 @@
   ansible.builtin.set_fact:
     _sssd_dc_ip: >-
       {{ sssd_dc_ip
-         | default(hostvars[groups['dc'][0]].ansible_default_ipv4.address
+         | default(hostvars[groups['dc'][0]].ansible_facts['default_ipv4'].address
          | default(hostvars[groups['dc'][0]].ansible_host
          | default(groups['dc'][0]))) }}
 

@@ -40,7 +40,7 @@ sssd_access_provider: "ad"
 # changes when new class groups are added on the DC.
 #
 # Recommended (set in group_vars/linux_clients.yml):
-#     sssd_login_anchor_group: "login-{{ ansible_hostname }}"
+#     sssd_login_anchor_group: "login-{{ ansible_facts['hostname'] }}"
 #     sssd_login_anchor_catchall: "login-all"
 #
 # Then on the DC, to grant a class of users access to a class of

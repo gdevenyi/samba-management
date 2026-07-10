@@ -32,12 +32,12 @@
       - domain
       - exportkeytab
       - /etc/krb5.keytab
-      - "--principal={{ ansible_hostname }}$"
+      - "--principal={{ ansible_facts['hostname'] }}$"
   # Case-insensitive: klist may render the machine principal in the
-  # account's stored case (DC01$@REALM) while ansible_hostname is lowercase,
+  # account's stored case (DC01$@REALM) while ansible_facts['hostname'] is lowercase,
   # which would make a case-sensitive check re-export on every run and
   # accumulate duplicate keytab entries.
-  when: (ansible_hostname | upper) + '$@' not in (_samba_keytab_check.stdout | upper)
+  when: (ansible_facts['hostname'] | upper) + '$@' not in (_samba_keytab_check.stdout | upper)
   changed_when: true
 
 # SSSD's GSSAPI bind to LDAP fails on hosts whose reverse DNS points at a

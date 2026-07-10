@@ -17,7 +17,7 @@
   ansible.builtin.command:
     cmd: >-
       samba-tool group add "{{ sssd_login_anchor_group }}"
-      --description="Login anchor for {{ ansible_hostname }} (managed by Ansible)"
+      --description="Login anchor for {{ ansible_facts['hostname'] }} (managed by Ansible)"
   delegate_to: "{{ groups['dc'][0] }}"
   become: true
   when: _anchor_show.rc != 0

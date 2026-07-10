@@ -34,7 +34,7 @@ ad_domain = {{ samba_realm | lower }}
 {# Kerberos principal names are case-sensitive.  Upper-casing it here makes #}
 {# SSSD's GSSAPI bind request a principal that isn't in the keytab, so the #}
 {# bind fails and the domain goes offline. #}
-ldap_sasl_authid = {{ ansible_hostname | lower }}$@{{ samba_realm | upper }}
+ldap_sasl_authid = {{ ansible_facts['hostname'] | lower }}$@{{ samba_realm | upper }}
 {# Use bare usernames so NFSv4 idmap (perm_writer@samba.test) resolves to #}
 {# the correct local UID.  With prefix names (SAMBA\perm_writer) the NFS #}
 {# idmap upcall fails and the user is mapped to nobody. #}

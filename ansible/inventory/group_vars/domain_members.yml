@@ -19,6 +19,6 @@ sssd_dc_hostname: "dc01"
 # when BOTH: the inventory lists the DC by FQDN (not a bare IP) AND the run
 # doesn't gather the DC's facts -- e.g. a client-only `provision-linux-sssd.yml`
 # limited to the clients.  When unset, the sssd-client role falls back to the
-# DC's gathered ansible_default_ipv4, then its ansible_host, then the raw
+# DC's gathered ansible_facts['default_ipv4'], then its ansible_host, then the raw
 # inventory name.  Uncomment and set for FQDN-inventory, client-only runs.
 # sssd_dc_ip: "10.0.0.1"

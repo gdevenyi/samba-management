@@ -19,11 +19,11 @@
 - name: Assert the hostname fits the 15-character NetBIOS limit
   ansible.builtin.assert:
     that:
-      - ansible_hostname | length <= 15
+      - ansible_facts['hostname'] | length <= 15
     fail_msg: >-
-      Hostname '{{ ansible_hostname }}' is {{ ansible_hostname | length }}
+      Hostname '{{ ansible_facts['hostname'] }}' is {{ ansible_facts['hostname'] | length }}
       characters; AD/NetBIOS machine-account names are capped at 15 and a
       longer name is truncated at join time, breaking rpc.gssd machine
       credentials and NFSv4 sec=krb5p mounts.  Rename this host to <=15
       characters (system hostname, /etc/hosts, and inventory) and re-provision.
-    success_msg: "Hostname '{{ ansible_hostname }}' is within the 15-character NetBIOS limit"
+    success_msg: "Hostname '{{ ansible_facts['hostname'] }}' is within the 15-character NetBIOS limit"

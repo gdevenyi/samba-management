@@ -19,11 +19,11 @@
 - name: Provision NFS keytab if missing
   when: >-
     _nfs_keytab_check.rc != 0 or
-    ('nfs/' + ansible_fqdn) | upper not in _nfs_keytab_check.stdout | upper
+    ('nfs/' + ansible_facts['fqdn']) | upper not in _nfs_keytab_check.stdout | upper
   block:
     - name: Register nfs/<fqdn> SPN on the storage host's machine account
       ansible.builtin.command: >-
-        samba-tool spn add nfs/{{ ansible_fqdn }} {{ ansible_hostname }}$
+        samba-tool spn add nfs/{{ ansible_facts['fqdn'] }} {{ ansible_facts['hostname'] }}$
       delegate_to: "{{ groups['dc'][0] }}"
       become: true
       register: _nfs_spn_add
@@ -62,7 +62,7 @@
     - name: Export NFS key from DC
       ansible.builtin.command: >-
         samba-tool domain exportkeytab {{ _nfs_keytab_dc.path }}
-        --principal=nfs/{{ ansible_fqdn }}
+        --principal=nfs/{{ ansible_facts['fqdn'] }}
       delegate_to: "{{ groups['dc'][0] }}"
       become: true
       changed_when: true

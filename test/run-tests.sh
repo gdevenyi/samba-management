@@ -29,7 +29,7 @@ NC='\033[0m'
 
 # --- Test data --------------------------------------------------------------
 # Centralised so setup, exercise, and cleanup all reference the same names.
-TEST_USERS=(testuser1 testuser2 homeuser1 homeuser2 perm_reader perm_writer perm_both perm_outsider login_allowed login_denied edgeuser archiveuser dryuser)
+TEST_USERS=(testuser1 testuser2 homeuser1 homeuser2 perm_reader perm_writer perm_both perm_outsider login_allowed login_denied edgeuser archiveuser dryuser shortpwuser)
 TEST_GROUPS=(TestGroupNested GidGroup EdgeGroup TestGroup ShareReaders ShareWriters computenode-login login-delete-probe)
 TEST_SHARES=(perm_rw_share perm_admin_share public edgeshare pathshare dryshare)
 TEST_SUDO_RULES=(admin-all users-nopasswd edge-rule edge-rule2)
@@ -706,6 +706,8 @@ test_user_edge_cases() {
         ssh_dc "! sudo samba-user.sh add edgeuser --password=EdgePass123456 --force"
     run_test "Create with nonexistent --group exits 3, user not created" \
         ssh_dc "sudo samba-user.sh add edgeuser2 --group=NoSuchGroup --password=EdgePass123456 --force >/dev/null 2>&1; test \$? -eq 3 && ! sudo samba-tool user show edgeuser2 >/dev/null 2>&1"
+    run_test "Reject too-short password (exit 2, user not created)" \
+        ssh_dc "sudo samba-user.sh add shortpwuser --password=Short1 --force >/dev/null 2>&1; test \$? -eq 2 && ! sudo samba-tool user show shortpwuser >/dev/null 2>&1"
     run_test "Show of nonexistent user exits 3" \
         ssh_dc "sudo samba-user.sh show nosuchuser123 >/dev/null 2>&1; test \$? -eq 3"
     run_test "modify with no attributes exits 2" \

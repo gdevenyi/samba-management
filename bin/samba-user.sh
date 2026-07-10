@@ -141,14 +141,73 @@ _create_user_object() {
 # clear the flag that `user create --must-change-at-next-login` just set --
 # so the caller's --must-change-pw intent has to be re-applied here.
 _set_user_password() {
-    local username="$1" password="$2" must_change="${3:-0}"
+    local username="$1" password="$2" must_change="${3:-0}" context="${4:-}" rollback_on_fail="${5:-0}"
     local -a cmd=(samba-tool user setpassword "$username")
     [[ "$must_change" == "1" ]] && cmd+=(--must-change-at-next-login)
-    if ! printf '%s\n%s\n' "$password" "$password" \
-        | "${cmd[@]}" &>/dev/null; then
-        log_error "Failed to set password for '${username}' (user was created)"
+    # Capture stderr so the real rejection reason (length, complexity, etc.)
+    # is surfaced instead of being masked.  The password is piped via stdin
+    # and never appears in stdout/stderr, so there is no leak risk.
+    local err_out
+    if ! err_out=$(printf '%s\n%s\n' "$password" "$password" \
+        | "${cmd[@]}" 2>&1 1>/dev/null); then
+        # In cmd_add the AD object already exists but no home dir was
+        # provisioned yet.  _validate_password_against_policy is best-effort
+        # (samba-tool is the final arbiter), so a password can still be
+        # rejected here for a reason the pre-check can't mirror (displayName
+        # tokens, history, etc.).  Roll the object back so we never leave a
+        # half-created user with a random password.
+        if [[ "$rollback_on_fail" == "1" ]]; then
+            if samba-tool user delete "$username" &>/dev/null; then
+                context="user creation rolled back"
+            else
+                log_warn "Failed to roll back '${username}' after password error; delete it manually"
+            fi
+        fi
+        log_error "Failed to set password for '${username}'${context:+ ($context)}: ${err_out}"
         exit 1
     fi
+}
+
+# Pre-validate a password against the live domain password policy so a
+# non-compliant password is rejected BEFORE the AD account is created (in
+# cmd_add).  samba-tool is still the final arbiter — this is a best-effort
+# fast-fail that prevents half-created users (account exists, no home dir,
+# random password).  Returns 0 (pass) or 1 (fail, with a logged error).
+# If the policy can't be read (e.g. samba-ad-dc down), returns 0 so we
+# don't block on an infrastructure failure — samba-tool will still enforce.
+_validate_password_against_policy() {
+    local password="$1" username="$2"
+    local policy
+    policy=$(samba-tool domain passwordsettings show 2>/dev/null) || return 0
+    local min_length complexity
+    min_length=$(printf '%s\n' "$policy" | sed -n 's/^Minimum password length: //p')
+    complexity=$(printf '%s\n' "$policy" | sed -n 's/^Password complexity: //p')
+
+    if [[ "$min_length" =~ ^[0-9]+$ ]] && (( ${#password} < min_length )); then
+        log_error "Password rejected: ${#password} characters, minimum is ${min_length}"
+        return 1
+    fi
+
+    # Complexity (mirrors AD rules: at least 3 of 4 character classes, and
+    # the password must not contain the account name).  samba-tool may also
+    # reject based on displayName tokens — its error will surface via
+    # _set_user_password if our pre-check passes but it still rejects.
+    if [[ "$complexity" == "on" ]]; then
+        local classes=0
+        [[ "$password" =~ [A-Z] ]]      && classes=$((classes + 1))
+        [[ "$password" =~ [a-z] ]]      && classes=$((classes + 1))
+        [[ "$password" =~ [0-9] ]]      && classes=$((classes + 1))
+        [[ "$password" =~ [^A-Za-z0-9] ]] && classes=$((classes + 1))
+        if (( classes < 3 )); then
+            log_error "Password rejected: complexity is enabled, must contain at least 3 of 4 character classes (uppercase, lowercase, digit, special)"
+            return 1
+        fi
+        if [[ -n "$username" && "${password,,}" == *"${username,,}"* ]]; then
+            log_error "Password rejected: must not contain the username"
+            return 1
+        fi
+    fi
+    return 0
 }
 
 # Create the user's network home directory.  Runs locally when NFS is
@@ -292,8 +351,13 @@ cmd_add() {
         exit 2
     fi
 
+    # Validate the password against the domain policy BEFORE creating the
+    # AD account so a non-compliant password fails fast rather than leaving
+    # a half-created user (account exists, no home dir, random password).
+    _validate_password_against_policy "$password" "$username" || exit 2
+
     _create_user_object "$username" "$given_name" "$surname" "$email" "$shell" "$must_change_pw"
-    _set_user_password "$username" "$password" "$must_change_pw"
+    _set_user_password "$username" "$password" "$must_change_pw" "user was created" 1
     log_info "User '${username}' created successfully"
     _provision_home_dir "$username"
     # `[[ -n "$x" ]] && _helper` trips `set -e` when the test is false, since
@@ -566,6 +630,7 @@ cmd_set_password() {
         log_error "Password must not be empty"
         exit 2
     fi
+    _validate_password_against_policy "$password" "$username" || exit 2
     _set_user_password "$username" "$password"
     log_info "Password set for '${username}'"
 }

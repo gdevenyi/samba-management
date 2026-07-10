@@ -29,7 +29,7 @@
       - query
       - "{{ groups['dc'][0] }}"
       - "{{ sssd_domain }}"
-      - "{{ ansible_hostname }}"
+      - "{{ ansible_facts['hostname'] }}"
       - A
       - "-U"
       - Administrator
@@ -50,9 +50,9 @@
       - add
       - "{{ groups['dc'][0] }}"
       - "{{ sssd_domain }}"
-      - "{{ ansible_hostname }}"
+      - "{{ ansible_facts['hostname'] }}"
       - A
-      - "{{ ansible_default_ipv4.address }}"
+      - "{{ ansible_facts['default_ipv4'].address }}"
       - "-U"
       - Administrator
   environment:
@@ -67,7 +67,7 @@
 # (<third>.<second>.<first>.in-addr.arpa for the DC's /24).
 - name: Compute storage host's reverse-zone components
   ansible.builtin.set_fact:
-    _nfs_rev_octets: "{{ ansible_default_ipv4.address.split('.') }}"
+    _nfs_rev_octets: "{{ ansible_facts['default_ipv4'].address.split('.') }}"
 
 - name: Compute storage host's reverse zone name
   ansible.builtin.set_fact:
@@ -104,7 +104,7 @@
       - "{{ _nfs_reverse_zone }}"
       - "{{ _nfs_rev_octets[3] }}"
       - PTR
-      - "{{ ansible_fqdn }}"
+      - "{{ ansible_facts['fqdn'] }}"
       - "-U"
       - Administrator
   environment:

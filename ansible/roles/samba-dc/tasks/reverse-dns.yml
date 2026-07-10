@@ -9,7 +9,7 @@
 ---
 - name: Compute reverse DNS zone name
   ansible.builtin.set_fact:
-    _rev_octets: "{{ ansible_default_ipv4.address.split('.') }}"
+    _rev_octets: "{{ ansible_facts['default_ipv4'].address.split('.') }}"
   when: _samba_domain_exists | default(false)
 
 - name: Set reverse zone
@@ -23,7 +23,7 @@
       - samba-tool
       - dns
       - zoneinfo
-      - "{{ ansible_hostname }}.{{ samba_realm | lower }}"
+      - "{{ ansible_facts['hostname'] }}.{{ samba_realm | lower }}"
       - "{{ _reverse_zone }}"
       - "-U"
       - Administrator
@@ -41,7 +41,7 @@
       - samba-tool
       - dns
       - zonecreate
-      - "{{ ansible_hostname }}.{{ samba_realm | lower }}"
+      - "{{ ansible_facts['hostname'] }}.{{ samba_realm | lower }}"
       - "{{ _reverse_zone }}"
       - "-U"
       - Administrator
@@ -60,9 +60,9 @@
       - samba-tool
       - dns
       - query
-      - "{{ ansible_hostname }}.{{ samba_realm | lower }}"
+      - "{{ ansible_facts['hostname'] }}.{{ samba_realm | lower }}"
       - "{{ _reverse_zone }}"
-      - "{{ ansible_default_ipv4.address.split('.')[3] }}"
+      - "{{ ansible_facts['default_ipv4'].address.split('.')[3] }}"
       - PTR
       - "-U"
       - Administrator
@@ -80,11 +80,11 @@
       - samba-tool
       - dns
       - add
-      - "{{ ansible_hostname }}.{{ samba_realm | lower }}"
+      - "{{ ansible_facts['hostname'] }}.{{ samba_realm | lower }}"
       - "{{ _reverse_zone }}"
-      - "{{ ansible_default_ipv4.address.split('.')[3] }}"
+      - "{{ ansible_facts['default_ipv4'].address.split('.')[3] }}"
       - PTR
-      - "{{ ansible_fqdn }}"
+      - "{{ ansible_facts['fqdn'] }}"
       - "-U"
       - Administrator
   environment:

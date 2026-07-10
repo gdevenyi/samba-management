@@ -38,7 +38,7 @@
     argv:
       - kinit
       - "-k"
-      - "{{ ansible_hostname | upper }}$@{{ sssd_realm }}"
+      - "{{ ansible_facts['hostname'] | upper }}$@{{ sssd_realm }}"
   register: _kinit_machine
   changed_when: false
   failed_when: false
@@ -56,12 +56,12 @@
       - _kinit_machine.rc == 0
     fail_msg: >-
       The host could not obtain Kerberos credentials as
-      '{{ ansible_hostname | upper }}$@{{ sssd_realm }}' from /etc/krb5.keytab
+      '{{ ansible_facts['hostname'] | upper }}$@{{ sssd_realm }}' from /etc/krb5.keytab
       (kinit rc={{ _kinit_machine.rc }}: {{ _kinit_machine.stderr | default('') | trim }}).
       This is the credential rpc.gssd needs for NFSv4 sec=krb5p mounts, so home
       and share automounts will fail with "access denied by server" even though
       user lookups work.  The usual cause is a machine account whose name does
       not match the host (commonly a hostname truncated at the 15-char NetBIOS
       limit).  Verify the hostname (<=15 chars) and re-join the domain.
-    success_msg: "Machine Kerberos credential OK ({{ ansible_hostname | upper }}$)"
+    success_msg: "Machine Kerberos credential OK ({{ ansible_facts['hostname'] | upper }}$)"
   when: sssd_configure_autofs | bool

@@ -9,7 +9,7 @@
 # failed_when: false that would also swallow genuine failures.
 - name: Add NFS service principal to DC machine account
   ansible.builtin.command: >-
-    samba-tool spn add nfs/{{ ansible_fqdn }} {{ ansible_hostname }}$
+    samba-tool spn add nfs/{{ ansible_facts['fqdn'] }} {{ ansible_facts['hostname'] }}$
   register: _dc_spn_add
   failed_when:
     - _dc_spn_add.rc != 0
@@ -29,11 +29,11 @@
       - domain
       - exportkeytab
       - /etc/krb5.keytab
-      - "--principal=nfs/{{ ansible_fqdn }}"
+      - "--principal=nfs/{{ ansible_facts['fqdn'] }}"
   # Case-insensitive to match however klist renders the principal.
   when: >-
     _keytab_check.rc != 0 or
-    ('nfs/' + ansible_fqdn) | upper not in _keytab_check.stdout | upper
+    ('nfs/' + ansible_facts['fqdn']) | upper not in _keytab_check.stdout | upper
   changed_when: true
 
 # /etc/exports.d holds the homes export (below) and per-share export files

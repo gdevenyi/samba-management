@@ -326,6 +326,7 @@ The test environment uses domain `samba.test` (RFC 2606 reserved TLD) on the def
 | Users | create, list, show, disable, enable, set-password, delete |
 | Groups | create, add-members, list-members, show, remove-members, delete |
 | Shares | `samba-automount.sh add-share`/`delete-share` end to end: directory, NFS export, `auto.shares` entry, and `--remove-data` teardown |
+| NFS Export fsid | share/homes export files carry the expected `fsid=`, and the kernel accepted each export (`exportfs -v`) |
 | NFS Permissions | POSIX-based read/write access via Kerberos+NFS from the client (group resolution via SSSD secondary groups) |
 | Autofs Maps | `samba-automount.sh` list/add-share/delete-share against AD-stored maps |
 | Autofs Mounts | client triggers `auto.shares` and `auto.home` via Kerberos NFS, verifies actual mount |
@@ -335,6 +336,7 @@ The test environment uses domain `samba.test` (RFC 2606 reserved TLD) on the def
 | Client | getent user/group lookup, autofs NFS mounts (shares + homes) |
 | Login Access Filter | anchor/catch-all group creation, DOM:-prefixed chain matching, dynamic class group nesting, `login-*` group delete guard |
 | DNS Persistence | reboot test verifying persistent DNS resolver config (DC stays the resolver) |
+| Client DNS Registration | client's A/PTR are registered in the DC's AD zone (default: explicit `sssd_register_dns`); DC resolves the client by name |
 | User Edge Cases | input validation and exit codes, attribute recording (ldbsearch), `--group`, `list --pattern`, `--key-file` SSH keys |
 | Home Archival | `--archive-home`: 0600 tarball, contents, preserved data, foreign-owner warning on recreation |
 | Group Edge Cases | rfc2307 `--gid`, `--gid=0` rejection, `list --pattern`, `--recursive` nesting visibility, error exit codes |
@@ -344,8 +346,10 @@ The test environment uses domain `samba.test` (RFC 2606 reserved TLD) on the def
 | Dry Run | `--dry-run` previews with zero side effects and never prompts |
 | Password Policy Set | set/verify/restore round trip; empty-options error |
 | Client Healthcheck | `client/linux/healthcheck.sh` streamed to the client; all hard checks must pass |
+| Socket Activation | no `services` line in `sssd.conf`; nss/pam responder sockets listening; no failed `sssd-*.socket`; `sssd.service` active — on client + DC + storage |
+| DC PAM mkhomedir | DC's `pam_mkhomedir` is the stock option-less pam-auth-update-managed line, registered with pam-auth-update via debconf |
 
-All tests clean up after themselves — users, groups, shares, sudo rules, autofs entries, and home directories are removed at the end, and the password policy is restored. Both `colocated` and `separate` modes are verified at 234/234. `test/sync-scripts.sh` pushes the working-tree `bin/`+`lib/` to the DC's `/opt/samba-management` so script edits can be re-tested without a full re-provision.
+All tests clean up after themselves — users, groups, shares, sudo rules, autofs entries, and home directories are removed at the end, and the password policy is restored. Both `colocated` and `separate` modes are verified end-to-end. `test/sync-scripts.sh` pushes the working-tree `bin/`+`lib/` to the DC's `/opt/samba-management` so script edits can be re-tested without a full re-provision.
 
 ### Diagnostics
 
@@ -386,7 +390,9 @@ Key variables in role defaults (overridden by `group_vars/`):
 |---|---|---|---|
 | `sssd_homedir_mode` | `mounted` | sssd-client | `mounted` = NFS autofs at `/home/ad/<user>`, `local` = pam_mkhomedir at `/home/ad/<user>` |
 | `sssd_mounted_homedir_base` | `/home/ad` | sssd-client | Where remote homedirs mount (mounted mode) |
-| `sssd_nfs_sec` | `krb5p` | sssd-client | NFS Kerberos security flavour |
+| `sssd_register_dns` | `true`¹ | sssd-client | Register the member's A/PTR in the DC's AD zone via delegated `samba-tool dns` (works on split-identity sites) |
+| `sssd_dyndns_update` | `false` | sssd-client | Self-register via SSSD dynamic DNS (GSS-TSIG) instead; enabling it auto-disables `sssd_register_dns`. Non-split-identity networks only |
+| `sssd_krb5_realm_map` | `{}` | sssd-client | Map site FQDN → AD realm when a server is named outside the realm's DNS domain (fixes NFS `sec=krb5p` mount failures) |
 | `sssd_enable_ssh` | `true` | sssd-client | Configure `sss_ssh_authorizedkeys` for AD-stored SSH keys |
 | `sssd_enable_sudo` | `true` | sssd-client | Configure SSSD sudo provider + nsswitch routing |
 | `sssd_configure_autofs` | `true` | sssd-client | Install autofs and create mount-base directories |
@@ -403,7 +409,7 @@ Key variables in role defaults (overridden by `group_vars/`):
 | `sssd_user_resolve_delay` | `3` | sssd-client | Seconds between user lookup retries |
 | `sssd_group_resolve_retries` | `3` | sssd-client | Post-join group lookup retries |
 | `sssd_group_resolve_delay` | `2` | sssd-client | Seconds between group lookup retries |
-| `samba_nfs_sec` | `krb5p` | samba-dc | NFS Kerberos security flavour (server side) |
+| `samba_nfs_sec` | `krb5p` | samba-dc | NFS Kerberos security flavour — drives both the server-side exports and the `sec=` baked into the seeded autofs map entries |
 | `samba_nfs_server` | `""` | samba-dc | If set, NFS exports live on this host; DC only seeds autofs maps in AD |
 | `samba_nfs_homes_server` | `""` | samba-dc | Override host for `/home` exports; falls back to `samba_nfs_server`, then the DC |
 | `samba_nfs_export_homes` | `true` | samba-dc | Export `/home/ad` via NFS for home directory mounts |
@@ -422,6 +428,8 @@ Key variables in role defaults (overridden by `group_vars/`):
 | `samba_cleanup_runtime_files` | `true` | samba-dc | Remove stale Samba runtime files post-provisioning |
 | `nfs_server_group_resolve_retries` | `10` | nfs-server | Retries for SSSD group resolution before applying share ownership |
 | `nfs_server_group_resolve_delay` | `3` | nfs-server | Seconds between group resolution retries |
+
+¹ `sssd_register_dns` defaults to `{{ not (sssd_dyndns_update | bool) }}` — i.e. ON unless `sssd_dyndns_update` is enabled, so the two DNS-registration mechanisms are mutually exclusive by default.
 
 ## Important Notes
 

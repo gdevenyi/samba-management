@@ -28,81 +28,25 @@ A complete toolkit for provisioning and managing a Samba Active Directory Domain
 - WinRM enabled
 - Network access to the DC on ports 53, 88, 389
 
-## Quick Start
+## Deployment
 
-### Step 1: Configure Inventory
+**Step-by-step setup, provisioning, re-installation, and deprovisioning
+procedures live in [docs/SCENARIOS.md](docs/SCENARIOS.md).** This section
+describes *what* each playbook configures; that guide covers *how* to run them,
+inventory/group_vars layout, topology choice, and verification.
 
-Edit `ansible/inventory/hosts.yml` to add your hosts:
+The workflow is: pick an NFS topology → edit `ansible/inventory/hosts.yml` and
+the `group_vars/` files (change the passwords!) → run the provisioning
+playbooks from `ansible/` in order. For production, encrypt passwords with
+`ansible-vault`.
 
-```yaml
-all:
-  children:
-    dc:
-      hosts:
-        dc01.example.internal:
-    domain_members:
-      children:
-        nfs_servers:
-          hosts: {}
-          # storage01.example.internal:   # uncomment for separate NFS server
-        linux_clients:
-          hosts:
-            workstation01.example.internal:
-            workstation02.example.internal:
-    windows_clients:
-      hosts:
-        win01.example.internal:
-```
+### `provision-dc.yml` — Domain Controller
 
-### Step 2: Set Variables
-
-Edit the group_vars files with your domain details. At minimum, change the passwords:
-
-**`ansible/inventory/group_vars/dc.yml`:**
-```yaml
-samba_realm: "YOURDOMAIN.INTERNAL"
-samba_domain: "YOURDOMAIN"
-samba_netbios: "YOURDOMAIN"
-samba_admin_password: "your-strong-password-here"
-samba_dns_forwarders:            # upstream DNS for non-AD queries (list, tried in order)
-  - "8.8.8.8"
-  - "8.8.4.4"
-```
-
-Shares are **not** declared here — after provisioning you create them on the DC
-with `samba-automount.sh add-share` (see [Share Management](#share-management-binsamba-automountsh)).
-
-**`ansible/inventory/group_vars/linux_clients.yml`:**
-```yaml
-# SSSD join credentials are inherited from domain_members.yml.
-# Only client-specific overrides go here.
-```
-
-(Autofs maps no longer need to be enumerated here — clients pull them from
-AD via SSSD.)
-
-**`ansible/inventory/group_vars/windows_clients.yml`:**
-```yaml
-windows_domain: "yourdomain.internal"
-windows_dc_ip: "10.0.0.1"
-windows_admin_password: "your-strong-password-here"
-```
-
-For production, encrypt passwords with `ansible-vault`.
-
-### Step 3: Provision the Domain Controller
-
-```bash
-cd ansible
-ansible-playbook playbooks/provision-dc.yml
-```
-
-This installs and configures:
+Installs and configures:
 - Samba AD DC (`samba-ad-dc` package, masks `smbd`/`nmbd`/`winbind`)
 - Kerberos KDC (Heimdal, built into Samba)
-- DNS (SAMBA_INTERNAL backend with forwarder)
+- DNS (SAMBA_INTERNAL backend with forwarders) and a reverse zone for the subnet
 - NTP (time sync via `systemd-timesyncd` or `chrony`, whichever the image ships)
-- Reverse DNS zone for the DC's subnet
 - Organizational Units: Users, Groups, Computers, Shares, SUDOers
 - NFSv4 server with Kerberos (`sec=krb5p`) for home directories, plus the
   `/data` share base and the base `auto.master`/`auto.shares`/`auto.home` maps
@@ -111,89 +55,36 @@ This installs and configures:
 - Account lockout policy (threshold 0/disabled, duration 30m, reset 30m)
 - Optional TLS (disabled by default)
 
-After provisioning, verify:
-```bash
-# On the DC
-kinit Administrator        # test Kerberos
-host -t SRV _ldap._tcp.yourdomain.internal   # test DNS
-showmount -e localhost      # test NFS exports
-```
+### `provision-nfs-server.yml` — Separate NFS storage (optional)
 
-### Step 3b (Optional): Provision a Separate NFS Storage Server
+For a dedicated storage host (`samba_nfs_server` set, host in the `nfs_servers`
+group): joins the server to the domain, registers the `nfs/<fqdn>` SPN against
+its machine account, configures NFSv4+Kerberos exports, and installs the DC's
+root SSH key so `samba-user.sh`/`samba-automount.sh` can manage directories on
+it remotely. See [docs/SCENARIOS.md](docs/SCENARIOS.md) for the topology choice
+and provisioning order.
 
-To offload NFS storage from the DC to a dedicated server:
+### `provision-linux-sssd.yml` — Linux clients
 
-1. Add the host to the `nfs_servers` group in `hosts.yml`
-2. Create `ansible/inventory/group_vars/nfs_servers.yml`:
-```yaml
-samba_nfs_export_homes: true
-samba_nfs_homes_fsid: 100   # optional; pin a stable fsid on ZFS/Btrfs
-```
-   (Shares aren't declared here — you add them later with `samba-automount.sh
-   add-share`, which SSHes to this host to create the directory and export.)
-3. Set `samba_nfs_server: "storage01"` in `group_vars/dc.yml` (and optionally
-   `samba_nfs_homes_server: "storage01"` to put user homes on the same host —
-   defaults to `samba_nfs_server` when unset).
-4. Provision:
-```bash
-cd ansible
-ansible-playbook playbooks/provision-nfs-server.yml
-```
-
-This joins the server to the domain, registers the `nfs/<fqdn>` SPN against
-the storage host's machine account, and configures NFSv4+Kerberos exports.
-A passwordless root SSH keypair is also generated on the DC and installed in
-the storage host's `authorized_keys` so `samba-user.sh` can manage user home
-directories (under `/home/ad/<user>`) on the remote NFS host.
-
-### Step 4: Join Linux Clients
-
-```bash
-cd ansible
-ansible-playbook playbooks/provision-linux-sssd.yml
-```
-
-This configures each Linux client to:
+Configures each Linux client to:
 - Install SSSD and join the AD domain via `realm`
-- Configure SSSD for AD authentication (`id_provider = ad`)
-- Set up autofs for NFSv4 share mounting at `/data/<name>`
-- Mount AD home directories via NFS at `/home/ad/<username>` (default)
-- Disable `pam_mkhomedir` (remote homedirs are mounted, not created locally)
+- Authenticate against AD (`id_provider = ad`), pulling autofs maps, sudo
+  rules, and SSH keys from AD
+- Mount NFSv4 shares at `/data/<name>` and AD home directories at
+  `/home/ad/<username>` via autofs (default; `pam_mkhomedir` is disabled in
+  mounted mode)
 
-After joining, verify on a client:
-```bash
-getent passwd Administrator
-id Administrator                # confirm AD groups resolve
-ls /data/public                 # autofs mounts on access
-```
+### `provision-windows.yml` — Windows clients
 
-### Step 5: Join Windows Clients
+Sets DNS to the DC and joins the domain using `microsoft.ad.membership` (the
+`microsoft.ad` and `ansible.windows` collections are required — install via
+`ansible-galaxy collection install -r requirements.yml`). The client reboots.
 
-```bash
-cd ansible
-ansible-playbook playbooks/provision-windows.yml
-```
+### `healthcheck.yml`
 
-This sets DNS to the DC and joins the domain using `microsoft.ad.membership` (the `microsoft.ad` and `ansible.windows` collections are required — install via `ansible-galaxy collection install -r requirements.yml`). The client will reboot.
-
-Alternatively, run the standalone PowerShell script on the Windows machine:
-```powershell
-.\client\windows\join-domain.ps1 -Domain yourdomain.internal -DcIp 10.0.0.1
-```
-
-### Step 6: Run Health Check
-
-```bash
-cd ansible
-ansible-playbook playbooks/healthcheck.yml
-```
-
-Checks DNS SRV records, Kerberos, SSSD/autofs/NFS services, port connectivity, and NTP sync on all hosts.
-
-For a standalone check on a Linux client (no Ansible needed):
-```bash
-./client/linux/healthcheck.sh
-```
+Checks DNS SRV records, Kerberos, SSSD/autofs/NFS services, port connectivity,
+and NTP sync on all hosts. A standalone client equivalent (no Ansible needed)
+is `./client/linux/healthcheck.sh`.
 
 ## Day-to-Day Management (Bash Scripts)
 
@@ -386,23 +277,22 @@ Edit `map-drives.ini` to match your share names and drive letters. Drives are ma
 
 ## Deprovisioning
 
-Remove a Linux client from the domain:
+Two playbooks cleanly reverse provisioning — **see
+[docs/SCENARIOS.md](docs/SCENARIOS.md#deprovisioning) for the commands and
+re-installation guidance:**
 
-```bash
-cd ansible
-ansible-playbook playbooks/deprovision-linux.yml
-```
+- **`deprovision-linux.yml`** — `realm leave`, stops/disables SSSD (and its
+  responder sockets) + autofs, and removes all client-side domain state
+  (`sssd.conf`, the AD DNS routing drop-in, the sshd `AuthorizedKeysCommand`
+  snippet, the autofs/sudoers `nsswitch.conf` lines) plus the client's DNS
+  records on the DC.
+- **`deprovision-nfs-server.yml`** — additionally stops NFS services, removes
+  export files, unmasks autofs, and revokes the DC's root SSH key so the host
+  can be repurposed.
 
-This runs `realm leave`, stops SSSD/autofs, and removes all client-side domain state: `sssd.conf`, the AD DNS routing drop-in (so the client no longer points DNS at a decommissioned DC), the sshd `AuthorizedKeysCommand` snippet, and the autofs/sudoers `nsswitch.conf` routing lines (restarting `systemd-resolved` and `sshd` afterward).
-
-Remove an NFS storage server:
-
-```bash
-cd ansible
-ansible-playbook playbooks/deprovision-nfs-server.yml
-```
-
-This stops NFS server services, removes export files, unmasks autofs (so the host can be repurposed), revokes the DC's root SSH key, removes the same client-side state as the Linux deprovision, leaves the AD domain, and best-effort deletes the host's DNS A/PTR records on the DC.
+To re-deploy a wiped-and-reinstalled client, you generally do **not**
+deprovision first — see
+[Re-installing a client](docs/SCENARIOS.md#re-installing-re-deploying-a-client).
 
 ## Integration Testing
 

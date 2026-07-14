@@ -133,8 +133,12 @@ _create_user_object() {
 }
 
 # Set a user's password via stdin so it never appears in /proc/<pid>/cmdline.
-# samba-tool setpassword prompts twice (New + Retype) when stdin isn't a tty,
-# so feed the value twice.
+# samba-tool (Python) uses getpass.getpass(), which opens /dev/tty directly
+# when a controlling terminal is available — bypassing the stdin pipe and
+# hanging the script at "New Password:" in interactive sessions.  setsid
+# creates a new session without a controlling terminal so getpass falls back
+# to reading from stdin (the pipe).  samba-tool then prompts twice (New +
+# Retype) on the non-tty stdin, so feed the value twice.
 #
 # $3 (optional, "1" to enable): re-assert must-change-at-next-login.
 # setpassword resets pwdLastSet to "now" by default, which would silently
@@ -149,7 +153,7 @@ _set_user_password() {
     # and never appears in stdout/stderr, so there is no leak risk.
     local err_out
     if ! err_out=$(printf '%s\n%s\n' "$password" "$password" \
-        | "${cmd[@]}" 2>&1 1>/dev/null); then
+        | setsid "${cmd[@]}" 2>&1 1>/dev/null); then
         # In cmd_add the AD object already exists but no home dir was
         # provisioned yet.  _validate_password_against_policy is best-effort
         # (samba-tool is the final arbiter), so a password can still be

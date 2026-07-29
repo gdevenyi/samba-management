@@ -16,6 +16,77 @@
           AuthorizedKeysCommandUser nobody
       notify: Restart sshd
 
+# --- Require a PAM password step for key logins (opt-in) -------------------
+# Rationale and the cost of enabling this live in defaults/main.yml and
+# docs/SCENARIOS.md.  PAM itself is untouched: the drop-in only tells sshd to
+# drive the existing stack, which is what mints the Kerberos TGT.
+- name: Resolve the accounts exempted from the extra password step
+  ansible.builtin.set_fact:
+    # select drops the empty string left when neither ansible_user nor
+    # SUDO_USER could be determined.
+    _sssd_ssh_exempt: "{{ sssd_ssh_password_exempt_users | select | unique | list }}"
+    _sssd_ssh_ansible_user: "{{ ansible_user | default(ansible_facts['env']['SUDO_USER'] | default('', true), true) }}"
+
+# A lockout here is expensive to recover from -- it needs console access -- so
+# the conditions that would cause one are checked before anything is written.
+- name: Assert the exempt-user list cannot lock automation out
+  ansible.builtin.assert:
+    that:
+      - _sssd_ssh_exempt | length > 0
+      - _sssd_ssh_exempt | reject('match', '^[A-Za-z0-9._-]+$') | list | length == 0
+      - (_sssd_ssh_ansible_user | length == 0) or (_sssd_ssh_ansible_user in _sssd_ssh_exempt)
+    fail_msg: >-
+      sssd_ssh_password_exempt_users resolved to {{ _sssd_ssh_exempt }}, which
+      does not safely cover automation on {{ inventory_hostname }}.  It must be
+      non-empty, contain only sshd-safe Match User names ([A-Za-z0-9._-]), and
+      include the account Ansible connects as
+      ({{ _sssd_ssh_ansible_user | default('could not be determined', true) }}).
+      Without that, the next run of this playbook hangs on a password prompt.
+    success_msg: "Exempt from the extra password step: {{ _sssd_ssh_exempt | join(', ') }}"
+  when: sssd_ssh_require_password | bool
+
+- name: Require a PAM password step for SSH key logins
+  when: sssd_ssh_require_password | bool
+  block:
+    - name: Deploy sshd drop-in requiring a PAM authentication step
+      ansible.builtin.template:
+        src: sshd-require-password.conf.j2
+        dest: /etc/ssh/sshd_config.d/10-samba-ad-require-password.conf
+        mode: "0644"
+        owner: root
+        group: root
+      notify: Restart sshd
+
+    # `sshd -t -f <drop-in>` cannot be used as a template validate: hook -- a
+    # fragment has no HostKey and sshd exits "no hostkeys available".  Checking
+    # the COMPLETE configuration here works and runs before handlers flush, so
+    # a configuration that does not parse fails the play without sshd ever
+    # being reloaded.
+    - name: Validate the complete sshd configuration # noqa: command-instead-of-module
+      ansible.builtin.command: sshd -t
+      changed_when: false
+  rescue:
+    - name: Withdraw the drop-in that failed validation
+      ansible.builtin.file:
+        path: /etc/ssh/sshd_config.d/10-samba-ad-require-password.conf
+        state: absent
+
+    - name: Report the sshd validation failure
+      ansible.builtin.fail:
+        msg: >-
+          The sshd drop-in for sssd_ssh_require_password did not pass
+          `sshd -t` and has been removed; sshd was not reloaded and the running
+          configuration is unchanged.  Re-run with -vv to see the parser error.
+
+# Removed rather than left behind when the flag is turned back off, so toggling
+# the feature actually reverts it.
+- name: Remove the SSH password-step drop-in when disabled
+  ansible.builtin.file:
+    path: /etc/ssh/sshd_config.d/10-samba-ad-require-password.conf
+    state: absent
+  when: not (sssd_ssh_require_password | bool)
+  notify: Restart sshd
+
 - name: Configure sudo via SSSD
   when: sssd_enable_sudo | bool
   block:

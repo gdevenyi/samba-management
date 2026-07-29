@@ -23,8 +23,42 @@
   changed_when: false
   failed_when: false
 
+# Resolve which host the rest of the checks should actually probe.
+#
+# An explicit healthcheck_dc_hostname always wins.  Otherwise take the target
+# out of the _ldap._tcp SRV answer we just made -- that is the DC the domain
+# itself advertises, and it is correct on every host class without any
+# per-site variable.
+#
+# The previous fallback was the host's OWN hostname, which is right only on the
+# DC.  On a member whose site name differs from its AD name (the split-identity
+# case this stack is built for) it made the host probe ITSELF as the DC:
+# connection refused on 389/88/2049 and `ip route get` showing dev lo, on a
+# domain that was perfectly healthy.
+- name: Determine the DC to probe (SRV discovery)
+  ansible.builtin.set_fact:
+    _healthcheck_srv_dc: >-
+      {{ (dns_ldap.stdout_lines | default([]) | select('search', 'has SRV record') | list | first | default(''))
+         .split() | last | default('', true) | regex_replace('\.$', '') }}
+
+- name: Resolve the DC name every later check will use
+  ansible.builtin.set_fact:
+    # Explicit variable wins; then SRV discovery; then the literal fallback so
+    # the A-record check still reports something meaningful instead of "".
+    _healthcheck_dc_fqdn: >-
+      {{ (healthcheck_dc_hostname ~ '.' ~ (healthcheck_realm | lower))
+         if healthcheck_dc_hostname
+         else (_healthcheck_srv_dc if (_healthcheck_srv_dc | trim)
+               else ('dc01' ~ '.' ~ (healthcheck_realm | lower))) }}
+
+- name: Resolve the NFS host every later check will use
+  ansible.builtin.set_fact:
+    _healthcheck_nfs_fqdn: >-
+      {{ (healthcheck_nfs_server ~ '.' ~ (healthcheck_realm | lower))
+         if healthcheck_nfs_server else (_healthcheck_dc_fqdn | trim) }}
+
 - name: Check A record for DC
-  ansible.builtin.command: "host -t A {{ healthcheck_dc_hostname }}.{{ healthcheck_realm | lower }}"
+  ansible.builtin.command: "host -t A {{ _healthcheck_dc_fqdn | trim }}"
   register: dns_a
   changed_when: false
   failed_when: false
@@ -92,7 +126,7 @@
 # (ansible-lint's ignore-errors rule permits this when the task registers.)
 - name: Check connectivity to NFS server (port 2049)
   ansible.builtin.wait_for:
-    host: "{{ (healthcheck_nfs_server if healthcheck_nfs_server else healthcheck_dc_hostname) }}.{{ healthcheck_realm | lower }}"
+    host: "{{ _healthcheck_nfs_fqdn | trim }}"
     port: 2049
     timeout: 5
   ignore_errors: true
@@ -100,7 +134,7 @@
 
 - name: Check connectivity to DC (port 88)
   ansible.builtin.wait_for:
-    host: "{{ healthcheck_dc_hostname }}.{{ healthcheck_realm | lower }}"
+    host: "{{ _healthcheck_dc_fqdn | trim }}"
     port: 88
     timeout: 5
   ignore_errors: true
@@ -108,7 +142,7 @@
 
 - name: Check connectivity to DC (port 53)
   ansible.builtin.wait_for:
-    host: "{{ healthcheck_dc_hostname }}.{{ healthcheck_realm | lower }}"
+    host: "{{ _healthcheck_dc_fqdn | trim }}"
     port: 53
     timeout: 5
   ignore_errors: true
@@ -123,14 +157,14 @@
       ===== Healthcheck Summary =====
       DNS _ldap._tcp SRV:    {{ 'PASS' if 'has SRV record' in dns_ldap.stdout else 'FAIL' }}
       DNS _kerberos._tcp SRV: {{ 'PASS' if 'has SRV record' in dns_krb.stdout else 'FAIL' }}
-      DNS A record (DC):     {{ 'PASS' if 'has address' in dns_a.stdout else 'FAIL' }}
+      DNS A record (DC):     {{ 'PASS' if 'has address' in dns_a.stdout else 'FAIL' }}  [{{ _healthcheck_dc_fqdn | trim }}]
       Kerberos ticket:       {{ 'PASS' if klist_result.rc == 0 and 'Default principal' in klist_result.stdout else 'NO TICKET' }}
       SSSD service:          {{ 'RUNNING' if sssd_status.status.ActiveState | default('') == 'active' else 'NOT RUNNING' }}
       Winbind service:       {{ 'RUNNING' if winbind_status.status.ActiveState | default('') == 'active' else 'NOT RUNNING' }}
       Autofs service:        {{ 'RUNNING' if autofs_status.status.ActiveState | default('') == 'active' else 'NOT RUNNING' }}
       NFS server:            {{ 'RUNNING' if nfs_server_status.status.ActiveState | default('') == 'active' else 'NOT RUNNING' }}
       User lookup:           {{ 'PASS' if getent_user.rc == 0 else 'FAIL' }}
-      NFS port 2049:         {{ 'OPEN' if nfs_port_2049 is not failed else 'CLOSED' }}
+      NFS port 2049:         {{ 'OPEN' if nfs_port_2049 is not failed else 'CLOSED' }}  [{{ _healthcheck_nfs_fqdn | trim }}]
       DC port 88 (Kerberos): {{ 'OPEN' if dc_port_88 is not failed else 'CLOSED' }}
       DC port 53 (DNS):      {{ 'OPEN' if dc_port_53 is not failed else 'CLOSED' }}
       NFS mounts:            {{ nfs_mounts.stdout_lines | default([]) | length }} active
@@ -153,16 +187,13 @@
 #   NFS mounts      - autofs mounts on demand, so zero is normal when idle
 - name: Fail when a hard healthcheck did not pass
   vars:
-    _healthcheck_nfs_target: >-
-      {{ (healthcheck_nfs_server if healthcheck_nfs_server else healthcheck_dc_hostname)
-         ~ '.' ~ (healthcheck_realm | lower) }}
     _healthcheck_failures: >-
       {{ (( ['DNS _ldap._tcp SRV'] if 'has SRV record' not in (dns_ldap.stdout | default('')) else [] )
         + ( ['DNS _kerberos._tcp SRV'] if 'has SRV record' not in (dns_krb.stdout | default('')) else [] )
-        + ( ['DNS A record for ' ~ healthcheck_dc_hostname] if 'has address' not in (dns_a.stdout | default('')) else [] )
+        + ( ['DNS A record for ' ~ (_healthcheck_dc_fqdn | trim)] if 'has address' not in (dns_a.stdout | default('')) else [] )
         + ( ['SSSD service not running'] if (sssd_status.status.ActiveState | default('')) != 'active' else [] )
         + ( ['AD user lookup (' ~ healthcheck_test_user ~ ')'] if getent_user.rc | default(1) != 0 else [] )
-        + ( ['NFS port 2049 closed on ' ~ _healthcheck_nfs_target]
+        + ( ['NFS port 2049 closed on ' ~ (_healthcheck_nfs_fqdn | trim)]
             if (healthcheck_require_nfs | bool and nfs_port_2049 is failed) else [] )
         + ( ['DC port 88 (Kerberos) closed'] if dc_port_88 is failed else [] )
         + ( ['DC port 53 (DNS) closed'] if dc_port_53 is failed else [] )
@@ -174,8 +205,8 @@
       Healthcheck FAILED on {{ inventory_hostname }}:
       {{ _healthcheck_failures | join('; ') }}.
       See the summary above for the full matrix.
-      Checked realm '{{ healthcheck_realm }}' via DC '{{ healthcheck_dc_hostname }}'
-      and NFS host '{{ _healthcheck_nfs_target }}' -- if those names are wrong the
+      Checked realm '{{ healthcheck_realm }}' via DC '{{ _healthcheck_dc_fqdn | trim }}'
+      and NFS host '{{ _healthcheck_nfs_fqdn | trim }}' -- if those names are wrong the
       domain is fine and the healthcheck variables are not: set healthcheck_realm /
       healthcheck_dc_hostname / healthcheck_nfs_server (or samba_realm, sssd_realm,
       sssd_dc_hostname, samba_nfs_server, from which they are derived) in group_vars,

@@ -418,6 +418,8 @@ Key variables in role defaults (overridden by `group_vars/`):
 | `sssd_dyndns_update` | `false` | sssd-client | Self-register via SSSD dynamic DNS (GSS-TSIG) instead; enabling it auto-disables `sssd_register_dns`. Non-split-identity networks only |
 | `sssd_krb5_realm_map` | `{}` | sssd-client | Map site FQDN → AD realm when a server is named outside the realm's DNS domain (fixes NFS `sec=krb5p` mount failures) |
 | `sssd_enable_ssh` | `true` | sssd-client | Configure `sss_ssh_authorizedkeys` for AD-stored SSH keys |
+| `sssd_ssh_require_password` | `false` | sssd-client | Require publickey **plus** a PAM password step, so `pam_sss` issues a Kerberos TGT. Without one, a key-only login can't read its own `sec=krb5p` home directory. Breaks non-interactive SSH for AD users — see [docs/SCENARIOS.md](docs/SCENARIOS.md) |
+| `sssd_ssh_password_exempt_users` | `root` + the Ansible account | sssd-client | Accounts kept on key-only auth so automation doesn't hang on a prompt. Resolved from `ansible_user`, else `SUDO_USER`; the role fails before writing if the current Ansible account isn't covered |
 | `sssd_enable_sudo` | `true` | sssd-client | Configure SSSD sudo provider + nsswitch routing |
 | `sssd_configure_autofs` | `true` | sssd-client | Install autofs and create mount-base directories |
 | `sssd_enable_autofs` | `true` | sssd-client | Pull autofs maps from AD via SSSD (requires `sssd_configure_autofs`) |

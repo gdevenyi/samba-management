@@ -348,6 +348,98 @@ provision the new host as usual.
 
 ---
 
+## SSH key logins and `sec=krb5p` home directories
+
+Symptom: a user logs in fine, `id` shows the right AD groups, but their home
+directory and every share under `/data` give "Permission denied". It reads as a
+mount failure and isn't one.
+
+```bash
+$ ls ~
+ls: cannot open directory '.': Permission denied
+$ mount -t nfs4        # ...but the mount is right there
+neuro-nas.ad.genetlab.internal:/home/ad/devgab on /home/ad/devgab type nfs4 (...,sec=krb5p,...)
+$ klist
+klist: No credentials cache found
+```
+
+Cause: **public-key authentication never runs sshd's PAM auth stack.** `pam_sss`
+never sees a password, so no Kerberos TGT is issued. With `sec=krb5p`, every
+access under the mount needs a *user* GSS context, which `rpc.gssd` builds from
+that TGT. The mount itself succeeds because autofs uses the *machine*
+credential from `/etc/krb5.keytab` — which is exactly why this looks like a
+mount problem instead of a missing ticket.
+
+This stack creates the tension by supporting both features at once: AD-stored
+SSH keys (`sssd_enable_ssh`) and NFS-mounted homes (`sssd_homedir_mode:
+mounted`). Nothing is misconfigured when it happens.
+
+Confirm it in two commands, as the affected user:
+
+```bash
+klist            # "No credentials cache found"
+kinit && ls ~    # works immediately afterwards -- rpc.gssd picks up the new ccache
+```
+
+### Fixes
+
+| Approach | Trade-off |
+|---|---|
+| `kinit` after logging in | Works today, nothing to configure. Manual, and easy to forget. |
+| Log in with a password instead of a key | `pam_sss` mints the TGT. Works today; gives up key auth. |
+| `sssd_ssh_require_password: true` (below) | Automatic for every interactive login. Breaks non-interactive SSH for AD users. |
+| `GSSAPIAuthentication` + `GSSAPIDelegateCredentials` | Passwordless *and* a real TGT, but only if the machine the user connects **from** already holds one — so it does nothing for logins from outside the realm. |
+
+There is no way to derive a TGT from an SSH key short of PKINIT, which needs
+certificate infrastructure and is a substantially larger build.
+
+### `sssd_ssh_require_password` (default `false`)
+
+Makes sshd require publickey **and then** a PAM password step — or a PAM
+password alone for users with no key. Either way authentication ends in the PAM
+stack, so a TGT exists before the session opens and before the home directory
+is touched. Set it in `group_vars/linux_clients.yml`:
+
+```yaml
+sssd_ssh_require_password: true
+sssd_ssh_password_exempt_users:      # optional; see the default below
+  - root
+  - localadmin
+```
+
+The role writes `/etc/ssh/sshd_config.d/10-samba-ad-require-password.conf` and
+reloads sshd. **PAM is not modified** — the drop-in only tells sshd to drive the
+stack that is already there. (PAM in this project is managed exclusively through
+`pam-auth-update`; nothing here hand-edits `/etc/pam.d/common-*`.)
+
+**Exempt accounts.** `sssd_ssh_password_exempt_users` keeps automation on
+key-only auth. It defaults to `root` — the DC SSHes to storage hosts as root for
+cross-host home-directory management — plus the account Ansible connected as,
+taken from `ansible_user` when the inventory sets it and otherwise from
+`SUDO_USER` in the gathered environment. Override it whenever your automation
+account is something else; if the resolved list doesn't include the account
+Ansible is currently using, the role **fails before writing anything** rather
+than locking the next run out on a password prompt.
+
+**Cost.** Non-interactive SSH for AD users starts prompting: `scp`, `rsync`,
+`git` over SSH, and any cron or CI job running as an AD user. That is why this
+is off by default. Enable it on interactive workstations, not on hosts that AD
+users automate against.
+
+**Safety.** After writing the drop-in the role runs `sshd -t` against the
+complete configuration; if it doesn't parse, the drop-in is removed and the play
+fails without sshd ever being reloaded. Even so, verify from a **second**
+session before closing your first one:
+
+```bash
+sudo sshd -T | grep -iE "authenticationmethods|kbdinteractive"
+ssh <aduser>@<host> 'klist | head -2'     # expect a TGT, not "No credentials cache"
+```
+
+Setting it back to `false` removes the drop-in and reloads sshd.
+
+---
+
 ## The DC's IP address changed
 
 Symptom: members stop resolving AD. SSSD goes offline, logins fall back to

@@ -117,6 +117,36 @@ samba_nfs_sec: "krb5p"
 
 sssd_enable_ssh: true
 
+# --- Require a PAM password step for SSH key logins ---
+# Public-key authentication never runs sshd's PAM auth stack, so pam_sss never
+# sees a password and no Kerberos TGT is issued.  With sssd_homedir_mode
+# "mounted" (NFSv4 sec=krb5p) every access under the mount needs a *user* GSS
+# context, so a key-only login lands in a home directory it cannot read -- while
+# the mount itself succeeds, because autofs uses the machine credential.  The
+# result reads as "my home directory won't mount" when the real problem is a
+# missing ticket.
+#
+# Enabling this makes sshd require publickey AND a PAM password step (or a PAM
+# password alone for users with no key), so authentication always ends in the
+# PAM stack and a TGT always exists before the session opens.  It does NOT
+# modify PAM -- the existing stack is reused, and PAM stays managed exclusively
+# through pam-auth-update.
+#
+# OFF by default: it makes non-interactive SSH for AD users (scp, rsync, git
+# over SSH, cron jobs) start prompting for a password.  Turn it on only where
+# interactive logins are the norm.  See docs/SCENARIOS.md.
+sssd_ssh_require_password: false
+# Accounts exempted from the extra password step.  These MUST cover every
+# automation account or the next Ansible run hangs on a password prompt.
+# Defaults to root (the DC SSHes here as root for cross-host home-directory
+# management) plus the account Ansible connected as -- taken from the
+# ansible_user connection variable when the inventory sets it, and otherwise
+# from SUDO_USER in the gathered remote environment, which is populated because
+# this project escalates with sudo.  Set explicitly when neither is right.
+sssd_ssh_password_exempt_users:
+  - root
+  - "{{ ansible_user | default(ansible_facts['env']['SUDO_USER'] | default('', true), true) }}"
+
 sssd_enable_sudo: true
 
 # Pull autofs maps from AD via SSSD's autofs service.  Requires the DC to

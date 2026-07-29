@@ -24,6 +24,18 @@
 # Only the share base (/data) is created at provisioning time.  Individual
 # share directories and their NFS exports are managed operationally with
 # bin/samba-automount.sh add-share, not declaratively here.
+#
+# Ownership and mode are set only when this role CREATES the directory.  Access
+# control on this stack is POSIX permissions applied by the operator (NFS
+# sec=krb5p authenticates; the file system authorizes), so re-asserting
+# root:"domain users" 0755 on every run would undo a deliberately tightened
+# base -- and a provisioning run must never quietly widen access to data.
+- name: Check whether the share base already exists
+  ansible.builtin.stat:
+    path: "{{ samba_share_base }}"
+  register: _samba_share_base_stat
+  when: samba_nfs_server == ""
+
 - name: Create share base directory
   ansible.builtin.file:
     path: "{{ samba_share_base }}"
@@ -31,7 +43,9 @@
     mode: "0755"
     owner: root
     group: "domain users"
-  when: samba_nfs_server == ""
+  when:
+    - samba_nfs_server == ""
+    - not _samba_share_base_stat.stat.exists
 
 - name: Configure NFS server (DC-local)
   ansible.builtin.include_tasks: nfs.yml

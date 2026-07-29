@@ -240,7 +240,10 @@ client restart is needed for share entries.
 Access control is via POSIX permissions on the directory (`chown`/`chmod` on the
 NFS host). `add-share` creates it `0770 root:"Domain Users"`; for a group-
 writable team share, `chown root:<group>` and `chmod 2770` it afterward — see
-[docs/SCENARIOS.md](docs/SCENARIOS.md).
+[docs/SCENARIOS.md](docs/SCENARIOS.md). Ownership and mode are applied **only to
+a directory `add-share` creates** — run against an existing directory it warns
+and leaves permissions untouched, so your access control survives. Provisioning
+runs likewise only set ownership on a `/data` base they create.
 
 > **Home directories are the exception** — `/home/ad` is still exported
 > declaratively by the roles (`samba_nfs_export_homes`, and `samba_nfs_homes_fsid`

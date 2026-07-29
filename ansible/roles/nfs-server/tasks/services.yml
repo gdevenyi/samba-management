@@ -84,8 +84,12 @@
     - "'domain users:' in _nfs_group_resolve.stdout"
     - "_nfs_group_resolve.stdout.split(':')[2] | int != 100"
 
-# Re-apply base ownership now that SSSD can resolve AD group names.  Per-share
-# directories are created/owned operationally by bin/samba-automount.sh.
+# exports.yml runs before the group-resolution wait above, so a share base
+# created in this run may have landed on the local `users` group (GID 100)
+# rather than the AD-mapped one.  Correct that -- but ONLY for a directory this
+# run created: a pre-existing base carries the operator's own access control
+# (see the note in exports.yml), and per-share directories are created and
+# owned operationally by bin/samba-automount.sh, never here.
 - name: Re-apply share base ownership with resolved AD group
   ansible.builtin.file:
     path: "{{ samba_share_base }}"
@@ -93,6 +97,7 @@
     mode: "0755"
     owner: root
     group: "domain users"
+  when: not _nfs_share_base_stat.stat.exists
 
 - name: Flush kernel NFS auth caches after group resolution change
   ansible.builtin.shell: |

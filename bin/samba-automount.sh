@@ -455,13 +455,24 @@ cmd_add_share() {
         return
     fi
 
-    # 1. Directory on the NFS host (idempotent; base left untouched if present).
+    # 1. Directory on the NFS host.  Ownership and mode are applied ONLY to a
+    #    directory this command creates.  An existing directory holds somebody's
+    #    data under somebody's access control, and re-asserting
+    #    root:"${DEFAULT_GROUP}" 0770 over it silently undoes a group-scoped
+    #    share (chown :<group> + chmod 2770) -- which is precisely how access
+    #    control is meant to be expressed on this stack, since NFS sec=krb5p
+    #    authenticates but POSIX permissions authorize.  The share base is
+    #    likewise only created, never re-owned.
     local group="${DEFAULT_GROUP:-Domain Users}"
-    log_info "Creating share directory ${server}:${path}"
     remote_op "$server" mkdir -p "${SHARE_BASE:-/data}"
-    remote_op "$server" mkdir -p "$path"
-    remote_op "$server" chown "root:${group}" "$path"
-    remote_op "$server" chmod 0770 "$path"
+    if remote_op "$server" test -d "$path"; then
+        log_warn "Directory ${server}:${path} already exists; leaving its ownership and permissions unchanged"
+    else
+        log_info "Creating share directory ${server}:${path} (root:${group}, mode 0770)"
+        remote_op "$server" mkdir -p "$path"
+        remote_op "$server" chown "root:${group}" "$path"
+        remote_op "$server" chmod 0770 "$path"
+    fi
 
     # 2. NFS export on the NFS host.
     # fsids must be unique per host; a duplicate makes the kernel serve the

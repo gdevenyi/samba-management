@@ -58,9 +58,12 @@
       - "{{ sssd_domain }}"
       - "{{ _sssd_reg_name }}"
       - A
-      # Without --no-children the enumeration also returns every node beneath
-      # this name, whose values would then be pruned from the wrong record.
-      # See samba-dc/tasks/dns-self-heal.yml for the full explanation.
+      # BOTH flags are required.  Without --no-children the enumeration also
+      # returns every node beneath this one, whose values would then be pruned
+      # from the wrong record; without --authority the select flags stop
+      # defaulting to authority data and the query returns nothing at all, so
+      # every record looks missing.  See samba-dc/tasks/dns-self-heal.yml.
+      - --authority
       - --no-children
       - "-U"
       - Administrator
@@ -97,9 +100,25 @@
     PASSWD: "{{ sssd_admin_password }}"
   delegate_to: "{{ groups['dc'][0] }}"
   become: true
+  register: _sssd_dns_add
   when: _sssd_reg_addr not in _sssd_dns_values
-  changed_when: true
+  # "already exists" means the address we wanted published is published, so the
+  # desired end state holds (SSSD dynamic DNS can beat us to it).  Any other
+  # failure is surfaced below with its message, which no_log would otherwise
+  # reduce to "non-zero return code".
+  changed_when: _sssd_dns_add.rc | default(1) == 0
+  failed_when: false
   no_log: true
+
+- name: Fail if this host's A record could not be published
+  ansible.builtin.fail:
+    msg: >-
+      samba-tool dns add failed in zone {{ sssd_domain }}:
+      {{ _sssd_dns_add.stderr | default('') | trim }}
+  when:
+    - _sssd_dns_add is not skipped
+    - _sssd_dns_add.rc | default(0) != 0
+    - "'already exists' not in (_sssd_dns_add.stderr | default(''))"
 
 # Removed only after the current address is published, so the name is never
 # left unresolvable mid-run.
@@ -134,6 +153,7 @@
       - "{{ _sssd_reverse_zone }}"
       - "{{ _sssd_reg_octet }}"
       - PTR
+      - --authority
       - --no-children
       - "-U"
       - Administrator

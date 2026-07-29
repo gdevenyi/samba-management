@@ -75,9 +75,12 @@
       - "{{ _reverse_zone }}"
       - "{{ ansible_facts['default_ipv4'].address.split('.')[3] }}"
       - PTR
-      # Without --no-children the enumeration returns every node beneath the
-      # queried name as well, so the prune below would try to delete values
-      # that live on a child rather than here.  See dns-self-heal.yml.
+      # BOTH flags are required.  Without --no-children the enumeration also
+      # returns every node beneath this one, whose values the prune below would
+      # try to delete from the wrong record; without --authority the select
+      # flags stop defaulting to authority data and the query returns nothing
+      # at all.  See the full explanation in dns-self-heal.yml.
+      - --authority
       - --no-children
       - "-U"
       - Administrator
@@ -115,11 +118,27 @@
       - Administrator
   environment:
     PASSWD: "{{ samba_admin_password }}"
+  register: _dc_ptr_add
   when:
     - _samba_domain_exists | default(false)
     - samba_dc_fqdn | lower not in (_dc_ptr_values | default([]))
-  changed_when: true
+  # "already exists" means the value we wanted is published, so the desired end
+  # state holds; anything else is surfaced by the check task below, since
+  # no_log would otherwise reduce it to "non-zero return code".
+  changed_when: _dc_ptr_add.rc | default(1) == 0
+  failed_when: false
   no_log: true
+
+- name: Fail if the DC's PTR could not be published
+  ansible.builtin.fail:
+    msg: >-
+      samba-tool dns add failed in zone {{ _reverse_zone }}:
+      {{ (_dc_ptr_add.stderr | default('') | trim) }}
+  when:
+    - _samba_domain_exists | default(false)
+    - _dc_ptr_add is not skipped
+    - _dc_ptr_add.rc | default(0) != 0
+    - "'already exists' not in (_dc_ptr_add.stderr | default(''))"
 
 # Values other than the canonical FQDN are leftovers from a previous name or
 # address.  Dropped only after the correct value is in place above, so the

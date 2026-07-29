@@ -122,6 +122,22 @@ test_deprovision_client() {
         ssh_client "! test -e /etc/ssh/sshd_config.d/sssd.conf"
     run_test "client: left the AD domain (realm list empty)" \
         ssh_client "! realm list 2>/dev/null | grep -qi 'samba\.test'"
+    # AGENTS.md calls this one out specifically: leaving the drop-in behind
+    # keeps the host pointing DNS at a DC it is no longer joined to, so every
+    # lookup goes to a dead resolver.  The playbook removes it; nothing asserted it.
+    run_test "client: AD DNS routing drop-in removed" \
+        ssh_client "! sudo test -e /etc/systemd/resolved.conf.d/samba-ad.conf"
+    run_test "client: autofs stopped and disabled" \
+        ssh_client "! systemctl is-active --quiet autofs && ! systemctl is-enabled --quiet autofs"
+    # The client's own A record should go the same way the storage host's does.
+    # Query the DC by the client's AD name, read live rather than from
+    # SMB_TEST_CLIENT_NAME (which is the libvirt VM name, not the AD name).
+    local chost
+    chost=$(ssh_client "hostname -s" 2>/dev/null || echo "")
+    if [[ -n "$chost" ]]; then
+        run_warn "client: DNS A record removed on DC (${chost}.${SMB_TEST_DOMAIN})" \
+            ssh_dc "! host ${chost}.${SMB_TEST_DOMAIN} 127.0.0.1 >/dev/null 2>&1"
+    fi
 }
 
 test_deprovision_nfs() {
@@ -157,10 +173,25 @@ test_deprovision_nfs() {
     run_test "storage: left the AD domain (realm list empty)" \
         ssh_nfs "! realm list 2>/dev/null | grep -qi 'samba\.test'"
 
+    run_test "storage: AD DNS routing drop-in removed" \
+        ssh_nfs "! sudo test -e /etc/systemd/resolved.conf.d/samba-ad.conf"
+
     # The playbook deletes the host's DNS A/PTR best-effort (failed_when:false),
     # so a lingering record is a warning, not a failure.
-    run_warn "storage: DNS A record removed on DC" \
-        ssh_dc "! host ${SMB_TEST_STORAGE_NAME}.${SMB_TEST_DOMAIN} 127.0.0.1 >/dev/null 2>&1"
+    #
+    # SMB_TEST_STORAGE_NAME is the *libvirt VM* name ("samba-storage"); the AD
+    # and DNS name is the cloud-init hostname ("storage01").  Querying the VM
+    # name returned NXDOMAIN even while the host was fully joined, so `! host`
+    # always succeeded and this check could never fail.  Read the real name off
+    # the host so it cannot drift again.
+    local shost
+    shost=$(ssh_nfs "hostname -s" 2>/dev/null || echo "")
+    if [[ -n "$shost" ]]; then
+        run_warn "storage: DNS A record removed on DC (${shost}.${SMB_TEST_DOMAIN})" \
+            ssh_dc "! host ${shost}.${SMB_TEST_DOMAIN} 127.0.0.1 >/dev/null 2>&1"
+    else
+        log_warn "storage: could not read hostname; skipping DNS A record check"
+    fi
 }
 
 echo "=============================="

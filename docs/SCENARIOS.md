@@ -489,7 +489,8 @@ samba-automount.sh modify auto.shares <name> \
 `modify` rewrites the NFS export to match, so the map and the export can't drift
 apart: it re-exports on the serving host, withdraws the export from the old host
 when a share moves, and preserves the existing export options (a pinned `fsid=`,
-any hand-added flags) while taking `sec=` from the map entry.
+any hand-added flags) while taking `sec=` from the map entry. `add-entry` and
+`delete-entry` on `auto.shares` maintain the export the same way.
 
 ### Prevention
 

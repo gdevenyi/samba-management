@@ -7,6 +7,13 @@
 - name: Validate environment and variables
   ansible.builtin.import_tasks: assertions.yml
 
+# Before install/provision: the domain must never be provisioned (nor Kerberos
+# exercised) against an /etc/hosts entry that points the DC's own name at a
+# stale address.  Also asserts the binding, replacing the weaker check that
+# used to live in assertions.yml.
+- name: Bind the DC's canonical FQDN to its current address in /etc/hosts
+  ansible.builtin.import_tasks: hosts-file.yml
+
 - name: Install packages and manage services
   ansible.builtin.import_tasks: install.yml
 

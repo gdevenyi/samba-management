@@ -150,3 +150,8 @@
   ansible.builtin.systemd:
     name: "{{ samba_dc_service }}"
     state: started
+
+# `state: started` above is a no-op against a daemon that is running but bound
+# to an address the host no longer has -- see rebind.yml.
+- name: Ensure samba-ad-dc is bound to the DC's current address
+  ansible.builtin.import_tasks: rebind.yml

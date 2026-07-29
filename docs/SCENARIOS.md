@@ -312,11 +312,10 @@ What the re-provision does — and does not — touch:
 - **Machine account / keytab** — `realm join` resets the existing computer
   object's password and writes a fresh `/etc/krb5.keytab`. No stale-account
   cleanup is needed; the old object is reused in place.
-- **DNS** — explicit registration (`sssd_register_dns`, default) is
-  query-then-add idempotent. If the machine kept its IP, the A/PTR are
-  unchanged. If the IP changed, the new record is added but the stale one
-  lingers — delete it by hand:
-  `samba-tool dns delete <dc> <zone> <name> A <old-ip> -U Administrator`.
+- **DNS** — explicit registration (`sssd_register_dns`, default) publishes the
+  host's *current* address and removes any A/PTR value left by a previous one,
+  so a machine that came back on a different IP self-corrects. If the machine
+  kept its IP, nothing changes.
 - **Login anchor / class groups** — untouched. The `login-<hostname>` group
   and its members survive the reinstall, so per-host access control is
   preserved with no DC-side work.
@@ -339,6 +338,69 @@ If the hostname *did* change (or the old object is otherwise stale), run
 `deprovision-linux.yml` against the old name first — or delete the orphaned
 computer object, `login-<hostname>` group, and DNS records on the DC — then
 provision the new host as usual.
+
+---
+
+## The DC's IP address changed
+
+Symptom: members stop resolving AD. SSSD goes offline, logins fall back to
+cached credentials, `getent passwd <aduser>` returns nothing, and NFSv4
+automounts fail — but general internet DNS still works, so it doesn't look
+like a DNS problem.
+
+Cause: exactly one address, not a name, is stored across the whole stack —
+`DNS=` in each member's `/etc/systemd/resolved.conf.d/samba-ad.conf`. Every
+other lookup (SSSD's DC discovery, autofs targets, Kerberos SPNs) goes through
+SRV and A records — which live on the DC that address no longer reaches.
+
+### Repair
+
+```bash
+cd ansible
+# 1. Point the inventory at the DC's new address.  Use a stable alias so a site
+#    hostname that encodes the OLD address can never target the machine that
+#    inherited that lease.
+#      dc:
+#        hosts:
+#          dc01:
+#            ansible_host: <new-address>
+#
+# 2. group_vars/domain_members.yml:  sssd_dc_ip: "<new-address>"
+#
+# 3. Repair the domain.
+ansible-playbook playbooks/repair-dc-address.yml
+ansible-playbook playbooks/healthcheck.yml
+```
+
+The playbook asserts the target really is your DC (`sam.ldb` present) before
+changing anything, then repairs the DC's `/etc/hosts`, its own A records and
+the zone apex, the reverse zone and PTR, and the seeded `auto.home` wildcard;
+re-points every member's resolver drop-in and re-registers its A/PTR; and
+restarts the services that cached the old address. It is idempotent — safe to
+run when nothing is wrong.
+
+Stale `auto.shares` entries are **reported, not rewritten** (shares are
+operator data). Fix each one it names:
+
+```bash
+samba-automount.sh modify auto.shares <name> \
+  --value='-fstype=nfs4,sec=krb5p <server>:/data/<name>'
+```
+
+### Prevention
+
+- **Get a static address or a DHCP reservation for the DC.** This removes the
+  failure mode rather than mitigating it, and a MAC reservation is a routine
+  request even at sites that won't delegate DNS to you.
+- **Leave `samba_dc_canonical_fqdn` empty** so the DC's canonical name is its
+  AD name (`<hostname>.<realm>`). The DC serves that name itself, so the
+  `nfs/<fqdn>` SPN, the keytab, autofs map targets, `NFS_SERVER`, and PTR
+  values all keep working across an address change. Naming them after a site
+  FQDN that encodes the address (`host-33-37.site.example.com`) means every one
+  of them breaks together — and `sssd_krb5_realm_map` then needs updating too.
+- **Re-running the provisioning playbooks also repairs all of this** — the
+  address- and name-sensitive tasks are self-correcting on every run. The
+  repair playbook is just the fast subset.
 
 ---
 

@@ -19,6 +19,31 @@ samba_server_role: "dc"
 samba_use_rfc2307: true
 samba_tls_enabled: false
 
+# --- Canonical name and address bindings ---
+# The DC's canonical FQDN: the name written into /etc/hosts, published as the
+# PTR value, used for the nfs/<fqdn> SPN, seeded into the AD autofs maps, and
+# written to NFS_SERVER in samba-mgmt.conf.
+#
+# Empty (default) derives <hostname>.<realm>, i.e. the DC's *AD* name.  That is
+# deliberate: the AD name is served by this DC's own DNS, so it is the only name
+# that stays valid when the site network renames or re-addresses the host (as a
+# DHCP lease change does).  Pinning these to an externally-owned site FQDN makes
+# every one of them break the day the address moves.  Override only if the DC
+# must be reached by a site name you actually control.
+samba_dc_canonical_fqdn: ""
+# Resolved at use time (defaults are lazy), so it is available to every task
+# file in the role without depending on include order.
+samba_dc_fqdn: >-
+  {{ samba_dc_canonical_fqdn if samba_dc_canonical_fqdn
+     else (ansible_facts['hostname'] ~ '.' ~ (samba_realm | lower)) }}
+# Keep /etc/hosts pointing samba_dc_fqdn at the DC's current LAN address.
+# Nothing else in the stack repairs this file, and a stale entry here survives
+# every re-run while quietly breaking Kerberos.
+samba_manage_hosts_file: true
+# Re-point the DC's own A records (host + zone apex) in the AD zone at its
+# current address on every run, and prune values left behind by a previous one.
+samba_dns_self_heal: true
+
 # --- File system paths ---
 samba_share_base: "/data"
 samba_home_base: "/home/ad"

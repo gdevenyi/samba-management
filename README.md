@@ -86,6 +86,27 @@ Checks DNS SRV records, Kerberos, SSSD/autofs/NFS services, port connectivity,
 and NTP sync on all hosts. A standalone client equivalent (no Ansible needed)
 is `./client/linux/healthcheck.sh`.
 
+### `repair-dc-address.yml` — after the DC's IP changed
+
+```bash
+ansible-playbook playbooks/repair-dc-address.yml
+```
+
+Re-points the whole domain when the DC moved to a new address (a DHCP lease
+change, a subnet migration, a NIC swap). Repairs the DC's `/etc/hosts`, its own
+A records and the zone apex, the reverse zone and PTR, and the seeded autofs
+maps; then rewrites each member's DNS-routing drop-in, re-registers member
+A/PTR records, and restarts the services that cached the old address. Stale
+`auto.shares` entries are reported with the command to fix them rather than
+rewritten, since shares are operator data.
+
+**Update the inventory first** — set `ansible_host` on the `dc` entry and
+`sssd_dc_ip` in `group_vars/domain_members.yml` to the new address. A site
+hostname that encodes the old address will otherwise aim the play at whatever
+machine inherited that lease; the play asserts the target really is your DC
+before touching anything. Every step reuses the provisioning task files, so
+it's a fast subset of a full run and is safe to run when nothing is wrong.
+
 ## Day-to-Day Management (Bash Scripts)
 
 All scripts run **as root on the DC**. They source `lib/common.sh` then `lib/config.sh`, which reads `config/samba-mgmt.conf` for site-specific settings. Config values support optional quoting for values with spaces (e.g., `DEFAULT_GROUP="Domain Users"`). Every script sets `set -euo pipefail` and installs an `ERR` trap that prints the failing line number and command to stderr before exiting non-zero.
@@ -409,6 +430,9 @@ Key variables in role defaults (overridden by `group_vars/`):
 | `sssd_user_resolve_delay` | `3` | sssd-client | Seconds between user lookup retries |
 | `sssd_group_resolve_retries` | `3` | sssd-client | Post-join group lookup retries |
 | `sssd_group_resolve_delay` | `2` | sssd-client | Seconds between group lookup retries |
+| `samba_dc_canonical_fqdn` | `""` | samba-dc | The DC's canonical FQDN (`/etc/hosts`, PTR value, `nfs/<fqdn>` SPN, autofs map targets, `NFS_SERVER`). Empty derives `<hostname>.<realm>` — the AD name, which the DC serves itself and which therefore survives an address change. Override only for a site name you control |
+| `samba_manage_hosts_file` | `true` | samba-dc | Keep `/etc/hosts` pointing `samba_dc_canonical_fqdn` at the DC's *current* address, and drop `127.0.1.1` bindings of its own name |
+| `samba_dns_self_heal` | `true` | samba-dc | Each run, re-point the DC's own A records (host + zone apex) at its current address, prune values left by a previous one, and refresh SRV/`_msdcs` via `samba_dnsupdate` |
 | `samba_nfs_sec` | `krb5p` | samba-dc | NFS Kerberos security flavour — drives both the server-side exports and the `sec=` baked into the seeded autofs map entries |
 | `samba_nfs_server` | `""` | samba-dc | If set, NFS exports live on this host; DC only seeds autofs maps in AD |
 | `samba_nfs_homes_server` | `""` | samba-dc | Override host for `/home` exports; falls back to `samba_nfs_server`, then the DC |
@@ -436,7 +460,9 @@ Key variables in role defaults (overridden by `group_vars/`):
 - **Time sync is critical.** Kerberos breaks with >5 minutes clock skew. Ensure NTP is working on all machines.
 - **Do not use `.local` as your TLD** — it conflicts with Avahi/mDNS.
 - **Do not use `PDC` or `BDC` as hostnames** — reserved NT4 names that confuse AD.
-- **The DC's `/etc/hosts` must resolve its FQDN to its LAN IP**, not `127.0.0.1`.
+- **The DC's `/etc/hosts` must resolve its FQDN to its LAN IP**, not `127.0.0.1`. The `samba-dc` role maintains and asserts this every run (`samba_manage_hosts_file`).
+- **Give the DC a static address or a DHCP reservation.** One value in the whole stack is an address rather than a name — `DNS=` in each member's `/etc/systemd/resolved.conf.d/samba-ad.conf` — and it is the address members use to find the SRV records that would otherwise correct them. If it moves, run `repair-dc-address.yml`.
+- **Don't name AD services after site hostnames you don't control.** A name like `host-33-37.site.example.com` that encodes the address breaks the moment the address changes, taking the `nfs/<fqdn>` SPN, keytab, autofs targets, and `sssd_krb5_realm_map` with it. Leave `samba_dc_canonical_fqdn` empty so those all use the AD name.
 - **For multiple DCs**, do not re-provision. Join additional DCs with `samba-tool domain join`.
 - **Passwords are never stored in config files.** All scripts prompt interactively or pipe via stdin.
 - **NFS share permissions are POSIX-based.** Use `chown`/`chmod`/`setfacl` on the NFS server (DC or storage server) to control access.

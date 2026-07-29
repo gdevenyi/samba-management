@@ -21,7 +21,12 @@ if [[ -f "$CONFIG_FILE" ]]; then
     # interprets quotes and backticks in the value.
     # `export` creates a global variable AND exports it so child processes
     # can see it (declare -g only creates a global, does not export).
-    while IFS='=' read -r key value; do
+    # `|| [[ -n "$key" ]]` so a file whose last line has no trailing newline
+    # still yields that line: read populates the variables but returns
+    # non-zero at EOF, which would otherwise end the loop before the body
+    # ran and silently drop the final setting.  ldif_unfold in
+    # lib/common.sh already uses this idiom.
+    while IFS='=' read -r key value || [[ -n "$key" ]]; do
         key="$(trim_ws "$key")"
         [[ -z "$key" || "$key" =~ ^# ]] && continue
         # Reject malformed keys instead of letting `export` abort the whole

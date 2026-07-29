@@ -176,6 +176,14 @@ All scripts run **as root on the DC**. They source `lib/common.sh` then `lib/con
 ./bin/samba-automount.sh delete-share engineering --force
 ```
 
+`modify` on `auto.shares` carries the NFS export with the map entry: a changed
+host, path or `sec=` rewrites `/etc/exports.d/<name>.exports` on the serving
+host and re-exports, and a move between hosts withdraws the old export.
+Existing export options — a pinned `fsid=`, a hand-added `no_root_squash` — are
+preserved; only `sec=` is taken from the map entry. Editing the map alone would
+otherwise leave clients pointed at a path nothing exports, or requesting a
+Kerberos flavour the export doesn't offer.
+
 ### Group Management (`bin/samba-group.sh`)
 
 ```bash

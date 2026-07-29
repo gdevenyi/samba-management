@@ -39,12 +39,26 @@ Maps (nisMap containers):
   delete-map <mapname>                  Delete an empty map (refuses auto.master)
 
 Entries (nisObject inside a map):
-  add-entry <mapname> <key>             Create an autofs entry
+  add-entry <mapname> <key>             Create an autofs entry.  On auto.shares
+                                        an NFS entry also gets its export
+                                        deployed (but not its data directory --
+                                        add-share is the end-to-end verb).
     --value=<nisMapEntry>               Mount options + target (required)
                                         e.g. '-fstype=nfs4,sec=krb5p host:/path/&'
-  delete-entry <mapname> <key>          Delete an entry
-  modify <mapname> <key>                Replace an entry's value
+  delete-entry <mapname> <key>          Delete an entry.  On auto.shares the NFS
+                                        export is withdrawn too; data is never
+                                        touched (see delete-share --remove-data).
+  modify <mapname> <key>                Replace an entry's value.  On
+                                        auto.shares this also rewrites the NFS
+                                        export to match a changed host, path or
+                                        sec= (existing export options, incl. a
+                                        pinned fsid=, are preserved), and
+                                        withdraws the old export if the share
+                                        moved to another host.
     --value=<nisMapEntry>
+
+  On auto.shares these three verbs keep /etc/exports.d/<key>.exports in step
+  with the map entry; entries whose fstype is not nfs are left alone.
 
 Shares (auto.shares + directory + NFS export, end to end):
   add-share <name>                      Create the share directory, deploy its
@@ -261,8 +275,18 @@ cmd_add_entry() {
         exit 1
     fi
 
-    if dry_run "Would add entry '${key}' to map '${mapname}' = ${value}"; then
+    local _is_share=0
+    [[ "$mapname" == "auto.shares" && "$value" == *fstype=nfs* ]] && _is_share=1
+
+    if dry_run "Would add entry '${key}' to map '${mapname}' = ${value}$( ((_is_share)) && printf ' (and deploy its NFS export)')"; then
         return
+    fi
+
+    # Export first, map second: a map entry clients can see but nothing exports
+    # is worse than an export nothing references yet.  Unlike add-share this
+    # does NOT create the data directory -- add-share is the end-to-end verb.
+    if ((_is_share)); then
+        _sync_share_export "$key" "" "$value"
     fi
 
     local dn
@@ -291,11 +315,22 @@ cmd_delete_entry() {
         exit 3
     fi
 
-    if dry_run "Would delete entry '${key}' from map '${mapname}'"; then
+    # Read the entry before it goes away -- it names the host the export lives on.
+    local old_entry=""
+    [[ "$mapname" == "auto.shares" ]] && old_entry=$(_share_entry_value "$key")
+
+    if dry_run "Would delete entry '${key}' from map '${mapname}'$( [[ "$old_entry" == *fstype=nfs* ]] && printf ' (and withdraw its NFS export)')"; then
         return
     fi
 
     confirm_action "Delete entry '${key}' from map '${mapname}'?" || exit 0
+
+    # Export first, entry second -- see _remove_share_export.  The data
+    # directory is never touched here; delete-share --remove-data is the verb
+    # that removes data, and only when asked.
+    if [[ -n "$old_entry" ]]; then
+        _remove_share_export "$key" "$old_entry"
+    fi
 
     local dn
     dn=$(_entry_dn "$mapname" "$key")
@@ -330,8 +365,25 @@ cmd_modify() {
         exit 3
     fi
 
-    if dry_run "Would set ${mapname}/${key} = ${value}"; then
+    # auto.shares entries are backed by a real NFS export that add-share wrote
+    # from the same values, so a map edit has to carry the export with it.
+    # Restricted to auto.shares deliberately: auto.home's wildcard is served by
+    # /etc/exports.d/homes.exports, which the Ansible roles own declaratively
+    # (samba_nfs_export_homes), and other maps need not be NFS at all.
+    local old_entry=""
+    if [[ "$mapname" == "auto.shares" ]]; then
+        old_entry=$(_share_entry_value "$key")
+    fi
+
+    if dry_run "Would set ${mapname}/${key} = ${value}${old_entry:+ (and re-export NFS to match)}"; then
         return
+    fi
+
+    # Export first, map second.  If the export write fails the map still points
+    # at the old, still-exported target; the reverse order would leave clients
+    # a map entry for a path nothing exports.
+    if [[ "$mapname" == "auto.shares" ]]; then
+        _sync_share_export "$key" "$old_entry" "$value"
     fi
 
     local dn
@@ -405,6 +457,148 @@ _share_entry_value() {
     dn=$(_entry_dn auto.shares "$name")
     ldbsearch -H /var/lib/samba/private/sam.ldb -b "$dn" -s base nisMapEntry 2>/dev/null \
         | ldif_unfold | sed -n 's/^nisMapEntry: //p'
+}
+
+# Split an auto.shares nisMapEntry ('-fstype=nfs4,sec=krb5p host:/path') into
+# its server, export path, and Kerberos flavour.  Single definition of how a
+# share entry is read, shared by delete-share and the export helpers below.
+# Fields the entry does not carry are set empty.
+#
+# Assigns through namerefs rather than returning a delimited string on purpose:
+# `read` with a whitespace IFS (tab included) strips leading empty fields, so an
+# entry with no host:/path target would shift the sec flavour up into the server
+# slot and send an ssh to a host named "krb5p".
+#   _parse_share_entry "$entry" server path sec
+_parse_share_entry() {
+    # shellcheck disable=SC2178  # namerefs to the caller's scalars (intentional)
+    local -n _ps_srv="$2" _ps_pth="$3" _ps_sec="$4"
+    local entry="$1" target=""
+    _ps_srv=""
+    _ps_pth=""
+    _ps_sec=""
+    [[ "$entry" =~ (^|,)sec=([A-Za-z0-9]+) ]] && _ps_sec="${BASH_REMATCH[2]}"
+    [[ -n "$entry" ]] && target="${entry##* }"          # last whitespace field
+    if [[ "$target" == *:* ]]; then
+        _ps_srv="${target%%:*}"
+        _ps_pth="${target#*:}"
+    fi
+    return 0
+}
+
+# Read the option string from an existing per-share export file, so rewriting
+# it preserves what is in there: a pinned fsid= (dropping one causes client
+# ESTALE on ZFS/Btrfs), a hand-added no_root_squash, ro, and so on.  Only sec=
+# is dictated by the map entry.  Empty when the file is missing, in which case
+# the caller falls back to the same defaults add-share uses.
+_share_export_opts() {
+    local server="$1" name="$2" line=""
+    line=$(remote_op "$server" cat "/etc/exports.d/${name}.exports" 2>/dev/null \
+           | grep -m1 -E '^[^#].*\(.*\)' ) || true
+    [[ -z "$line" ]] && return 0
+    line="${line#*\(}"
+    printf '%s' "${line%\)*}"
+}
+
+# Withdraw the per-share NFS export behind an auto.shares entry.  Shared by
+# delete-entry and delete-share.  Both callers run this BEFORE removing the AD
+# entry: the entry is the record the serving host is read back from, so if the
+# SSH leg fails here a re-run can still find and finish the job, whereas
+# deleting the entry first would orphan the export with nothing pointing at it.
+#   _remove_share_export <name> <entry> [server-override]
+_remove_share_export() {
+    local name="$1" entry="$2" override="${3:-}"
+    # shellcheck disable=SC2034  # path/sec are outputs of the parse, unused here
+    local server path sec
+    _parse_share_entry "$entry" server path sec
+    [[ -n "$override" ]] && server="$override"
+
+    if [[ -n "$entry" && "$entry" != *fstype=nfs* ]]; then
+        log_info "Entry '${name}' is not an NFS mount; no export to remove"
+        return 0
+    fi
+    [[ -z "$server" ]] && server="$DEFAULT_NFS_SERVER"
+    validate_server_name "$server" || exit 2
+
+    log_info "Removing NFS export for '${name}' on ${server}"
+    remote_op "$server" rm -f "/etc/exports.d/${name}.exports"
+    remote_op "$server" exportfs -ra
+    log_info "Re-exported (exportfs -ra) on ${server}"
+}
+
+# Keep the NFS export in step with an auto.shares entry that just changed.
+#
+# add-share writes the same facts into two places -- the AD map entry and the
+# export file -- so editing only the map silently breaks the share: a changed
+# path leaves the export naming the old one, a changed server leaves the new
+# host with no export at all, and a changed sec= leaves the client requesting a
+# flavour the export does not offer.  `exportfs -ra` alone cannot fix any of
+# those, because the file on disk is unchanged and wrong; the file has to be
+# rewritten.
+#
+# Called with the entry values from BEFORE and AFTER the modify.  A no-op when
+# server, path and sec are all unchanged.
+_sync_share_export() {
+    local name="$1" old_entry="$2" new_entry="$3"
+    local old_server old_path old_sec new_server new_path new_sec
+    _parse_share_entry "$old_entry" old_server old_path old_sec
+    _parse_share_entry "$new_entry" new_server new_path new_sec
+
+    # auto.shares is a plain autofs map and can legitimately carry entries that
+    # are not NFS at all; those have no export, and must not cause an ssh to
+    # whatever host the entry names.
+    if [[ "$new_entry" != *fstype=nfs* ]]; then
+        log_info "Entry '${name}' is not an NFS mount; no export to update"
+        return 0
+    fi
+    if [[ -z "$new_server" || -z "$new_path" ]]; then
+        log_warn "Entry '${name}' has no host:/path target; NFS export left untouched"
+        return 0
+    fi
+    if [[ "$old_server" == "$new_server" && "$old_path" == "$new_path" && "$old_sec" == "$new_sec" ]]; then
+        return 0
+    fi
+
+    # These reach `ssh root@<server>` and /etc/exports.d/*.exports, so they are
+    # validated before any side effect, as in add-share.
+    validate_server_name "$new_server" || exit 2
+    validate_export_path "$new_path" || exit 2
+
+    local opts
+    opts=$(_share_export_opts "${old_server:-$new_server}" "$name")
+    [[ -z "$opts" ]] && opts="rw,sec=${new_sec:-$DEFAULT_NFS_SEC},sync,no_subtree_check"
+    if [[ -n "$new_sec" ]]; then
+        if [[ "$opts" == *sec=* ]]; then
+            opts=$(printf '%s' "$opts" | sed -E "s/(^|,)sec=[A-Za-z0-9]+/\\1sec=${new_sec}/")
+        else
+            opts="${opts},sec=${new_sec}"
+        fi
+    fi
+
+    [[ "$old_path" != "$new_path" && -n "$old_path" ]] \
+        && log_info "Export target changed ${old_path} -> ${new_path}"
+    [[ -n "$old_sec" && "$old_sec" != "$new_sec" ]] \
+        && log_info "Export security flavour changed ${old_sec} -> ${new_sec}"
+
+    log_info "Rewriting NFS export for '${name}' on ${new_server}"
+    remote_op "$new_server" mkdir -p /etc/exports.d
+    printf '%s\n' "${new_path} *(${opts})" \
+        | remote_write_file "$new_server" "/etc/exports.d/${name}.exports"
+    remote_op "$new_server" exportfs -ra
+    log_info "Re-exported (exportfs -ra) on ${new_server}"
+
+    # A path change reuses the same file name, so writing it above already
+    # retired the old path.  Only a move between hosts leaves a stale export
+    # behind.  Best-effort: the old host may be gone, and failing here after the
+    # new export is live would be worse than a warning.
+    if [[ -n "$old_server" && "$old_server" != "$new_server" ]]; then
+        log_warn "Share '${name}' moved ${old_server} -> ${new_server}; removing the stale export on ${old_server}"
+        if remote_op "$old_server" rm -f "/etc/exports.d/${name}.exports" \
+           && remote_op "$old_server" exportfs -ra; then
+            log_info "Stale export removed on ${old_server}"
+        else
+            log_warn "Could not clean up ${old_server}: remove /etc/exports.d/${name}.exports and run 'exportfs -ra' there by hand"
+        fi
+    fi
 }
 
 # add-share provisions a share end to end: the directory and its NFSv4 export
@@ -511,12 +705,12 @@ cmd_delete_share() {
     # Recover the serving host and path from the map entry
     # ('-fstype=nfs4,sec=X host:/path'); --server overrides the host.
     local server="${opts[--server]:-}"
-    local path="" entry target
+    # shellcheck disable=SC2034  # entry_sec is an output of the parse, unused here
+    local path="" entry entry_server entry_sec
     entry=$(_share_entry_value "$name")
     if [[ -n "$entry" ]]; then
-        target="${entry##* }"          # host:/path (last whitespace field)
-        [[ -z "$server" ]] && server="${target%%:*}"
-        path="${target#*:}"
+        _parse_share_entry "$entry" entry_server path entry_sec
+        [[ -z "$server" ]] && server="$entry_server"
     fi
     [[ -z "$server" ]] && server="$DEFAULT_NFS_SERVER"
     # Whether from --server or recovered from the map entry, the value goes
@@ -531,13 +725,9 @@ cmd_delete_share() {
     fi
     confirm_action "Delete share '${name}'?" || exit 0
 
-    # Remove the export (and optionally the data) BEFORE the AD map entry:
-    # the entry is the record delete-share reads the server/path back from,
-    # so if the SSH leg fails here, a re-run can still find and finish the
-    # job.  Deleting the entry first would orphan the export on failure.
-    log_info "Removing NFS export for '${name}' on ${server}"
-    remote_op "$server" rm -f "/etc/exports.d/${name}.exports"
-    remote_op "$server" exportfs -ra
+    # Export (and optionally the data) go before the AD map entry -- see
+    # _remove_share_export for why the entry has to outlive the export on failure.
+    _remove_share_export "$name" "$entry" "$server"
 
     if [[ "$remove_data" == "1" && -n "$path" ]]; then
         log_warn "Deleting share data directory ${server}:${path}"

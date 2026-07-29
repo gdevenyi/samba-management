@@ -16,11 +16,17 @@
 # string as unset, so a blank override falls through instead of breaking DNS.
 healthcheck_realm: >-
   {{ samba_realm | default(sssd_realm | default('EXAMPLE.INTERNAL', true), true) }}
-# DC hostname for connectivity checks.  Members carry sssd_dc_hostname; the DC
-# itself is not in domain_members and so falls back to its own hostname, which
-# is the name its A record is published under.
-healthcheck_dc_hostname: >-
-  {{ sssd_dc_hostname | default(ansible_facts['hostname'] | default('dc01', true), true) }}
+# DC hostname for connectivity checks.  EMPTY MEANS AUTO-DISCOVER: the role
+# takes the DC out of the _ldap._tcp SRV answer it already looks up, which is
+# the DC the domain itself advertises and is correct on every host class with
+# no per-site variable at all.  Set this only to pin a specific DC.
+#
+# Do NOT reintroduce a fallback to the host's own hostname.  That is right only
+# on the DC; on a member whose site name differs from its AD name (the
+# split-identity case this stack exists for) it makes the host probe ITSELF as
+# the DC -- connection refused on 389/88/2049 and `ip route get` showing dev lo,
+# on a completely healthy domain.
+healthcheck_dc_hostname: "{{ sssd_dc_hostname | default('', true) }}"
 # NFS server hostname for the port 2049 check.  Empty falls back to
 # healthcheck_dc_hostname, which is correct when NFS is colocated on the DC.
 # samba_nfs_server names a dedicated storage host when one is configured.

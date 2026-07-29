@@ -730,6 +730,14 @@ cmd_delete_share() {
     _remove_share_export "$name" "$entry" "$server"
 
     if [[ "$remove_data" == "1" && -n "$path" ]]; then
+        # The path is recovered from the AD map entry, which -- unlike the
+        # --path given to add-share -- has never been through
+        # validate_export_path.  add-entry/modify only enforce LDIF safety on
+        # --value, and _sync_share_export skips validation entirely for a
+        # non-NFS fstype, so an entry naming `host:/` can be stored and would
+        # make this `rm -rf /` on the serving host.  Validate before deleting,
+        # exactly as add-share does before creating.
+        validate_export_path "$path" || exit 2
         log_warn "Deleting share data directory ${server}:${path}"
         remote_op "$server" rm -rf "$path"
     elif [[ -n "$path" ]]; then

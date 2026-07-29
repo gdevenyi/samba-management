@@ -1,15 +1,36 @@
 # samba-healthcheck defaults - Default variables for the healthcheck role.
 #
-# These values identify the AD domain and test user for verification.
-# Override in group_vars if they differ from the defaults.
+# These identify the AD domain and test user for verification.  They are
+# DERIVED from the variables the rest of the stack already defines, so a site
+# that configured the domain normally does not have to restate any of it here.
+#
+# That matters because the healthcheck now fails the play on a hard check
+# (healthcheck_fail_on_error).  With hardcoded EXAMPLE.INTERNAL / dc01
+# fallbacks, any site that never set these would have a perfectly healthy
+# domain report failure on every host, because the checks would be probing
+# example.internal.  Derivation makes the common case correct by default; the
+# literal fallbacks remain only for a host with no domain variables at all.
 ---
-# Kerberos realm (uppercase).
-healthcheck_realm: "EXAMPLE.INTERNAL"
-# DC hostname for connectivity checks.
-healthcheck_dc_hostname: "dc01"
-# NFS server hostname for port 2049 check.  Empty falls back to
-# healthcheck_dc_hostname (the DC, which also serves NFS by default).
-healthcheck_nfs_server: ""
+# Kerberos realm (uppercase).  samba_realm is set for the DC, sssd_realm for
+# domain members; either is enough.  `| default(x, true)` also treats an empty
+# string as unset, so a blank override falls through instead of breaking DNS.
+healthcheck_realm: >-
+  {{ samba_realm | default(sssd_realm | default('EXAMPLE.INTERNAL', true), true) }}
+# DC hostname for connectivity checks.  Members carry sssd_dc_hostname; the DC
+# itself is not in domain_members and so falls back to its own hostname, which
+# is the name its A record is published under.
+healthcheck_dc_hostname: >-
+  {{ sssd_dc_hostname | default(ansible_facts['hostname'] | default('dc01', true), true) }}
+# NFS server hostname for the port 2049 check.  Empty falls back to
+# healthcheck_dc_hostname, which is correct when NFS is colocated on the DC.
+# samba_nfs_server names a dedicated storage host when one is configured.
+#
+# NOTE for split-NFS sites: samba_nfs_server is usually set in group_vars/dc.yml,
+# which is NOT in scope for clients.  Set healthcheck_nfs_server (or
+# samba_nfs_server) somewhere every host can see -- group_vars/all.yml or
+# group_vars/domain_members.yml -- or set healthcheck_require_nfs: false.
+# Otherwise the probe tests the DC, which serves no NFS in that topology.
+healthcheck_nfs_server: "{{ samba_nfs_server | default('', true) }}"
 # Test user for getent verification (must exist in AD).
 healthcheck_test_user: "Administrator"
 # Fail the play when a hard check did not pass.  The full PASS/FAIL matrix is
@@ -17,3 +38,9 @@ healthcheck_test_user: "Administrator"
 # non-zero.  Set to false to keep the report purely informational (the old
 # behaviour, in which healthcheck.yml could never fail).
 healthcheck_fail_on_error: true
+# Treat an unreachable NFS port 2049 as a hard failure.  True by default: this
+# stack serves home directories and shares over NFSv4, so an unreachable 2049
+# means logins land without a home directory.  Set false on a site that does not
+# use NFS, or where the 2049 target cannot be resolved per host class -- the
+# probe still runs and still appears in the summary, it just stops being fatal.
+healthcheck_require_nfs: true

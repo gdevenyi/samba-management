@@ -12,3 +12,8 @@ healthcheck_dc_hostname: "dc01"
 healthcheck_nfs_server: ""
 # Test user for getent verification (must exist in AD).
 healthcheck_test_user: "Administrator"
+# Fail the play when a hard check did not pass.  The full PASS/FAIL matrix is
+# always printed first; this only controls whether the playbook then exits
+# non-zero.  Set to false to keep the report purely informational (the old
+# behaviour, in which healthcheck.yml could never fail).
+healthcheck_fail_on_error: true

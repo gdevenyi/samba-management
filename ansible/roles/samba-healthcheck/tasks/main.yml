@@ -82,12 +82,20 @@
 #   53   - DNS resolution
 # Port 2049 (NFS) is checked against the NFS server (which may be the DC
 # or a dedicated storage server).
+#
+# These three use ignore_errors rather than failed_when: false because the
+# summary below tests them with `is failed`.  failed_when: false OVERWRITES the
+# result's `failed` flag with false, so `is failed` was never true and every
+# port rendered as OPEN even when the port was shut -- exactly the case the
+# check exists to catch.  ignore_errors keeps `failed` true and merely stops it
+# aborting the play, which is what the summary always assumed.
+# (ansible-lint's ignore-errors rule permits this when the task registers.)
 - name: Check connectivity to NFS server (port 2049)
   ansible.builtin.wait_for:
     host: "{{ (healthcheck_nfs_server if healthcheck_nfs_server else healthcheck_dc_hostname) }}.{{ healthcheck_realm | lower }}"
     port: 2049
     timeout: 5
-  failed_when: false
+  ignore_errors: true
   register: nfs_port_2049
 
 - name: Check connectivity to DC (port 88)
@@ -95,7 +103,7 @@
     host: "{{ healthcheck_dc_hostname }}.{{ healthcheck_realm | lower }}"
     port: 88
     timeout: 5
-  failed_when: false
+  ignore_errors: true
   register: dc_port_88
 
 - name: Check connectivity to DC (port 53)
@@ -103,7 +111,7 @@
     host: "{{ healthcheck_dc_hostname }}.{{ healthcheck_realm | lower }}"
     port: 53
     timeout: 5
-  failed_when: false
+  ignore_errors: true
   register: dc_port_53
 
 # --- Summary report ---
@@ -127,3 +135,40 @@
       DC port 53 (DNS):      {{ 'OPEN' if dc_port_53 is not failed else 'CLOSED' }}
       NFS mounts:            {{ nfs_mounts.stdout_lines | default([]) | length }} active
       ================================
+
+# Every check above is deliberately non-fatal so the whole matrix always
+# prints.  Without this final gate, though, `ansible-playbook healthcheck.yml`
+# exits 0 no matter what -- a domain with dead DNS, stopped SSSD and closed
+# Kerberos ports reported success, and provision.sh's "Health check failed"
+# branch was unreachable.  Assert AFTER the summary so the operator still sees
+# the full picture, then fail.
+#
+# Only checks that must hold on EVERY host class are hard.  The rest stay
+# informational because their correct value depends on the host's role:
+#   Kerberos ticket - root holds no TGT on a member; only the DC does
+#   winbind         - masked on the DC by design, absent elsewhere
+#   autofs          - masked on NFS storage hosts so it can't shadow the
+#                     /data and /home/ad mount roots
+#   NFS server      - runs on the NFS host only, not on clients
+#   NFS mounts      - autofs mounts on demand, so zero is normal when idle
+- name: Fail when a hard healthcheck did not pass
+  vars:
+    _healthcheck_failures: >-
+      {{ (( ['DNS _ldap._tcp SRV'] if 'has SRV record' not in (dns_ldap.stdout | default('')) else [] )
+        + ( ['DNS _kerberos._tcp SRV'] if 'has SRV record' not in (dns_krb.stdout | default('')) else [] )
+        + ( ['DNS A record for ' ~ healthcheck_dc_hostname] if 'has address' not in (dns_a.stdout | default('')) else [] )
+        + ( ['SSSD service not running'] if (sssd_status.status.ActiveState | default('')) != 'active' else [] )
+        + ( ['AD user lookup (' ~ healthcheck_test_user ~ ')'] if getent_user.rc | default(1) != 0 else [] )
+        + ( ['NFS port 2049 closed'] if nfs_port_2049 is failed else [] )
+        + ( ['DC port 88 (Kerberos) closed'] if dc_port_88 is failed else [] )
+        + ( ['DC port 53 (DNS) closed'] if dc_port_53 is failed else [] )
+      ) }}
+  ansible.builtin.assert:
+    that:
+      - _healthcheck_failures | length == 0
+    fail_msg: >-
+      Healthcheck FAILED on {{ inventory_hostname }}:
+      {{ _healthcheck_failures | join('; ') }}.
+      See the summary above for the full matrix.
+    success_msg: "All hard healthcheck checks passed on {{ inventory_hostname }}"
+  when: healthcheck_fail_on_error | bool

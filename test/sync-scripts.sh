@@ -6,7 +6,7 @@
 # that iterating on the management scripts against live test VMs doesn't
 # require re-running the playbooks after every edit.  Must run AFTER
 # setup.sh + provision.sh (needs test-config.env and a provisioned DC).
-set -euo pipefail
+set -Eeuo pipefail
 # shellcheck disable=SC2154  # 's' is assigned at trap-firing time
 trap 's=$?; echo >&2 "$0: Error on line "$LINENO": $BASH_COMMAND"; exit $s' ERR
 

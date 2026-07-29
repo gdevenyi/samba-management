@@ -5,7 +5,7 @@
 # LDIF/DN helpers, cache flushing, cross-host (SSH) operation wrappers,
 # and global CLI flag parsing.
 # Sourced by all bin/* scripts -- not intended to be run directly.
-set -euo pipefail
+set -Eeuo pipefail
 trap 's=$?; echo >&2 "$0: Error on line "$LINENO": $BASH_COMMAND"; exit $s' ERR
 
 # --- ANSI color codes for console output ---

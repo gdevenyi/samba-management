@@ -8,7 +8,7 @@
 # host (this DC when colocated, or a dedicated storage host over SSH), making
 # this the single operational entry point for share management.  Must run on
 # the DC as root.
-set -euo pipefail
+set -Eeuo pipefail
 # shellcheck disable=SC2154  # 's' is assigned at trap-firing time
 trap 's=$?; echo >&2 "$0: Error on line "$LINENO": $BASH_COMMAND"; exit $s' ERR
 

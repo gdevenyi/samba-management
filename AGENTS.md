@@ -33,7 +33,13 @@ cd ansible && ansible-playbook --syntax-check playbooks/provision-dc.yml
 
 ## Linting
 
-Run both linters before committing. The CI-equivalent checks are:
+`./test/lint.sh` runs every check below (plus the convention audits) and is the one command to run before committing. It needs no VMs and takes seconds:
+
+```bash
+./test/lint.sh
+```
+
+It wraps the CI-equivalent checks:
 
 ```bash
 # ShellCheck — must produce zero warnings/errors (SC1091 info-level is acceptable)
@@ -43,6 +49,10 @@ shellcheck -s bash -S warning bin/*.sh lib/*.sh client/linux/*.sh test/*.sh
 # roles_path in ansible.cfg is resolved correctly)
 cd ansible && ansible-lint .
 ```
+
+and adds the structural/convention rules that were previously only prose in this file: every playbook passes `--syntax-check`, every YAML file and Jinja template parses, no top-level gathered `ansible_*` facts survive (see "Ansible Conventions"), password-bearing tasks carry `no_log`, `samba_password_complexity` is still a quoted string rather than a YAML boolean, every role variable a template references has a default, and the test-suite table below matches the functions `run-tests.sh` actually defines.
+
+A missing linter is reported as **SKIP**, never PASS, so an incomplete environment can't look like a clean run. Exit status is 0 only when every check passes.
 
 **Common SC1091 info messages are expected** — `bin/*` scripts `source` `lib/common.sh` and `lib/config.sh` which only exist on the DC at deploy time, not in the local checkout. Test scripts `source` `test-config.env` which is generated at runtime. The `# shellcheck source=...` directives document the expected file locations for IDE integration.
 

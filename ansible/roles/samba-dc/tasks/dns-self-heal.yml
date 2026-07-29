@@ -30,6 +30,14 @@
     _dc_dns_state: []
     _dc_dns_stale: []
 
+# --no-children is mandatory, not tidiness.  `samba-tool dns query` sets only
+# DNS_RPC_VIEW_AUTHORITY_DATA by default (cmd_query in samba/netcmd/dns.py), so
+# the enumeration returns the named node AND every node beneath it.  For the
+# zone apex '@' that is every host in the zone: without this flag the query
+# reports each client's A record as a value published at the apex, which makes
+# the prune below try to delete records from '@' that only exist on the child
+# (it fails), and can make the apex look like it already publishes the DC's
+# address when in fact only some client does.
 - name: Query the AD DNS A records that must track the DC's address
   ansible.builtin.command:
     argv:
@@ -40,6 +48,7 @@
       - "{{ _dc_dns_zone }}"
       - "{{ item }}"
       - A
+      - --no-children
       - "-U"
       - Administrator
   environment:
@@ -110,9 +119,27 @@
       - Administrator
   environment:
     PASSWD: "{{ samba_admin_password }}"
+  register: _dc_dns_add
   loop: "{{ _dc_dns_missing }}"
-  changed_when: true
+  changed_when: _dc_dns_add.rc == 0
+  # Inspected below rather than fatal here: no_log censors the failure output,
+  # so a bare failure would tell you a task died and nothing about why.
+  failed_when: false
   no_log: true
+
+- name: Fail if the DC's address could not be published
+  ansible.builtin.fail:
+    msg: >-
+      samba-tool dns add failed in zone {{ _dc_dns_zone }}:
+      {{ _dc_dns_add_errors | join(' | ') }}
+  vars:
+    # stderr only -- the credential travels in the environment, never in the
+    # output, so this is safe to display even though the task itself is no_log.
+    _dc_dns_add_errors: >-
+      {{ _dc_dns_add.results | default([]) | selectattr('rc', 'defined')
+         | selectattr('rc', 'ne', 0) | map(attribute='stderr')
+         | map('trim') | list }}
+  when: _dc_dns_add_errors | length > 0
 
 # Removed only after the correct value is in place, so the zone is never
 # left with no A record for the DC.
@@ -131,11 +158,30 @@
       - Administrator
   environment:
     PASSWD: "{{ samba_admin_password }}"
+  register: _dc_dns_prune
   loop: "{{ _dc_dns_stale }}"
   loop_control:
     label: "{{ item.name }} A {{ item.value }}"
-  changed_when: true
+  changed_when: _dc_dns_prune.rc == 0
+  failed_when: false
   no_log: true
+
+# "Record does not exist" is benign and expected to happen occasionally: the
+# samba daemon runs its own dnsupdate task every ~10 minutes, so it can retire
+# a stale record in the window between the query above and this delete.  Any
+# other error is real and must surface -- with its message, which no_log would
+# otherwise swallow, leaving only "non-zero return code".
+- name: Fail if a stale A value could not be removed
+  ansible.builtin.fail:
+    msg: >-
+      samba-tool dns delete failed in zone {{ _dc_dns_zone }}:
+      {{ _dc_dns_prune_errors | join(' | ') }}
+  vars:
+    _dc_dns_prune_errors: >-
+      {{ _dc_dns_prune.results | default([]) | selectattr('rc', 'defined')
+         | selectattr('rc', 'ne', 0) | map(attribute='stderr') | map('trim')
+         | reject('search', 'does not exist') | list }}
+  when: _dc_dns_prune_errors | length > 0
 
 # samba_dnsupdate owns the ~30 other names a DC publishes (SRV records per
 # service and site, the _msdcs entries, the NTDS-GUID CNAME).  --all-names

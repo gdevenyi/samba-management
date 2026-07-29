@@ -75,6 +75,10 @@
       - "{{ _reverse_zone }}"
       - "{{ ansible_facts['default_ipv4'].address.split('.')[3] }}"
       - PTR
+      # Without --no-children the enumeration returns every node beneath the
+      # queried name as well, so the prune below would try to delete values
+      # that live on a child rather than here.  See dns-self-heal.yml.
+      - --no-children
       - "-U"
       - Administrator
   environment:
@@ -135,7 +139,26 @@
       - Administrator
   environment:
     PASSWD: "{{ samba_admin_password }}"
+  register: _dc_ptr_prune
   loop: "{{ _dc_ptr_values | default([]) | difference([samba_dc_fqdn | lower]) }}"
   when: _samba_domain_exists | default(false)
-  changed_when: true
+  changed_when: _dc_ptr_prune.rc == 0
+  failed_when: false
   no_log: true
+
+# A record retired between the query and this delete (samba's own dnsupdate
+# task runs every ~10 minutes) is benign; anything else must surface with its
+# message, which no_log would otherwise reduce to "non-zero return code".
+- name: Fail if a stale PTR value could not be removed
+  ansible.builtin.fail:
+    msg: >-
+      samba-tool dns delete failed in zone {{ _reverse_zone }}:
+      {{ _dc_ptr_prune_errors | join(' | ') }}
+  vars:
+    _dc_ptr_prune_errors: >-
+      {{ _dc_ptr_prune.results | default([]) | selectattr('rc', 'defined')
+         | selectattr('rc', 'ne', 0) | map(attribute='stderr') | map('trim')
+         | reject('search', 'does not exist') | list }}
+  when:
+    - _samba_domain_exists | default(false)
+    - _dc_ptr_prune_errors | length > 0

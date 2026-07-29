@@ -58,6 +58,10 @@
       - "{{ sssd_domain }}"
       - "{{ _sssd_reg_name }}"
       - A
+      # Without --no-children the enumeration also returns every node beneath
+      # this name, whose values would then be pruned from the wrong record.
+      # See samba-dc/tasks/dns-self-heal.yml for the full explanation.
+      - --no-children
       - "-U"
       - Administrator
   environment:
@@ -130,6 +134,7 @@
       - "{{ _sssd_reverse_zone }}"
       - "{{ _sssd_reg_octet }}"
       - PTR
+      - --no-children
       - "-U"
       - Administrator
   environment:

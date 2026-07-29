@@ -26,8 +26,8 @@
       - samba_admin_password is defined and samba_admin_password | length > 0
     fail_msg: "samba_realm, samba_domain, and samba_admin_password are required"
 
-- name: Check /etc/hosts resolves FQDN to LAN IP
-  ansible.builtin.command: "getent hosts {{ ansible_facts['fqdn'] }}"
-  register: hosts_check
-  changed_when: false
-  failed_when: "'127.0.0.1' in hosts_check.stdout"
+# The DC's FQDN -> LAN address binding is checked in hosts-file.yml, which
+# repairs /etc/hosts first and then asserts the answer matches the host's
+# CURRENT address.  The check used to live here and only rejected 127.0.0.1,
+# so a stale-but-routable address (the state a DHCP lease change leaves behind)
+# passed every run.

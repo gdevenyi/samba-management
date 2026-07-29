@@ -1,0 +1,79 @@
+# hosts-file.yml - Bind the DC's canonical FQDN to its CURRENT LAN address.
+#
+# Kerberos on a DC depends on /etc/hosts resolving the machine's own FQDN to a
+# real LAN address.  Nothing else in this stack writes that file, so before this
+# task file existed a DHCP lease change left a stale entry that survived every
+# subsequent re-run -- the role's only check rejected 127.0.0.1 and happily
+# accepted a wrong-but-routable address.
+#
+# Two rules are enforced:
+#   1. No loopback line may claim the DC's own name.  Cloud images ship
+#      `127.0.1.1 <hostname>`, which makes `hostname -f` (and therefore
+#      ansible_facts['fqdn']) resolve to the loopback binding instead of the
+#      LAN one.
+#   2. Exactly one line maps the current address to samba_dc_fqdn + the short
+#      hostname, and it replaces whatever line previously claimed that name --
+#      including one carrying a dead site FQDN from an earlier addressing.
+#
+# Runs before install.yml/provision.yml so the domain is never provisioned
+# against a stale binding.
+---
+- name: Set the DC's canonical name and address facts
+  ansible.builtin.set_fact:
+    _samba_dc_short: "{{ ansible_facts['hostname'] }}"
+    _samba_dc_addr: "{{ ansible_facts['default_ipv4'].address }}"
+
+- name: Manage the DC's /etc/hosts entry
+  when: samba_manage_hosts_file | bool
+  block:
+    # state: absent removes EVERY matching line, so a host that accumulated
+    # several loopback aliases is fully cleaned in one pass.
+    - name: Remove loopback bindings that claim the DC's own name
+      ansible.builtin.lineinfile:
+        path: /etc/hosts
+        regexp: '^\s*127\.[0-9.]+\s+.*\b{{ _samba_dc_short | regex_escape }}\b'
+        state: absent
+        owner: root
+        group: root
+        mode: "0644"
+
+    # The regexp matches on the SHORT hostname rather than the FQDN so it also
+    # catches a line left over from a previous canonical name (e.g. a site FQDN
+    # like opennet-33-37.uhnres.utoronto.ca, which still contains the short
+    # name as a word).  lineinfile replaces that line in place, which keeps this
+    # idempotent: on a steady-state re-run the line already equals `line`.
+    - name: Pin the DC's FQDN to its current LAN address
+      ansible.builtin.lineinfile:
+        path: /etc/hosts
+        regexp: '^\s*\S+\s+.*\b{{ _samba_dc_short | regex_escape }}\b'
+        line: "{{ _samba_dc_addr }} {{ samba_dc_fqdn }} {{ _samba_dc_short }}"
+        insertafter: EOF
+        owner: root
+        group: root
+        mode: "0644"
+
+# Verify the end state rather than trusting the edits above: nsswitch may
+# answer this from DNS instead of files, and either source is acceptable as
+# long as the answer is the DC's current LAN address.
+- name: Check what the DC's own FQDN resolves to
+  ansible.builtin.command: "getent hosts {{ samba_dc_fqdn }}"
+  register: _samba_hosts_check
+  changed_when: false
+  failed_when: false
+
+- name: Extract the resolved address
+  ansible.builtin.set_fact:
+    _samba_hosts_addr: "{{ (_samba_hosts_check.stdout_lines | first | default('')).split() | first | default('') }}"
+
+- name: Assert the DC's FQDN resolves to its current LAN address
+  ansible.builtin.assert:
+    that:
+      - _samba_hosts_addr == _samba_dc_addr
+    fail_msg: >-
+      {{ samba_dc_fqdn }} resolves to '{{ _samba_hosts_addr | default('nothing') }}'
+      but this host's LAN address is {{ _samba_dc_addr }}.  Kerberos breaks when a
+      DC cannot resolve its own name to a routable address.  Set
+      samba_manage_hosts_file: true (currently
+      {{ samba_manage_hosts_file }}) to let this role repair /etc/hosts, or fix
+      the entry by hand.
+    success_msg: "{{ samba_dc_fqdn }} -> {{ _samba_dc_addr }}"

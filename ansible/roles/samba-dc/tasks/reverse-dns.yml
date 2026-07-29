@@ -1,4 +1,4 @@
-# reverse-dns.yml - Create the in-addr.arpa zone and add a PTR for the DC.
+# reverse-dns.yml - Create the in-addr.arpa zone and keep the DC's PTR current.
 #
 # Runs whenever the domain exists (not just on the play that provisioned
 # it), so a first run that died after the provision marker was written
@@ -6,6 +6,17 @@
 # queried first and only created when missing, mirroring the pattern in
 # sssd-client/tasks/dns-register.yml.  Genuine failures surface instead of
 # being swallowed by a blanket failed_when: false.
+#
+# The zone name is derived from the DC's CURRENT address, so an address change
+# creates the new subnet's zone on the next run.  An existing PTR whose value
+# is stale (pointing at a name the DC no longer answers to) is rewritten rather
+# than left alone -- "the record exists" was never the same as "the record is
+# right".  A PTR still sitting in the PREVIOUS subnet's zone is reported by
+# playbooks/repair-dc-address.yml rather than deleted here: this file only
+# knows about the address the host has now.
+#
+# `samba-tool dns` is addressed at 127.0.0.1 rather than at the DC by name --
+# during an address change the DC's own name is exactly what is unreliable.
 ---
 - name: Compute reverse DNS zone name
   ansible.builtin.set_fact:
@@ -23,7 +34,7 @@
       - samba-tool
       - dns
       - zoneinfo
-      - "{{ ansible_facts['hostname'] }}.{{ samba_realm | lower }}"
+      - 127.0.0.1
       - "{{ _reverse_zone }}"
       - "-U"
       - Administrator
@@ -41,7 +52,7 @@
       - samba-tool
       - dns
       - zonecreate
-      - "{{ ansible_facts['hostname'] }}.{{ samba_realm | lower }}"
+      - 127.0.0.1
       - "{{ _reverse_zone }}"
       - "-U"
       - Administrator
@@ -60,7 +71,7 @@
       - samba-tool
       - dns
       - query
-      - "{{ ansible_facts['hostname'] }}.{{ samba_realm | lower }}"
+      - 127.0.0.1
       - "{{ _reverse_zone }}"
       - "{{ ansible_facts['default_ipv4'].address.split('.')[3] }}"
       - PTR
@@ -74,23 +85,57 @@
   failed_when: false
   no_log: true
 
+# samba-tool renders the value as "    PTR: dc01.ad.example.internal (flags=...)",
+# one per line, so the match is anchored to the line start.  Compared
+# case-insensitively and without the trailing dot, since DNS names are
+# case-insensitive and samba-tool is inconsistent about the root label.
+- name: Collect the PTR values currently published for the DC's address
+  ansible.builtin.set_fact:
+    _dc_ptr_values: >-
+      {{ (_dc_ptr_check.stdout | default('')) | regex_findall('^ +PTR: *([^ ]+)', multiline=True)
+         | map('regex_replace', '[.]$', '') | map('lower') | list }}
+  when: _samba_domain_exists | default(false)
+
 - name: Add PTR record for DC
   ansible.builtin.command:
     argv:
       - samba-tool
       - dns
       - add
-      - "{{ ansible_facts['hostname'] }}.{{ samba_realm | lower }}"
+      - 127.0.0.1
       - "{{ _reverse_zone }}"
       - "{{ ansible_facts['default_ipv4'].address.split('.')[3] }}"
       - PTR
-      - "{{ ansible_facts['fqdn'] }}"
+      - "{{ samba_dc_fqdn }}"
       - "-U"
       - Administrator
   environment:
     PASSWD: "{{ samba_admin_password }}"
   when:
     - _samba_domain_exists | default(false)
-    - _dc_ptr_check.rc != 0
+    - samba_dc_fqdn | lower not in (_dc_ptr_values | default([]))
+  changed_when: true
+  no_log: true
+
+# Values other than the canonical FQDN are leftovers from a previous name or
+# address.  Dropped only after the correct value is in place above, so the
+# address is never left without a PTR.
+- name: Remove PTR values left behind by a previous name
+  ansible.builtin.command:
+    argv:
+      - samba-tool
+      - dns
+      - delete
+      - 127.0.0.1
+      - "{{ _reverse_zone }}"
+      - "{{ ansible_facts['default_ipv4'].address.split('.')[3] }}"
+      - PTR
+      - "{{ item }}"
+      - "-U"
+      - Administrator
+  environment:
+    PASSWD: "{{ samba_admin_password }}"
+  loop: "{{ _dc_ptr_values | default([]) | difference([samba_dc_fqdn | lower]) }}"
+  when: _samba_domain_exists | default(false)
   changed_when: true
   no_log: true

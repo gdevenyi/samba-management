@@ -1,0 +1,189 @@
+# repair-dc-address.yml - Re-point the domain after the DC's IP address changed.
+#
+# WHEN TO RUN THIS
+#   The DC's address moved (a DHCP lease change, a subnet migration, a NIC
+#   swap) and members can no longer resolve the AD domain.  The symptom is
+#   almost never "DNS is broken": SSSD goes offline, logins fall back to cached
+#   credentials, and NFSv4 automounts fail -- because the one address every
+#   member stores (DNS= in /etc/systemd/resolved.conf.d/samba-ad.conf) now
+#   points at nothing, and the SRV records that would correct it live on the
+#   very DC that address no longer reaches.
+#
+# BEFORE RUNNING
+#   1. Update the inventory.  Use a stable alias plus an explicit address, so a
+#      site name that encodes the old address can never aim this play at
+#      whatever machine inherited that lease:
+#
+#          dc:
+#            hosts:
+#              dc01:
+#                ansible_host: <new-address>
+#
+#   2. Set sssd_dc_ip: "<new-address>" in group_vars/domain_members.yml.
+#
+#   Then:  ansible-playbook playbooks/repair-dc-address.yml
+#
+# WHAT IT DOES
+#   On the DC     - repairs /etc/hosts, its own A records and the zone apex,
+#                   the reverse zone and PTR, the seeded autofs maps, and
+#                   regenerates samba-mgmt.conf.
+#   On members    - rewrites the resolved drop-in, restarts the resolver,
+#                   re-registers their own A/PTR, flushes SSSD's cache, and
+#                   restarts the services that cached the DC's address.
+#   Reports       - auto.shares entries still pointing at a stale NFS server.
+#                   Those are operator data (bin/samba-automount.sh), so they
+#                   are listed with the command to fix them rather than
+#                   rewritten behind your back.
+#
+# Every step is drawn from the same task files the provisioning playbooks use,
+# so this is a fast subset of a full run, not a parallel implementation.  It is
+# idempotent and safe to run when nothing is wrong.
+---
+- name: Repair the DC's own address and name bindings
+  hosts: dc
+  become: true
+  gather_facts: true
+  tasks:
+    - name: Load distribution-specific vars
+      ansible.builtin.include_vars:
+        file: "{{ playbook_dir }}/../roles/samba-dc/vars/{{ ansible_facts['distribution'] }}.yml"
+
+    # The repair task files are normally reached through the role's main.yml,
+    # which sets this from the provisioning gate.  Recreate it from the same
+    # source of truth so they don't all skip.
+    - name: Confirm the AD database is present
+      ansible.builtin.stat:
+        path: /var/lib/samba/private/sam.ldb
+      register: _repair_samdb
+
+    - name: Assert this host really is the domain controller
+      ansible.builtin.assert:
+        that:
+          - _repair_samdb.stat.exists
+        fail_msg: >-
+          /var/lib/samba/private/sam.ldb is missing on {{ inventory_hostname }}
+          ({{ ansible_facts['default_ipv4'].address }}).  This host is not the
+          Samba AD DC.  If the DC's address changed, the inventory name may now
+          resolve to a DIFFERENT machine -- set ansible_host to the DC's current
+          address before re-running.
+        success_msg: "AD database present; proceeding with the address repair"
+
+    - name: Record that the domain exists
+      ansible.builtin.set_fact:
+        _samba_domain_exists: true
+
+    # public: true exposes the samba-dc role's defaults (samba_dc_fqdn,
+    # samba_dns_self_heal, samba_nfs_sec, ...) to the rest of this play, so the
+    # conditions and the report below see the same values the role does.
+    - name: Bind the canonical FQDN to the current address
+      ansible.builtin.include_role:
+        name: samba-dc
+        tasks_from: hosts-file.yml
+        public: true
+
+    # Samba resolves `bind interfaces only` at startup, so a daemon that was
+    # running when the address changed is still listening on the old one.
+    - name: Rebind samba-ad-dc to the current address
+      ansible.builtin.include_role:
+        name: samba-dc
+        tasks_from: rebind.yml
+
+    - name: Re-point the DC's own DNS records
+      ansible.builtin.include_role:
+        name: samba-dc
+        tasks_from: dns-self-heal.yml
+      when: samba_dns_self_heal | bool
+
+    - name: Repair the reverse zone and PTR
+      ansible.builtin.include_role:
+        name: samba-dc
+        tasks_from: reverse-dns.yml
+
+    - name: Re-point the seeded autofs maps at the current server name
+      ansible.builtin.include_role:
+        name: samba-dc
+        tasks_from: autofs_seed.yml
+      when: samba_enable_autofs_seed | bool
+
+    # NFS_SERVER / NFS_HOMES_SERVER are rendered from samba_dc_fqdn, so this
+    # picks up a changed canonical name for the bin/* management scripts.
+    - name: Regenerate the management scripts' configuration
+      ansible.builtin.include_role:
+        name: samba-dc
+        tasks_from: scripts.yml
+
+    # auto.shares entries are created operationally by bin/samba-automount.sh
+    # add-share, so they are the operator's data, not the role's.  List the
+    # ones whose target host doesn't match the current NFS server rather than
+    # rewriting them.  The share name is visible in the export path.
+    - name: Read the auto.shares entries
+      ansible.builtin.shell: |
+        set -o pipefail
+        ldbsearch -H /var/lib/samba/private/sam.ldb \
+            -b "CN=auto.shares,OU=automount,{{ samba_realm | upper | regex_replace('[.]', ',DC=') | regex_replace('^', 'DC=') }}" \
+            -s one "(objectClass=nisObject)" nisMapEntry 2>/dev/null \
+          | sed -e ':a' -e '$!N;s/\n //;ta' -e 'P;D' \
+          | sed -n 's/^nisMapEntry: //p'
+      args:
+        executable: /bin/bash
+      register: _repair_shares
+      changed_when: false
+      failed_when: false
+
+    - name: Report shares whose target host is not the current NFS server
+      ansible.builtin.debug:
+        msg: >-
+          These auto.shares entries do not name '{{ _repair_expected_nfs }}':
+          {{ _repair_stale_shares | join('  |  ') }}
+          -- re-point each with:  samba-automount.sh modify auto.shares <name>
+          --value='-fstype=nfs4,sec={{ samba_nfs_sec }} {{ _repair_expected_nfs }}:<path>'
+      vars:
+        _repair_expected_nfs: "{{ samba_nfs_server if samba_nfs_server else samba_dc_fqdn }}"
+        _repair_stale_shares: >-
+          {{ _repair_shares.stdout_lines | default([])
+             | reject('search', _repair_expected_nfs | regex_escape) | list }}
+      when: _repair_stale_shares | length > 0
+
+- name: Re-point domain members at the DC's new address
+  hosts: domain_members
+  become: true
+  gather_facts: true
+  tasks:
+    # public: true so sssd_register_dns / sssd_admin_user / the resolve-retry
+    # tunables (all sssd-client role defaults) are in scope for the tasks below.
+    - name: Rewrite the AD DNS routing drop-in
+      ansible.builtin.include_role:
+        name: sssd-client
+        tasks_from: dns-routing.yml
+        public: true
+
+    - name: Re-register this host's A/PTR in the AD zone
+      ansible.builtin.include_role:
+        name: sssd-client
+        tasks_from: dns-register.yml
+      when: sssd_register_dns | bool
+
+    # SSSD caches the DC it discovered, and rpc.gssd/autofs cache resolution
+    # results, so all three keep using the dead address until restarted.
+    - name: Invalidate the SSSD cache
+      ansible.builtin.command: sss_cache -E
+      changed_when: true
+      failed_when: false
+
+    - name: Restart the services that cached the old DC address
+      ansible.builtin.systemd:
+        name: "{{ item }}"
+        state: restarted
+      loop:
+        - sssd
+        - rpc-gssd
+        - autofs
+      failed_when: false
+
+    - name: Verify AD identity resolution is back
+      ansible.builtin.command: "getent passwd {{ sssd_admin_user }}"
+      register: _repair_getent
+      changed_when: false
+      retries: "{{ sssd_user_resolve_retries }}"
+      delay: "{{ sssd_user_resolve_delay }}"
+      until: _repair_getent.rc == 0

@@ -1,0 +1,35 @@
+# rebind.yml - Restart samba-ad-dc when it isn't listening on the current address.
+#
+# smb.conf pins the DC to `interfaces = lo <iface>` with `bind interfaces only`,
+# which Samba resolves to concrete addresses *at startup*.  When the host's
+# address changes under a running daemon (a DHCP lease renewal), Samba keeps
+# its old sockets: `systemctl is-active` says running, `samba-tool` over
+# 127.0.0.1 still works, and every client times out because nothing is
+# listening on the address they were told to use.  A plain `state: started` is
+# a no-op against that, so probe the actual socket instead.
+#
+# Idempotent: on any run where Samba is already bound correctly -- including
+# the run that first started it -- the probe succeeds and nothing restarts.
+---
+- name: Check whether Samba is listening on the DC's current address
+  ansible.builtin.shell: |
+    set -o pipefail
+    ss -lnt "sport = :389" | grep -qF '{{ ansible_facts['default_ipv4'].address }}:389'
+  args:
+    executable: /bin/bash
+  register: _samba_bound_check
+  changed_when: false
+  failed_when: false
+
+- name: Restart samba-ad-dc so it binds the current address
+  ansible.builtin.systemd:
+    name: "{{ samba_dc_service }}"
+    state: restarted
+  when: _samba_bound_check.rc != 0
+
+- name: Wait for LDAP on the current address after the rebind
+  ansible.builtin.wait_for:
+    host: "{{ ansible_facts['default_ipv4'].address }}"
+    port: 389
+    timeout: 60
+  when: _samba_bound_check.rc != 0

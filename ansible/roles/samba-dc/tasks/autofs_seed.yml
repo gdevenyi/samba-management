@@ -17,8 +17,8 @@
 - name: Set autofs DN facts
   ansible.builtin.set_fact:
     _autofs_base_dn: "OU=automount,{{ _autofs_domain_dn }}"
-    _autofs_nfs_server: "{{ samba_nfs_server if samba_nfs_server else ansible_facts['fqdn'] }}"
-    _autofs_homes_nfs_server: "{{ samba_nfs_homes_server if samba_nfs_homes_server else (samba_nfs_server if samba_nfs_server else ansible_facts['fqdn']) }}"
+    _autofs_nfs_server: "{{ samba_nfs_server if samba_nfs_server else samba_dc_fqdn }}"
+    _autofs_homes_nfs_server: "{{ samba_nfs_homes_server if samba_nfs_homes_server else (samba_nfs_server if samba_nfs_server else samba_dc_fqdn) }}"
 
 - name: Set autofs homes target fact
   ansible.builtin.set_fact:
@@ -114,3 +114,47 @@
   loop: "{{ _autofs_exists.results }}"
   loop_control:
     label: "{{ item.item.dn }}"
+
+# --- Keep the seeded auto.home wildcard pointing at the right server --------
+# The create loop above only fills in what's missing, so an entry seeded under
+# a previous NFS server name (a site FQDN that a DHCP move invalidated, or a
+# deployment that later gained a dedicated samba_nfs_homes_server) would keep
+# the dead target forever and every home automount would fail.  The wildcard is
+# this role's declarative property, so re-pointing it belongs here.
+#
+# Per-share auto.shares entries are operator data owned by
+# bin/samba-automount.sh and are deliberately NOT rewritten;
+# playbooks/repair-dc-address.yml reports stale ones with the command to fix them.
+- name: Read the auto.home wildcard's current target
+  ansible.builtin.shell: |
+    set -o pipefail
+    ldbsearch -H /var/lib/samba/private/sam.ldb \
+        -b "CN=*,CN=auto.home,{{ _autofs_base_dn }}" -s base nisMapEntry 2>/dev/null \
+      | sed -e ':a' -e '$!N;s/\n //;ta' -e 'P;D' \
+      | sed -n 's/^nisMapEntry: //p'
+  args:
+    executable: /bin/bash
+  register: _autofs_home_current
+  changed_when: false
+  failed_when: false
+  when: samba_nfs_export_homes | bool
+
+- name: Re-point the auto.home wildcard at the current homes NFS server
+  ansible.builtin.shell: |
+    set -o pipefail
+    cat <<'LDIF' | ldbmodify -H /var/lib/samba/private/sam.ldb
+    dn: CN=*,CN=auto.home,{{ _autofs_base_dn }}
+    changetype: modify
+    replace: nisMapEntry
+    nisMapEntry: {{ _autofs_homes_entry }}
+    -
+    LDIF
+  args:
+    executable: /bin/bash
+  vars:
+    _autofs_homes_entry: "-fstype=nfs4,sec={{ samba_nfs_sec }} {{ _autofs_homes_target }}"
+  when:
+    - samba_nfs_export_homes | bool
+    - (_autofs_home_current.stdout | default('') | trim) | length > 0
+    - (_autofs_home_current.stdout | default('') | trim) != _autofs_homes_entry
+  changed_when: true

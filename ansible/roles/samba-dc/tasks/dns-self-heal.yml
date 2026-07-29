@@ -1,0 +1,161 @@
+# dns-self-heal.yml - Re-point the DC's own AD DNS A records at its current address.
+#
+# `samba-tool domain provision` writes the DC's A record (and the zone apex A
+# record) once, from the address the host had that day.  Nothing in this role
+# ever revisited them, so after a DHCP lease change the AD zone kept handing
+# every client a dead address -- and because the SRV records are name-based and
+# still correct, the breakage looked like "SSSD went offline" rather than
+# "DNS is lying".
+#
+# Repair is explicit and derived from a single query, so it needs no re-query
+# and is a no-op once the records are right:
+#   * delete every published A value that is not the current address
+#   * add the current address when it isn't published
+#   * having changed anything, run samba_dnsupdate --all-names to bring the
+#     rest of the DC's record set (SRV, _msdcs, the NTDS CNAME) into line
+#
+# `samba-tool dns` talks RPC to 127.0.0.1 rather than to the DC by name: during
+# exactly the outage this file repairs, the DC's own name is what's broken.
+---
+- name: Set DNS self-heal facts
+  ansible.builtin.set_fact:
+    _dc_dns_zone: "{{ samba_realm | lower }}"
+    # '@' is the zone apex (the bare realm name); the short hostname is the
+    # DC's own A record.  Both must track the host's address.
+    _dc_dns_names: ["@", "{{ ansible_facts['hostname'] }}"]
+    _dc_dns_addr: "{{ ansible_facts['default_ipv4'].address }}"
+    # Reset the accumulators: set_fact values persist for the play, so a second
+    # include (the repair playbook after a provision run) would otherwise append
+    # to the previous run's list.
+    _dc_dns_state: []
+    _dc_dns_stale: []
+
+- name: Query the AD DNS A records that must track the DC's address
+  ansible.builtin.command:
+    argv:
+      - samba-tool
+      - dns
+      - query
+      - 127.0.0.1
+      - "{{ _dc_dns_zone }}"
+      - "{{ item }}"
+      - A
+      - "-U"
+      - Administrator
+  environment:
+    PASSWD: "{{ samba_admin_password }}"
+  register: _dc_dns_queries
+  loop: "{{ _dc_dns_names }}"
+  changed_when: false
+  # "Record does not exist" is a non-zero rc and a legitimate state (handled
+  # by the add task below), so failures are inspected rather than fatal.
+  failed_when: false
+  no_log: true
+
+# samba-tool renders each value as "    A: <address> (flags=..., serial=..., ttl=...)"
+# (print_dns_record in samba/netcmd/dns.py).  The match is anchored to the start
+# of the line: an unanchored "A: " also matches inside "AAAA: 2001:db8::1", which
+# would harvest "2001" as an A value and then try to delete it as stale.
+- name: Collect the addresses currently published for each DC name
+  ansible.builtin.set_fact:
+    _dc_dns_state: >-
+      {{ _dc_dns_state + [{
+           'name': item.item,
+           'values': (item.stdout | default('')) | regex_findall('^ +A: *([0-9.]+)', multiline=True)
+         }] }}
+  loop: "{{ _dc_dns_queries.results }}"
+  loop_control:
+    label: "{{ item.item }}"
+
+# Flatten to {name, value} pairs via YAML so the delete task can loop over a
+# plain list; Jinja has no comprehension that yields the pair directly.
+- name: Build the list of stale A values to remove
+  ansible.builtin.set_fact:
+    _dc_dns_stale: "{{ _dc_dns_stale_yaml | from_yaml | default([], true) }}"
+  vars:
+    _dc_dns_stale_yaml: |
+      {% for entry in _dc_dns_state %}
+      {% for value in entry['values'] | difference([_dc_dns_addr]) %}
+      - name: "{{ entry.name }}"
+        value: "{{ value }}"
+      {% endfor %}
+      {% endfor %}
+
+- name: Determine which DC names are missing the current address
+  ansible.builtin.set_fact:
+    _dc_dns_missing: >-
+      {{ _dc_dns_state | rejectattr('values', 'contains', _dc_dns_addr)
+         | map(attribute='name') | list }}
+
+- name: Report the DNS records that will be repaired
+  ansible.builtin.debug:
+    msg: >-
+      AD zone {{ _dc_dns_zone }}: adding {{ _dc_dns_addr }} for
+      {{ _dc_dns_missing | join(', ') }}; removing
+      {{ _dc_dns_stale | map(attribute='value') | join(', ') }}
+  when: (_dc_dns_missing | length > 0) or (_dc_dns_stale | length > 0)
+
+- name: Publish the DC's current address for names that lack it
+  ansible.builtin.command:
+    argv:
+      - samba-tool
+      - dns
+      - add
+      - 127.0.0.1
+      - "{{ _dc_dns_zone }}"
+      - "{{ item }}"
+      - A
+      - "{{ _dc_dns_addr }}"
+      - "-U"
+      - Administrator
+  environment:
+    PASSWD: "{{ samba_admin_password }}"
+  loop: "{{ _dc_dns_missing }}"
+  changed_when: true
+  no_log: true
+
+# Removed only after the correct value is in place, so the zone is never
+# left with no A record for the DC.
+- name: Remove A values left behind by a previous address
+  ansible.builtin.command:
+    argv:
+      - samba-tool
+      - dns
+      - delete
+      - 127.0.0.1
+      - "{{ _dc_dns_zone }}"
+      - "{{ item.name }}"
+      - A
+      - "{{ item.value }}"
+      - "-U"
+      - Administrator
+  environment:
+    PASSWD: "{{ samba_admin_password }}"
+  loop: "{{ _dc_dns_stale }}"
+  loop_control:
+    label: "{{ item.name }} A {{ item.value }}"
+  changed_when: true
+  no_log: true
+
+# samba_dnsupdate owns the ~30 other names a DC publishes (SRV records per
+# service and site, the _msdcs entries, the NTDS-GUID CNAME).  --all-names
+# ignores its update cache, which is what makes it re-examine records it
+# believes it already wrote.  Only run it when the A records above actually
+# moved, so a steady-state re-run reports no change.
+- name: Refresh the DC's remaining DNS records after an address change
+  ansible.builtin.command: samba_dnsupdate --verbose --all-names
+  register: _dc_dnsupdate
+  when: (_dc_dns_missing | length > 0) or (_dc_dns_stale | length > 0)
+  changed_when: true
+  failed_when: false
+
+- name: Warn when samba_dnsupdate could not refresh every record
+  ansible.builtin.debug:
+    msg: >-
+      samba_dnsupdate exited {{ _dc_dnsupdate.rc }}.  The DC's own A records
+      were repaired, but SRV/_msdcs records may still point at the old address.
+      Re-run manually and inspect:  samba_dnsupdate --verbose --all-names
+      (add --use-samba-tool if the nsupdate path fails).
+  when:
+    - _dc_dnsupdate is not skipped
+    - _dc_dnsupdate.rc != 0

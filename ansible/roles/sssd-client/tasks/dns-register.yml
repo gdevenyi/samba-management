@@ -1,5 +1,5 @@
-# dns-register.yml - Register this host's A and PTR records in the Samba DC's
-# AD-integrated DNS zone, delegated to the DC (no client-side Kerberos).
+# dns-register.yml - Keep this host's A and PTR records in the Samba DC's
+# AD-integrated DNS zone current, delegated to the DC (no client-side Kerberos).
 #
 # `realm join` via SSSD/adcli creates the AD computer object but does NOT
 # register a DNS A record (that is a Windows-specific behaviour of the MS join
@@ -16,22 +16,47 @@
 # PTR value is the host's AD name (hostname + sssd_domain), never its (possibly
 # foreign) DNS FQDN, so it stays consistent with the forward record.
 #
+# The records are UPDATED, not merely created.  This file used to check whether
+# a record existed and add one only when it did not, which meant a member whose
+# DHCP lease moved kept publishing its old address in AD forever -- silently,
+# because "the record exists" reads as success.  Every published value that is
+# not this host's current address is now removed.
+#
+# `samba-tool dns` is addressed at 127.0.0.1: the commands already run on the
+# DC (delegate_to), and during an address change the DC's own inventory name is
+# the least reliable way to reach it.
+#
 # Idempotent: `samba-tool dns query` succeeds when the record exists and
-# returns non-zero (with "Record does not exist") when it doesn't.
+# returns non-zero (with "Record does not exist") when it doesn't; the add and
+# delete tasks below are driven by the difference between what is published and
+# this host's address, so a steady-state run does nothing.
 ---
+- name: Set DNS registration facts
+  ansible.builtin.set_fact:
+    _sssd_reg_addr: "{{ ansible_facts['default_ipv4'].address }}"
+    _sssd_reg_name: "{{ ansible_facts['hostname'] }}"
+    _sssd_rev_octets: "{{ ansible_facts['default_ipv4'].address.split('.') }}"
+
+# PTR records live in the reverse zone the samba-dc role created
+# (<third>.<second>.<first>.in-addr.arpa for the host's /24).
+- name: Compute this host's reverse zone name
+  ansible.builtin.set_fact:
+    _sssd_reverse_zone: "{{ _sssd_rev_octets[2] }}.{{ _sssd_rev_octets[1] }}.{{ _sssd_rev_octets[0] }}.in-addr.arpa"
+    _sssd_reg_octet: "{{ _sssd_rev_octets[3] }}"
+
 # `samba-tool dns query/add` defaults to interactive Kerberos auth -- on the
 # DC running as root we don't have a TGT, so without -U Administrator + the
 # PASSWD env var the command sits waiting for a password forever.  Same
 # pattern as the reverse-DNS tasks in the samba-dc role.
-- name: Check if this host's A record already exists in Samba DNS
+- name: Check which A records this host currently publishes in Samba DNS
   ansible.builtin.command:
     argv:
       - samba-tool
       - dns
       - query
-      - "{{ groups['dc'][0] }}"
+      - 127.0.0.1
       - "{{ sssd_domain }}"
-      - "{{ ansible_facts['hostname'] }}"
+      - "{{ _sssd_reg_name }}"
       - A
       - "-U"
       - Administrator
@@ -44,46 +69,66 @@
   become: true
   no_log: true
 
+# Anchored to the line start: an unanchored "A: " also matches inside
+# "AAAA: 2001:db8::1", which would harvest "2001" as an A value and then try to
+# delete it as stale.  samba-tool prints one record per indented line.
+- name: Collect the published A values
+  ansible.builtin.set_fact:
+    _sssd_dns_values: "{{ (_sssd_dns_check.stdout | default('')) | regex_findall('^ +A: *([0-9.]+)', multiline=True) }}"
+
 - name: Register this host's A record in Samba DNS
   ansible.builtin.command:
     argv:
       - samba-tool
       - dns
       - add
-      - "{{ groups['dc'][0] }}"
+      - 127.0.0.1
       - "{{ sssd_domain }}"
-      - "{{ ansible_facts['hostname'] }}"
+      - "{{ _sssd_reg_name }}"
       - A
-      - "{{ ansible_facts['default_ipv4'].address }}"
+      - "{{ _sssd_reg_addr }}"
       - "-U"
       - Administrator
   environment:
     PASSWD: "{{ sssd_admin_password }}"
   delegate_to: "{{ groups['dc'][0] }}"
   become: true
-  when: _sssd_dns_check.rc != 0
+  when: _sssd_reg_addr not in _sssd_dns_values
   changed_when: true
   no_log: true
 
-# PTR record uses the reverse zone the samba-dc role created
-# (<third>.<second>.<first>.in-addr.arpa for the DC's /24).
-- name: Compute this host's reverse-zone components
-  ansible.builtin.set_fact:
-    _sssd_rev_octets: "{{ ansible_facts['default_ipv4'].address.split('.') }}"
+# Removed only after the current address is published, so the name is never
+# left unresolvable mid-run.
+- name: Remove A values left behind by a previous address
+  ansible.builtin.command:
+    argv:
+      - samba-tool
+      - dns
+      - delete
+      - 127.0.0.1
+      - "{{ sssd_domain }}"
+      - "{{ _sssd_reg_name }}"
+      - A
+      - "{{ item }}"
+      - "-U"
+      - Administrator
+  environment:
+    PASSWD: "{{ sssd_admin_password }}"
+  delegate_to: "{{ groups['dc'][0] }}"
+  become: true
+  loop: "{{ _sssd_dns_values | difference([_sssd_reg_addr]) }}"
+  changed_when: true
+  no_log: true
 
-- name: Compute this host's reverse zone name
-  ansible.builtin.set_fact:
-    _sssd_reverse_zone: "{{ _sssd_rev_octets[2] }}.{{ _sssd_rev_octets[1] }}.{{ _sssd_rev_octets[0] }}.in-addr.arpa"
-
-- name: Check if this host's PTR record already exists in Samba DNS
+- name: Check which PTR records this host's address currently publishes
   ansible.builtin.command:
     argv:
       - samba-tool
       - dns
       - query
-      - "{{ groups['dc'][0] }}"
+      - 127.0.0.1
       - "{{ _sssd_reverse_zone }}"
-      - "{{ _sssd_rev_octets[3] }}"
+      - "{{ _sssd_reg_octet }}"
       - PTR
       - "-U"
       - Administrator
@@ -96,6 +141,13 @@
   become: true
   no_log: true
 
+- name: Collect the published PTR values
+  ansible.builtin.set_fact:
+    _sssd_ptr_values: >-
+      {{ (_sssd_ptr_check.stdout | default('')) | regex_findall('^ +PTR: *([^ ]+)', multiline=True)
+         | map('regex_replace', '[.]$', '') | map('lower') | list }}
+    _sssd_ptr_wanted: "{{ (_sssd_reg_name ~ '.' ~ sssd_domain) | lower }}"
+
 # Best-effort: a host on a subnet whose reverse zone the DC does not host
 # (e.g. an off-subnet client) simply can't get a PTR -- tolerate that rather
 # than failing the play.  The forward A record above is the one we depend on.
@@ -105,11 +157,11 @@
       - samba-tool
       - dns
       - add
-      - "{{ groups['dc'][0] }}"
+      - 127.0.0.1
       - "{{ _sssd_reverse_zone }}"
-      - "{{ _sssd_rev_octets[3] }}"
+      - "{{ _sssd_reg_octet }}"
       - PTR
-      - "{{ ansible_facts['hostname'] }}.{{ sssd_domain }}"
+      - "{{ _sssd_reg_name }}.{{ sssd_domain }}"
       - "-U"
       - Administrator
   environment:
@@ -117,7 +169,30 @@
   delegate_to: "{{ groups['dc'][0] }}"
   become: true
   register: _sssd_ptr_add
-  when: _sssd_ptr_check.rc != 0
+  when: _sssd_ptr_wanted not in _sssd_ptr_values
   failed_when: false
   changed_when: _sssd_ptr_add.rc == 0
+  no_log: true
+
+- name: Remove PTR values left behind by a previous name
+  ansible.builtin.command:
+    argv:
+      - samba-tool
+      - dns
+      - delete
+      - 127.0.0.1
+      - "{{ _sssd_reverse_zone }}"
+      - "{{ _sssd_reg_octet }}"
+      - PTR
+      - "{{ item }}"
+      - "-U"
+      - Administrator
+  environment:
+    PASSWD: "{{ sssd_admin_password }}"
+  delegate_to: "{{ groups['dc'][0] }}"
+  become: true
+  register: _sssd_ptr_prune
+  loop: "{{ _sssd_ptr_values | difference([_sssd_ptr_wanted]) }}"
+  failed_when: false
+  changed_when: _sssd_ptr_prune.rc == 0
   no_log: true

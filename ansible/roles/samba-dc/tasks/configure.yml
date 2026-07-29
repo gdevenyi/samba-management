@@ -2,7 +2,8 @@
 #
 # Each phase lives in a focused file so this orchestrator stays scannable:
 #   smb-time-dns.yml   - smb.conf + time sync + Samba DNS resolver
-#   reverse-dns.yml    - first-run reverse DNS zone + PTR for the DC
+#   dns-self-heal.yml  - re-point the DC's own A records at its current address
+#   reverse-dns.yml    - reverse DNS zone + PTR for the DC
 #   scripts.yml        - /opt/samba-management deploy + sbin symlinks
 #
 # NOTE: ous-shares-nfs.yml (OUs, share dirs, NFS) is intentionally NOT here.
@@ -11,6 +12,14 @@
 ---
 - name: Core services - smb.conf, time, DNS resolver, start samba-ad-dc
   ansible.builtin.import_tasks: smb-time-dns.yml
+
+# Runs before reverse-dns.yml so the forward record is correct first, and
+# after smb-time-dns.yml because `samba-tool dns` needs samba-ad-dc listening.
+- name: Re-point the DC's own DNS records at its current address
+  ansible.builtin.include_tasks: dns-self-heal.yml
+  when:
+    - samba_dns_self_heal | bool
+    - _samba_domain_exists | default(false)
 
 - name: Reverse DNS zone and PTR record
   ansible.builtin.import_tasks: reverse-dns.yml

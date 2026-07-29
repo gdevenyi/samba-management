@@ -503,10 +503,30 @@ test_sudo_rules() {
     run_test "Flush SSSD cache for sudo rules" \
         ssh_client sudo sss_cache -E
     sleep 2
-    run_test "Client retrieves sudo rules via SSSD" \
-        ssh_client "echo 'Wr1terPass!234' | kinit perm_writer@SAMBA.TEST && sudo whoami 2>/dev/null | grep -q root ; kdestroy"
-    run_test "Verify sudo works for AD user on client" \
-        ssh_client "echo 'Wr1terPass!234' | kinit perm_writer@SAMBA.TEST && sudo id 2>/dev/null | grep -q 'uid=0' ; kdestroy"
+    # The two checks that used to sit here ran
+    #   `sudo whoami | grep -q root ; kdestroy`
+    # and could not fail for two independent reasons: the exit status was
+    # kdestroy's (the `;` discarded the grep), and ssh_client connects as
+    # `ubuntu`, whom cloud-init grants NOPASSWD:ALL -- so `sudo` returned root
+    # regardless of any AD rule.  The suite reported "sudo works via SSSD"
+    # while AD sudo was in fact completely broken.
+    #
+    # They are replaced by assertions on the two INVARIANTS that were actually
+    # broken (see AGENTS.md > Sudo Rule Management).  Deliberately not
+    # `sudo -l` against a live rule: that depends on SSSD's sudo cache
+    # converging, which shares the flakiness the ShareWriters/initgroups check
+    # already fights, and a flaky test is barely better than a vacuous one.
+    # These are pure state checks -- no cache, no timing, no extra packages.
+    run_test "SUDOers OU grants Authenticated Users read (machine accounts can see rules)" \
+        ssh_dc "sudo samba-tool dsacl get --objectdn='OU=SUDOers,DC=samba,DC=test' 2>/dev/null | grep -q '(A;CI;LCRPLORC;;;AU)'"
+    # Without this on the schema class, every NEW sudoRole object is created
+    # unreadable by machine accounts, and SSSD downloads 0 rules.
+    run_test "sudoRole schema class carries an Authenticated Users read ACE" \
+        ssh_dc "sudo ldbsearch -H /var/lib/samba/private/sam.ldb -b 'CN=Schema,CN=Configuration,DC=samba,DC=test' '(lDAPDisplayName=sudoRole)' defaultSecurityDescriptor 2>/dev/null | grep -q 'RPLCLORC;;;AU'"
+    # sudo-rs (Ubuntu 25.10+ default) never loads libsss_sudo, so AD rules are
+    # silently inert no matter how correct the SSSD config is.
+    run_test "client sudo implementation can consume SSSD rules (not sudo-rs)" \
+        ssh_client "! sudo sudo -V 2>&1 | head -1 | grep -qi 'sudo-rs'"
     # Inline delete kept here so the verification "rules deleted" assertion
     # below runs in the same section.  The EXIT-trap cleanup also tries to
     # delete these, so an early failure still leaves the DC clean.

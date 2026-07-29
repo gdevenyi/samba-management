@@ -21,7 +21,6 @@ UBUNTU_CODENAME="${UBUNTU_CODENAME:-resolute}"
 DC_NAME="${SMB_TEST_DC_NAME:-samba-dc}"
 CLIENT_NAME="${SMB_TEST_CLIENT_NAME:-samba-client}"
 STORAGE_NAME="${SMB_TEST_STORAGE_NAME:-samba-storage}"
-TEST_MODE="${SMB_TEST_MODE:-colocated}"
 
 destroy_vm() {
     local vm_name="$1"
@@ -30,7 +29,7 @@ destroy_vm() {
         virsh destroy "$vm_name" 2>/dev/null || true
         virsh undefine "$vm_name" --remove-all-storage 2>/dev/null || true
     else
-        log_warn "VM '${vm_name}' not found."
+        log_info "VM '${vm_name}' not present."
     fi
     # undefine --remove-all-storage usually removes these already; the rm
     # is a belt-and-braces cleanup.  || true so a permission error (files
@@ -41,10 +40,15 @@ destroy_vm() {
 
 log_info "=== Tearing Down Test Environment ==="
 
+# Tear down every VM the harness can create, unconditionally.  The storage VM
+# used to be gated on SMB_TEST_MODE, which comes from test-config.env -- a file
+# teardown itself deletes.  So a second teardown, or one run after an
+# interrupted setup, or run-matrix.sh's teardown_quiet (which exports TEST_MODE,
+# not SMB_TEST_MODE) all saw the colocated default and left samba-storage
+# defined.  The next separate-mode setup.sh then died on "VM already exists".
+# destroy_vm is a no-op for a VM that isn't there, so being exhaustive is free.
 destroy_vm "$DC_NAME"
-if [[ "$TEST_MODE" == "separate" ]]; then
-    destroy_vm "$STORAGE_NAME"
-fi
+destroy_vm "$STORAGE_NAME"
 destroy_vm "$CLIENT_NAME"
 
 rm -f "${SCRIPT_DIR}/inventory.yml"

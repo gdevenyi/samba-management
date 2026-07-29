@@ -89,10 +89,11 @@ check_prereqs() {
     if [[ ! -w /var/lib/libvirt/images ]]; then
         die "/var/lib/libvirt/images is not writable by $(id -un). Fix with: sudo setfacl -m group:libvirt:rwx -m mask:rwx /var/lib/libvirt/images"
     fi
-    mkdir -p "$SSH_KEY_DIR"
-    rm -f "$SSH_KEY_FILE" "$SSH_KEY_FILE.pub"
-    ssh-keygen -t ed25519 -f "$SSH_KEY_FILE" -N "" -C "samba-test"
-    log_info "Generated test SSH key: ${SSH_KEY_FILE}"
+    # Check for leftover VMs BEFORE touching the key material.  Regenerating
+    # the keypair first would revoke SSH access to any VM still running from a
+    # previous run (their authorized_keys holds the old public half), so the
+    # "already exists" bail-out would leave behind VMs that can no longer be
+    # reached -- teardown.sh is then the only way out.
     local vms_to_check=("$DC_NAME" "$CLIENT_NAME")
     if [[ "$TEST_MODE" == "separate" ]]; then
         vms_to_check+=("$STORAGE_NAME")
@@ -102,6 +103,11 @@ check_prereqs() {
             die "VM '${vm}' already exists. Run test/teardown.sh first."
         fi
     done
+
+    mkdir -p "$SSH_KEY_DIR"
+    rm -f "$SSH_KEY_FILE" "$SSH_KEY_FILE.pub"
+    ssh-keygen -t ed25519 -f "$SSH_KEY_FILE" -N "" -C "samba-test"
+    log_info "Generated test SSH key: ${SSH_KEY_FILE}"
 }
 
 # ---------------------------------------------------------------------------

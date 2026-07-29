@@ -4,7 +4,7 @@
 # Wraps `samba-tool user` subcommands with input validation, dry-run support,
 # confirmation prompts, and home-directory provisioning.  Must run on the DC
 # as root because samba-tool requires direct access to the local sam.ldb.
-set -euo pipefail
+set -Eeuo pipefail
 # shellcheck disable=SC2154  # 's' is assigned at trap-firing time
 trap 's=$?; echo >&2 "$0: Error on line "$LINENO": $BASH_COMMAND"; exit $s' ERR
 

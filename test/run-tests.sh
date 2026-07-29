@@ -8,7 +8,7 @@
 # Each test section is a function; main() invokes them in order.  Cleanup is
 # registered via `trap ... EXIT` so partial runs (failed assertions, ^C,
 # kernel panics) don't leave the DC littered with test objects.
-set -euo pipefail
+set -Eeuo pipefail
 # shellcheck disable=SC2154  # 's' is assigned at trap-firing time
 trap 's=$?; echo >&2 "$0: Error on line "$LINENO": $BASH_COMMAND"; exit $s' ERR
 

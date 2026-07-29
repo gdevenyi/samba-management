@@ -15,7 +15,7 @@
 #
 # Requires libvirt group membership (usermod -aG libvirt $USER).
 # Usage: [TEST_MODE=separate] ./test/setup.sh
-set -euo pipefail
+set -Eeuo pipefail
 # shellcheck disable=SC2154  # 's' is assigned at trap-firing time
 trap 's=$?; echo >&2 "$0: Error on line "$LINENO": $BASH_COMMAND"; exit $s' ERR
 

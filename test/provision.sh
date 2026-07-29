@@ -7,7 +7,7 @@
 # the script fails unless that pass converged (changed=0 for every host),
 # guarding playbook idempotence.
 # Must run AFTER setup.sh.
-set -euo pipefail
+set -Eeuo pipefail
 # shellcheck disable=SC2154  # 's' is assigned at trap-firing time
 trap 's=$?; echo >&2 "$0: Error on line "$LINENO": $BASH_COMMAND"; exit $s' ERR
 

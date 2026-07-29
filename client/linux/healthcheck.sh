@@ -5,7 +5,7 @@
 # autofs, Winbind), Kerberos ticket validity, network port reachability,
 # NTP sync, and active NFS mounts.  Exits non-zero if any HARD check fails,
 # making it suitable for monitoring/alerting integration.
-set -euo pipefail
+set -Eeuo pipefail
 # shellcheck disable=SC2154  # 's' is assigned at trap-firing time
 trap 's=$?; echo >&2 "$0: Error on line "$LINENO": $BASH_COMMAND"; exit $s' ERR
 

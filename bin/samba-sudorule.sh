@@ -4,7 +4,7 @@
 # Creates, lists, shows, and deletes sudoRole objects in OU=SUDOers.
 # These rules are consumed by SSSD's sudo service on Linux clients.
 # Must run on the DC as root.
-set -euo pipefail
+set -Eeuo pipefail
 # shellcheck disable=SC2154  # 's' is assigned at trap-firing time
 trap 's=$?; echo >&2 "$0: Error on line "$LINENO": $BASH_COMMAND"; exit $s' ERR
 

@@ -8,7 +8,7 @@
 # SECURITY NOTE: the config file may contain the Kerberos realm and other
 # site-specific values but NOT passwords.  Passwords are always prompted
 # interactively to avoid credential leakage via the process environment.
-set -euo pipefail
+set -Eeuo pipefail
 # shellcheck disable=SC2154  # 's' is assigned at trap-firing time
 trap 's=$?; echo >&2 "$0: Error on line "$LINENO": $BASH_COMMAND"; exit $s' ERR
 

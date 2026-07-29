@@ -1114,6 +1114,137 @@ test_dc_pam_mkhomedir() {
         ssh_dc "sudo debconf-show libpam-runtime 2>/dev/null | grep -E 'libpam-runtime/profiles:' | grep -q mkhomedir"
 }
 
+# Core Samba configuration on the DC, as deployed by roles/samba-dc
+# (templates/smb.conf.j2, tasks/install.yml, tasks/smb-time-dns.yml).
+test_dc_samba_config() {
+    echo ""
+    echo "--- DC Samba Configuration (samba-dc role) ---"
+    # AGENTS.md: the template that replaces smb.conf after `samba-tool domain
+    # provision` MUST repeat the interface binding, or the DC silently starts
+    # listening on every interface.  Assert both keys and the loopback member.
+    run_test "smb.conf pins 'interfaces' including loopback" \
+        ssh_dc "sudo grep -qE '^[[:space:]]*interfaces[[:space:]]*=[[:space:]]*lo( |$)' /etc/samba/smb.conf"
+    run_test "smb.conf sets 'bind interfaces only = yes'" \
+        ssh_dc "sudo grep -qE '^[[:space:]]*bind interfaces only[[:space:]]*=[[:space:]]*yes' /etc/samba/smb.conf"
+    # The observable consequence of the binding: Samba answers DNS on the
+    # loopback but must not have grabbed the wildcard address.
+    # Compare the Local Address:Port column only ($5).  A substring match on
+    # "0.0.0.0:53" would also hit an ephemeral "0.0.0.0:53945".
+    run_test "Samba DNS is bound to the loopback, never the wildcard address" \
+        ssh_dc "sudo ss -lntu | awk '\$5 ~ /:53\$/ {print \$5}' | grep -q '^127\\.0\\.0\\.1:53\$' && ! sudo ss -lntu | awk '\$5 ~ /:53\$/ {print \$5}' | grep -q '^0\\.0\\.0\\.0:53\$'"
+    # On a DC, samba-ad-dc replaces these three; AGENTS.md requires masked,
+    # not merely stopped, so a package upgrade can't restart them.
+    run_test "smbd/nmbd/winbind are masked (not just stopped)" \
+        ssh_dc "for u in smbd nmbd winbind; do systemctl is-enabled \$u 2>/dev/null | grep -qx masked || exit 1; done"
+    run_test "samba-ad-dc is active and enabled" \
+        ssh_dc "systemctl is-active --quiet samba-ad-dc && systemctl is-enabled --quiet samba-ad-dc"
+    run_test "smb.conf declares the provisioned realm and DC role" \
+        ssh_dc "sudo testparm -s 2>/dev/null | grep -qE '^[[:space:]]*realm = SAMBA.TEST' && sudo testparm -s 2>/dev/null | grep -qE '^[[:space:]]*server role = active directory domain controller'"
+    run_test "rfc2307 POSIX attributes are enabled in idmap_ldb" \
+        ssh_dc "sudo testparm -s 2>/dev/null | grep -qE 'idmap_ldb:use rfc2307 = yes'"
+    run_test "netlogon and sysvol shares are present" \
+        ssh_dc "sudo testparm -s 2>/dev/null | grep -q '^\\[netlogon\\]' && sudo testparm -s 2>/dev/null | grep -q '^\\[sysvol\\]'"
+}
+
+# Kerberos on the DC (roles/samba-dc tasks/configure.yml + the krb5 drop-in).
+test_dc_kerberos() {
+    echo ""
+    echo "--- DC Kerberos (samba-dc role) ---"
+    # AGENTS.md: /var/lib/samba/private is root-only since Samba 4.7, so
+    # krb5.conf must be COPIED there.  A symlink breaks every non-root client.
+    run_test "/etc/krb5.conf is a regular file, not a symlink" \
+        ssh_dc "test -f /etc/krb5.conf && ! test -L /etc/krb5.conf"
+    run_test "/etc/krb5.conf pulls in the drop-in directory" \
+        ssh_dc "grep -qE '^[[:space:]]*includedir[[:space:]]+/etc/krb5\\.conf\\.d/?[[:space:]]*$' /etc/krb5.conf"
+    run_test "DC krb5 drop-in disables reverse-DNS canonicalisation" \
+        ssh_dc "sudo grep -qE '^[[:space:]]*rdns[[:space:]]*=[[:space:]]*false' /etc/krb5.conf.d/samba-dc.conf"
+    run_test "system keytab holds the DC machine principal" \
+        ssh_dc "sudo klist -k /etc/krb5.keytab | grep -qi 'dc01\\\$@SAMBA.TEST'"
+    # The keytab must be USABLE, not merely populated.
+    # Uses a throwaway ccache so the host's real credential cache is untouched.
+    # kinit's status is preserved across the cleanup -- a trailing `; true`
+    # here would make this assertion incapable of failing.
+    # The host component is LOWERCASE: samba-tool exportkeytab writes the DC's
+    # machine principal as <hostname>$@REALM in lower case and Kerberos
+    # principals are case-sensitive.  (Members differ -- realm join/adcli write
+    # an UPPERCASE HOST$ entry there.)  This is the same invariant that makes
+    # sssd.conf's ldap_sasl_authid lowercase; getting it wrong takes the
+    # domain offline, so assert the keytab is genuinely usable.
+    run_test "machine keytab yields a TGT (kinit -k, lowercase principal)" \
+        ssh_dc "cc=/tmp/kt-probe-dc.\$\$; sudo env KRB5CCNAME=FILE:\$cc kinit -k 'dc01\$@SAMBA.TEST'; rc=\$?; sudo kdestroy -c FILE:\$cc >/dev/null 2>&1; exit \$rc"
+    # Colocated only: the DC serves NFS itself and needs the host-based SPN.
+    # In separate mode nfs.yml is gated off (samba_nfs_server != ""), so the
+    # DC legitimately has no nfs principal.
+    if [[ "${SMB_TEST_MODE:-colocated}" != "separate" ]]; then
+        run_test "colocated: DC keytab holds the host-based nfs/ SPN" \
+            ssh_dc "sudo klist -k /etc/krb5.keytab | grep -qi 'nfs/dc01.samba.test@SAMBA.TEST'"
+    fi
+}
+
+# DNS on the DC (tasks/smb-time-dns.yml, dns-self-heal.yml, reverse-dns.yml,
+# hosts-file.yml).
+test_dc_dns() {
+    echo ""
+    echo "--- DC DNS (samba-dc role) ---"
+    run_test "resolved drop-in routes DNS at Samba (DNS=127.0.0.1)" \
+        ssh_dc "sudo grep -qE '^[[:space:]]*DNS=127\\.0\\.0\\.1' /etc/systemd/resolved.conf.d/samba-dc.conf"
+    # '~.' is what forces ALL queries through Samba even when DHCP advertises
+    # its own resolver -- the whole point of the drop-in on a DHCP network.
+    run_test "resolved drop-in claims the AD zone and '~.' catch-all" \
+        ssh_dc "sudo grep -qE '^[[:space:]]*Domains=samba\\.test( .*)? ~\\.' /etc/systemd/resolved.conf.d/samba-dc.conf"
+    run_test "/etc/resolv.conf is the systemd-resolved stub symlink" \
+        ssh_dc "test -L /etc/resolv.conf && readlink -f /etc/resolv.conf | grep -q 'systemd/resolve/stub-resolv.conf'"
+    # ss renders the stub as 127.0.0.53%lo:53, hence the optional zone suffix.
+    run_test "systemd-resolved stub is on 127.0.0.53 (no clash with Samba)" \
+        ssh_dc "systemctl is-active --quiet systemd-resolved && sudo ss -lntu | grep -qE '127\\.0\\.0\\.53(%[a-z0-9]+)?:53'"
+    # dns-self-heal invariant: the DC's own A record and the zone apex both
+    # resolve to the address it currently holds.
+    run_test "DC A record resolves to the DC's current address" \
+        ssh_dc "host -t A dc01.samba.test 127.0.0.1 | grep -q \"\$(hostname -I | awk '{print \$1}')\""
+    run_test "zone apex resolves to the DC's current address" \
+        ssh_dc "host -t A samba.test 127.0.0.1 | grep -q \"\$(hostname -I | awk '{print \$1}')\""
+    run_test "AD service records resolve (_ldap/_kerberos/_msdcs)" \
+        ssh_dc "host -t SRV _ldap._tcp.samba.test 127.0.0.1 | grep -q 'has SRV record' && host -t SRV _kerberos._tcp.samba.test 127.0.0.1 | grep -q 'has SRV record'"
+    run_test "reverse zone resolves the DC's PTR to its AD name" \
+        ssh_dc "host \"\$(hostname -I | awk '{print \$1}')\" 127.0.0.1 | grep -qi 'dc01.samba.test'"
+    # AGENTS.md: Kerberos breaks when the DC's FQDN maps to loopback.
+    run_test "/etc/hosts binds the DC FQDN to its LAN address, not 127.0.0.1" \
+        ssh_dc "grep -E '[[:space:]]dc01\\.samba\\.test' /etc/hosts | grep -qv '^127\\.'"
+    run_test "queries outside the AD zone are forwarded" \
+        ssh_dc "host -t A example.com 127.0.0.1 | grep -qE 'has address|has IPv6'"
+}
+
+# Domain policy and schema (tasks/password_policy.yml, sudo_schema.yml,
+# ous-shares-nfs.yml).  The existing test_password_policy only runs `show`
+# and asserts no actual value.
+test_dc_policy_schema() {
+    echo ""
+    echo "--- DC Policy and Schema (samba-dc role) ---"
+    # These are the samba-dc defaults; the role must actually have applied them.
+    run_test "password history length is 24" \
+        ssh_dc "sudo samba-tool domain passwordsettings show | grep -qE 'Password history length: 24'"
+    run_test "maximum password age is 42 days" \
+        ssh_dc "sudo samba-tool domain passwordsettings show | grep -qE 'Maximum password age \\(days\\): 42'"
+    run_test "minimum password age is 1 day" \
+        ssh_dc "sudo samba-tool domain passwordsettings show | grep -qE 'Minimum password age \\(days\\): 1'"
+    run_test "password complexity is off" \
+        ssh_dc "sudo samba-tool domain passwordsettings show | grep -qiE 'Password complexity: off'"
+    run_test "account lockout threshold is 0 (disabled)" \
+        ssh_dc "sudo samba-tool domain passwordsettings show | grep -qE 'Account lockout threshold \\(attempts\\): 0'"
+    run_test "account lockout duration is 30 minutes" \
+        ssh_dc "sudo samba-tool domain passwordsettings show | grep -qE 'Account lockout duration \\(mins\\): 30'"
+    run_test "reset account lockout after 30 minutes" \
+        ssh_dc "sudo samba-tool domain passwordsettings show | grep -qE 'Reset account lockout after \\(mins\\): 30'"
+    # sudo schema extension: the sudoRole class must be in the AD schema, else
+    # every sudoRole object the management script writes is unusable.
+    run_test "sudoRole class exists in the AD schema" \
+        ssh_dc "sudo ldbsearch -H /var/lib/samba/private/sam.ldb -b 'CN=Schema,CN=Configuration,DC=samba,DC=test' '(lDAPDisplayName=sudoRole)' dn 2>/dev/null | grep -q '^dn:'"
+    run_test "every OU in samba_ous exists in AD" \
+        ssh_dc "for ou in Users Groups Computers Shares SUDOers; do sudo ldbsearch -H /var/lib/samba/private/sam.ldb -b \"OU=\$ou,DC=samba,DC=test\" -s base dn 2>/dev/null | grep -q '^dn:' || exit 1; done"
+    run_test "autofs maps were seeded under OU=automount" \
+        ssh_dc "for m in auto.master auto.home auto.shares; do sudo ldbsearch -H /var/lib/samba/private/sam.ldb -b \"CN=\$m,OU=automount,DC=samba,DC=test\" -s base dn 2>/dev/null | grep -q '^dn:' || exit 1; done"
+}
+
 # --- Main -------------------------------------------------------------------
 main() {
     # Cleanup runs on every exit path -- successful completion, assertion
@@ -1134,6 +1265,12 @@ main() {
     test_autofs_kerberos
     test_password_policy
     test_client_verification
+    # Ansible-provisioned state (roles/samba-dc): these assert what the
+    # playbooks produced, rather than what bin/* does at runtime.
+    test_dc_samba_config
+    test_dc_kerberos
+    test_dc_dns
+    test_dc_policy_schema
     test_sssd_socket_activation
     test_dc_pam_mkhomedir
     test_ssh_keys

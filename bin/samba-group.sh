@@ -121,7 +121,13 @@ cmd_delete() {
     # matching client.  Deleting one without first dropping the filter
     # locks every user out of that host.  Require --force so the operator
     # has to acknowledge they understand the consequence.
-    if [[ "$groupname" == login-* && "${FORCE:-0}" != "1" ]]; then
+    #
+    # Matched case-insensitively (${groupname,,}) because AD resolves
+    # sAMAccountName case-insensitively but bash's == is case-sensitive:
+    # `delete LOGIN-node01` found and deleted the anchor while sailing past a
+    # case-sensitive `login-*` test, which is exactly the lockout this guard
+    # exists to prevent.
+    if [[ "${groupname,,}" == login-* && "${FORCE:-0}" != "1" ]]; then
         log_error "'${groupname}' looks like a per-host SSSD login anchor."
         log_error "Deleting it will lock all users out of any client whose"
         log_error "sssd_login_anchor_group references it (see sssd-client/"

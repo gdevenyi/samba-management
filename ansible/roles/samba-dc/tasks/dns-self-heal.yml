@@ -30,14 +30,26 @@
     _dc_dns_state: []
     _dc_dns_stale: []
 
-# --no-children is mandatory, not tidiness.  `samba-tool dns query` sets only
-# DNS_RPC_VIEW_AUTHORITY_DATA by default (cmd_query in samba/netcmd/dns.py), so
-# the enumeration returns the named node AND every node beneath it.  For the
-# zone apex '@' that is every host in the zone: without this flag the query
-# reports each client's A record as a value published at the apex, which makes
-# the prune below try to delete records from '@' that only exist on the child
-# (it fails), and can make the apex look like it already publishes the DC's
-# address when in fact only some client does.
+# `--authority --no-children` -- BOTH flags, and neither is optional.  See
+# cmd_query in samba/netcmd/dns.py:
+#
+#   * Default (no flags at all) is authority data INCLUDING children, so the
+#     enumeration returns the named node and every node beneath it.  For the
+#     zone apex '@' that is every host in the zone, whose A records would be
+#     read as values published at the apex -- making the prune below try to
+#     delete records from '@' that only exist on a child, and potentially
+#     making the apex look correct when only some client holds the address.
+#
+#   * --authority is the default ONLY while no select flag is given: the code
+#     falls back to DNS_RPC_VIEW_AUTHORITY_DATA under `if select_flags == 0`.
+#     Passing --no-children alone makes select_flags non-zero, so the fallback
+#     never fires and the query returns Records=0 for everything -- every name
+#     then looks like it is missing the address, and the add fails with
+#     WERR_DNS_ERROR_RECORD_ALREADY_EXISTS.
+#
+# Verified against a live DC: `@ A` returned the apex plus md-work-02;
+# `@ A --no-children` returned Records=0; `@ A --authority --no-children`
+# returned exactly the apex record.
 - name: Query the AD DNS A records that must track the DC's address
   ansible.builtin.command:
     argv:
@@ -48,6 +60,7 @@
       - "{{ _dc_dns_zone }}"
       - "{{ item }}"
       - A
+      - --authority
       - --no-children
       - "-U"
       - Administrator
@@ -127,6 +140,10 @@
   failed_when: false
   no_log: true
 
+# "Record already exists" means the address we wanted published is published,
+# so the desired end state holds -- tolerate it.  It is the mirror image of the
+# "does not exist" case on the prune: samba's own dnsupdate task runs every
+# ~10 minutes and can publish the record between our query and our add.
 - name: Fail if the DC's address could not be published
   ansible.builtin.fail:
     msg: >-
@@ -138,7 +155,7 @@
     _dc_dns_add_errors: >-
       {{ _dc_dns_add.results | default([]) | selectattr('rc', 'defined')
          | selectattr('rc', 'ne', 0) | map(attribute='stderr')
-         | map('trim') | list }}
+         | map('trim') | reject('search', 'already exists') | list }}
   when: _dc_dns_add_errors | length > 0
 
 # Removed only after the correct value is in place, so the zone is never

@@ -98,6 +98,37 @@
         create: true
         mode: "0644"
 
+    # Ubuntu 25.10+ ships sudo-rs and update-alternatives auto-selects it over
+    # the classic sudo (which stays installed as /usr/bin/sudo.ws).  sudo-rs is
+    # a from-scratch reimplementation that does not load sudoers.so, and
+    # therefore never consults the `sss` sudoers source or libsss_sudo -- so
+    # AD-stored rules are silently inert no matter how correct the SSSD
+    # configuration is.  There is no warning; `sudo -l` is simply always empty.
+    #
+    # Point the alternative back at the classic sudo when, and only when, this
+    # host is meant to consume AD sudo rules.  Query-then-set so a steady-state
+    # run reports no change, and gated on the classic binary actually existing
+    # so releases without the split are untouched.
+    - name: Check for the classic sudo binary (sudo-rs split)
+      ansible.builtin.stat:
+        path: /usr/bin/sudo.ws
+      register: _sssd_classic_sudo
+
+    - name: Read the current sudo alternative
+      ansible.builtin.command: update-alternatives --query sudo
+      register: _sssd_sudo_alt
+      changed_when: false
+      failed_when: false
+      when: _sssd_classic_sudo.stat.exists
+
+    - name: Select the classic sudo so SSSD-provided rules are honoured
+      ansible.builtin.command: update-alternatives --set sudo /usr/bin/sudo.ws
+      changed_when: true
+      when:
+        - _sssd_classic_sudo.stat.exists
+        - _sssd_sudo_alt.rc | default(1) == 0
+        - "'Value: /usr/bin/sudo.ws' not in (_sssd_sudo_alt.stdout | default(''))"
+
 # Client helper scripts from client/linux/.
 - name: Deploy domain healthcheck script
   ansible.builtin.copy:

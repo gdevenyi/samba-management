@@ -134,3 +134,33 @@
         - "{{ _sudo_schema_class_tmp.path | default('') }}"
       when: item | length > 0
       changed_when: false
+
+# The defaultSecurityDescriptor on the sudoRole class only governs objects
+# created AFTER it is in the schema.  Any rule written by an earlier version of
+# this role -- and the OU itself -- still carries an SD with no Authenticated
+# Users read ACE, so SSSD (which binds as the member's machine account) sees
+# nothing under OU=SUDOers and every client's `sudo -l` stays empty.
+#
+# Query-then-fix so a steady-state run reports no change: read the OU's SDDL
+# and only add the inheritable read ACE when it isn't already there.  CI makes
+# it inheritable, so existing child sudoRole objects are covered too.
+- name: Read the SUDOers OU security descriptor
+  ansible.builtin.command: >-
+    samba-tool dsacl get --objectdn={{ _samba_sudoers_ou_dn | quote }}
+  register: _sudoers_ou_sd
+  changed_when: false
+  failed_when: false
+  vars:
+    _samba_sudoers_ou_dn: "OU=SUDOers,{{ samba_schema_base_dn }}"
+
+- name: Grant Authenticated Users read on the SUDOers OU
+  ansible.builtin.command: >-
+    samba-tool dsacl set --objectdn={{ _samba_sudoers_ou_dn | quote }}
+    --action=allow --sddl={{ _samba_sudoers_read_ace | quote }}
+  vars:
+    _samba_sudoers_ou_dn: "OU=SUDOers,{{ samba_schema_base_dn }}"
+    _samba_sudoers_read_ace: "(A;CI;LCRPLORC;;;AU)"
+  changed_when: true
+  when:
+    - _sudoers_ou_sd.rc == 0
+    - "'(A;CI;LCRPLORC;;;AU)' not in _sudoers_ou_sd.stdout"

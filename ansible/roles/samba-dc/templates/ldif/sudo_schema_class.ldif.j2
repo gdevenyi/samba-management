@@ -31,3 +31,12 @@ lDAPDisplayName: sudoRole
 name: sudoRole
 systemOnly: FALSE
 defaultObjectCategory: CN=sudoRole,CN=Schema,CN=Configuration,{{ samba_schema_base_dn }}
+# Security descriptor applied to every sudoRole object created from this
+# class.  Without it the objects inherit an SD with no Authenticated Users
+# read ACE, so domain member machine accounts -- which is what SSSD binds as
+# -- cannot read them.  The rules are then invisible to every client:
+# `Received 0 sudo rules` in the backend log and `sudo -l` permanently empty,
+# while the rule is plainly there when inspected with ldbsearch as root on
+# the DC (root bypasses ACLs, which is what made this so hard to see).
+# (A;;RPLCLORC;;;AU) is the read grant AD's own stock classes carry.
+defaultSecurityDescriptor: D:(A;;RPWPCRCCDCLCLORCWOWDSDDTSW;;;DA)(A;;RPWPCRCCDCLCLORCWOWDSDDTSW;;;EA)(A;;RPWPCRCCDCLCLORCWOWDSDDTSW;;;SY)(A;;RPLCLORC;;;AU)

@@ -159,18 +159,13 @@
     - "'domain users:' in _sssd_group_resolve.stdout"
     - "_sssd_group_resolve.stdout.split(':')[2] | int != 100"
 
-# Re-apply ownership on share directories now that SSSD can resolve AD
-# group names.  configure.yml creates these directories before SSSD is up,
-# at which point "domain users" only resolves to the local `users` group
-# (GID 100).  Without this fix-up, AD users can't read/write the shares.
-- name: Re-apply share base ownership with resolved AD group
-  ansible.builtin.file:
-    path: "{{ samba_share_base }}"
-    state: directory
-    mode: "0755"
-    owner: root
-    group: "domain users"
-  when: samba_nfs_server == ""
+# The share base is created by ous-shares-nfs.yml, which main.yml deliberately
+# orders AFTER this file precisely so "domain users" already resolves to the
+# AD-mapped GID when the directory is made.  A re-apply task used to sit here,
+# dating from an ordering where the directory was created before SSSD was up;
+# it is now both redundant and harmful, because it re-asserted
+# root:"domain users" 0755 on every run and silently reverted a base directory
+# the operator had tightened.  Ownership is applied at creation only.
 
 # The NFS server caches uid->gid mappings.  Force a flush so authentication
 # checks use the new AD-resolved GIDs rather than the stale numeric values.

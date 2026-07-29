@@ -285,6 +285,13 @@ chown root:ProjectTeam /data/projects
 chmod 2770 /data/projects        # setgid: new files inherit the group
 ```
 
+These settings stick. `add-share` applies `root:"Domain Users"` 0770 **only to a
+directory it creates**; pointed at a directory that already exists it warns and
+leaves ownership and mode alone. Re-running the provisioning playbooks does not
+re-assert ownership on `/data` either. Nothing in the stack rewrites the
+permissions on a share you have tightened — NFS `sec=krb5p` authenticates, the
+file system authorizes, and the file system is yours.
+
 Home directories are the one declarative exception: `/home/ad` is exported by
 the roles at provision time (`samba_nfs_export_homes`, `samba_nfs_homes_fsid`),
 and per-user directories are created by `samba-user.sh add` (owned by the user,

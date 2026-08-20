@@ -96,7 +96,16 @@ samba_password_complexity: "off"
 # (the underlying AD attribute is a uint8 with a hardcoded ceiling).
 # Going higher requires editing the policy via LDAP directly.
 samba_password_min_length: 14
-samba_password_max_age: 42
+# 0 = passwords never expire.  Anything else expires the *Administrator*
+# account too (userAccountControl 512 carries no DONT_EXPIRE_PASSWD), and
+# every Administrator-authenticated task in this role -- `samba-tool dns`
+# in dns-self-heal.yml/reverse-dns.yml, the kinit in verify.yml -- then
+# fails on the day the age runs out.  The DCERPC bind cannot carry the real
+# status back, so the symptom is a bare NT_STATUS_LOGON_FAILURE that reads
+# as "wrong password" while the password is in fact correct.  samba-tool
+# stores 0 as the AD "never" sentinel (-0x8000000000000000) and renders it
+# back as 0, so the change detection in password_policy.yml round-trips.
+samba_password_max_age: 0
 samba_password_min_age: 1
 samba_password_history: 24
 

@@ -51,7 +51,7 @@ Installs and configures:
 - NFSv4 server with Kerberos (`sec=krb5p`) for home directories, plus the
   `/data` share base and the base `auto.master`/`auto.shares`/`auto.home` maps
   (individual shares are added later with `samba-automount.sh add-share`)
-- Password policy (complexity off, min length 14, max age 42, min age 1, history 24)
+- Password policy (complexity off, min length 14, passwords never expire, min age 1, history 24)
 - Account lockout policy (threshold 0/disabled, duration 30m, reset 30m)
 - Optional TLS (disabled by default)
 
@@ -458,7 +458,7 @@ Key variables in role defaults (overridden by `group_vars/`):
 | `samba_enable_sudo_schema` | `true` | samba-dc | Apply the sudo LDAP schema extension (required for `bin/samba-sudorule.sh`) |
 | `samba_password_complexity` | `off` | samba-dc | Password complexity requirement |
 | `samba_password_min_length` | `14` | samba-dc | Minimum password length (capped at 14 by `samba-tool`) |
-| `samba_password_max_age` | `42` | samba-dc | Maximum password age (days) |
+| `samba_password_max_age` | `0` | samba-dc | Maximum password age (days); `0` = never expires |
 | `samba_password_min_age` | `1` | samba-dc | Minimum password age (days) |
 | `samba_password_history` | `24` | samba-dc | Number of remembered passwords |
 | `samba_account_lockout_threshold` | `0` | samba-dc | Failed logins before lockout (0 = disabled) |

@@ -1243,8 +1243,14 @@ test_dc_policy_schema() {
     # These are the samba-dc defaults; the role must actually have applied them.
     run_test "password history length is 24" \
         ssh_dc "sudo samba-tool domain passwordsettings show | grep -qE 'Password history length: 24'"
-    run_test "maximum password age is 42 days" \
-        ssh_dc "sudo samba-tool domain passwordsettings show | grep -qE 'Maximum password age \\(days\\): 42'"
+    run_test "maximum password age is 0 (passwords never expire)" \
+        ssh_dc "sudo samba-tool domain passwordsettings show | grep -qE 'Maximum password age \\(days\\): 0$'"
+    # The reason the age is 0: a non-zero one expires Administrator too, and
+    # every Administrator-authenticated task in the role then fails with a
+    # bare NT_STATUS_LOGON_FAILURE that looks like a wrong password.
+    # 9223372036854775807 is the AD "never" sentinel for the computed expiry.
+    run_test "Administrator password never expires" \
+        ssh_dc "sudo ldbsearch -H /var/lib/samba/private/sam.ldb '(sAMAccountName=Administrator)' msDS-UserPasswordExpiryTimeComputed | grep -q '^msDS-UserPasswordExpiryTimeComputed: 9223372036854775807$'"
     run_test "minimum password age is 1 day" \
         ssh_dc "sudo samba-tool domain passwordsettings show | grep -qE 'Minimum password age \\(days\\): 1'"
     run_test "password complexity is off" \

@@ -19,6 +19,23 @@ default_shell = {{ sssd_default_shell }}
 {# Store credentials for offline authentication when the DC is unreachable #}
 krb5_store_password_if_offline = True
 cache_credentials = {{ 'True' if sssd_cache_credentials else 'False' }}
+{# Kerberos ticket renewal.  krb5_renewable_lifetime is what makes the TGT
+   renewable at all; krb5_renew_interval is how often SSSD checks (it renews
+   once about half the lifetime is gone).  Without them the ticket issued at
+   login simply expires and sec=krb5p access under an autofs mount starts
+   returning "Key has expired" while the mount stays up on the machine
+   credential.  This can only renew a ticket that exists: a public-key-only
+   SSH login never runs the PAM auth stack and gets no TGT at all -- see
+   sssd_ssh_require_password. #}
+{% if sssd_krb5_lifetime %}
+krb5_lifetime = {{ sssd_krb5_lifetime }}
+{% endif %}
+{% if sssd_krb5_renewable_lifetime %}
+krb5_renewable_lifetime = {{ sssd_krb5_renewable_lifetime }}
+{% endif %}
+{% if sssd_krb5_renew_interval %}
+krb5_renew_interval = {{ sssd_krb5_renew_interval }}
+{% endif %}
 {# realmd_tags are set by realm join; keeping them prevents realm from #}
 {# overwriting our config on subsequent realm operations #}
 realmd_tags = manages-system joined-with-adcli

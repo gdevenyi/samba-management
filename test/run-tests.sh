@@ -1164,6 +1164,15 @@ test_dc_samba_config() {
         ssh_dc "sudo testparm -s 2>/dev/null | grep -qE 'idmap_ldb:use rfc2307 = yes'"
     run_test "netlogon and sysvol shares are present" \
         ssh_dc "sudo testparm -s 2>/dev/null | grep -q '^\\[netlogon\\]' && sudo testparm -s 2>/dev/null | grep -q '^\\[sysvol\\]'"
+    # AGENTS.md: the KDC's renewable-ticket ceiling.  The clients' SSSD
+    # krb5_renewable_lifetime is only a request -- the KDC silently reduces it
+    # to this value, so a lost/renamed parametric option would cap every user's
+    # ticket at Samba's 7-day default with no error anywhere.  Unit is HOURS.
+    # Presence is the invariant, not the exact number (that is site config):
+    # the failure mode is the option going missing, which reads as success
+    # everywhere and just caps every ticket at Samba's built-in 168 hours.
+    run_test "smb.conf raises the KDC renewable-ticket ceiling (kdc:renewal lifetime)" \
+        ssh_dc "sudo testparm -s 2>/dev/null | grep -qE '^[[:space:]]*kdc:renewal lifetime = [0-9]+$'"
 }
 
 # Kerberos on the DC (roles/samba-dc tasks/configure.yml + the krb5 drop-in).

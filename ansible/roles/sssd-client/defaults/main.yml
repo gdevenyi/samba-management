@@ -165,3 +165,29 @@ sssd_user_resolve_retries: 5
 sssd_user_resolve_delay: 3
 sssd_group_resolve_retries: 3
 sssd_group_resolve_delay: 2
+
+# --- Kerberos ticket renewal ---
+# SSSD does not renew the TGT it mints at login unless told to, and it only
+# requests a *renewable* ticket if krb5_renewable_lifetime is set.  Left unset
+# (the SSSD default), a session that outlives the KDC's ticket lifetime loses
+# its user credential and every access under a sec=krb5p mount -- home
+# directories and /data shares -- starts failing with "Key has expired" /
+# Permission denied, while the mount itself stays up because autofs holds it
+# with the machine credential from /etc/krb5.keytab.  Same misleading shape as
+# the missing-TGT case in docs/SCENARIOS.md, different cause and different fix.
+#
+# krb5_renew_interval is how often the renewal task checks; a ticket is renewed
+# once about half its lifetime is gone.  Renewal stops at the renewable
+# lifetime -- a session older than that still needs a fresh kinit.
+#
+# The renewable lifetime here is only a REQUEST: the KDC caps it at its own
+# ceiling, so this value has to be matched on the DC by the samba-dc role's
+# samba_kdc_renewal_lifetime_hours (720 = 30 days; Samba's own default is 168 =
+# 7 days).  Asking for more than the KDC allows is silently reduced, not
+# rejected, so a mismatch shows up only as a shorter "renew until" in klist.
+#
+# Empty string = omit the option entirely (SSSD default: no renewal).
+sssd_krb5_renewable_lifetime: "30d"
+sssd_krb5_renew_interval: "1h"
+# Requested TGT lifetime.  Empty = whatever the KDC hands out (10h on Samba).
+sssd_krb5_lifetime: ""

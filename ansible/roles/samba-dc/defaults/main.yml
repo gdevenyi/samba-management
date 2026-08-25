@@ -114,6 +114,34 @@ samba_account_lockout_threshold: 0
 samba_account_lockout_duration: 30
 samba_account_reset_lockout_after: 30
 
+# --- KDC ticket policy ---
+# How long a TGT may keep being renewed, in HOURS, written into smb.conf as the
+# `kdc:renewal lifetime` parametric option.  This is the ceiling the KDC grants;
+# a client asking for more (the clients' sssd_krb5_renewable_lifetime) is
+# silently reduced to it, so the two have to be raised together.  Samba's own
+# default is 168 (7 days, matching AD's stock Kerberos policy); 720 = 30 days.
+#
+# Why raise it: SSSD renews a logged-in user's TGT in the background, but only
+# up to this ceiling -- past it the ticket dies and every access under a
+# sec=krb5p mount fails until the user runs `kinit` again.  30 days keeps a
+# long-lived screen/tmux session or a month-long batch job working.
+#
+# Cost: a stolen credential cache stays renewable for that whole window.
+# Renewals are KDC round trips, not offline extensions, so disabling the
+# account still stops them at the next renewal -- but a copied ccache is not
+# revoked by a password change.
+#
+# Only affects tickets issued AFTER the change: an existing ticket keeps the
+# `renew until` it was granted at login.  The KDC's ticket *lifetime* (10h) is
+# a separate knob (`kdc:user ticket lifetime`) and is left at the default.
+#
+# NOTE: `samba-gpupdate` writes the same setting into gpo.tdb from the Default
+# Domain Policy's [Kerberos Policy] MaxRenewAge, and the tdb value WINS over
+# smb.conf.  Nothing runs it automatically here (`apply group policies`
+# defaults to no), but if you ever do run it, set MaxRenewAge in the GPO to
+# match or it will quietly drop back to 7 days.
+samba_kdc_renewal_lifetime_hours: 720
+
 # --- Schema extensions ---
 samba_enable_sudo_schema: true
 

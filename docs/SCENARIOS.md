@@ -348,11 +348,101 @@ provision the new host as usual.
 
 ---
 
+## A session stops working after hours or weeks ("Key has expired")
+
+Symptom: everything worked at login, and later — 10 hours in with no renewal
+configured, or once the renewable window runs out on a very long-lived session —
+the home directory and `/data` shares turn read-error on a session nobody
+touched. The mount is still listed, `id` is still right, a *new* login on the
+same host works fine.
+
+```bash
+$ ls ~
+ls: reading directory '.': Key has expired
+$ klist
+Ticket cache: FILE:/tmp/krb5cc_...
+Default principal: devgab@AD.GENETLAB.INTERNAL
+Valid starting     Expires            Service principal
+08/24/26 09:14:02  08/24/26 19:14:02  krbtgt/AD.GENETLAB.INTERNAL@AD.GENETLAB.INTERNAL
+                                      ^ in the past
+```
+
+Cause: **SSSD does not renew the TGT it mints at login unless configured to**,
+and it only asks the KDC for a *renewable* ticket in the first place if
+`krb5_renewable_lifetime` is set. Left at the SSSD defaults, the ticket simply
+expires at the KDC's lifetime — 10 hours on a stock Samba domain — and every
+access under a `sec=krb5p` mount needs a *user* GSS context built from it. The
+mount survives because autofs holds it with the *machine* credential from
+`/etc/krb5.keytab`, which never expires, so this again reads as a broken mount
+when it is a dead ticket.
+
+Distinguish it from the key-login case in the next section by what `klist` says:
+a ticket that is **present but past its expiry** is this; *"No credentials cache
+found"* is a session that never had one.
+
+Fix, and it takes **three** settings on two hosts. On the clients the
+`sssd-client` role now asks for a renewable ticket and renews it:
+
+```yaml
+# defaults; override in group_vars/linux_clients.yml
+sssd_krb5_renewable_lifetime: "30d"  # makes the ticket renewable at all
+sssd_krb5_renew_interval: "1h"       # how often SSSD checks; renews at ~half life
+sssd_krb5_lifetime: ""               # "" = take the KDC's default (10h)
+```
+
+Setting only `krb5_renew_interval` does nothing — a non-renewable ticket cannot
+be renewed, so that pair has to move together. Any option left empty is omitted
+from `sssd.conf` entirely, which drops that setting back to SSSD's default.
+
+The third setting is on the **DC**, and without it the first two are capped at a
+week. `sssd_krb5_renewable_lifetime` is only a *request*; the KDC reduces it to
+its own ceiling without saying so. The `samba-dc` role raises that ceiling:
+
+```yaml
+# HOURS, not days; override in group_vars/dc.yml
+samba_kdc_renewal_lifetime_hours: 720    # 30 days; Samba's own default is 168 (7d)
+```
+
+which renders as `kdc:renewal lifetime = 720` in the DC's `smb.conf`. Raising
+the client value alone changes nothing; what was actually granted shows up as
+`renew until` in `klist`, which is the acceptance check after deploying both
+sides — as an AD user logging in **with a password**:
+
+```bash
+klist    # expect a "renew until" line ~30 days out; before this there is none
+kinit -R && klist   # optional: force a renewal now rather than waiting
+```
+
+Four limits worth knowing:
+
+- Only tickets issued **after** the change get the longer window. A session that
+  was already open keeps the `renew until` it was granted at login.
+- Renewal still stops at the ceiling, so a session older than 30 days needs a
+  fresh `kinit`. It can only be pushed so far: `kdc:user ticket lifetime` (10h)
+  is a separate knob, and the ticket still expires every 10h between renewals.
+- It can only renew a ticket that exists, which is the next section's problem,
+  not this one.
+- A long renewable window is a security trade-off: a stolen credential cache
+  stays renewable for its whole length. Renewals are KDC round trips, so
+  disabling the account stops them at the next renewal — but a password change
+  does not revoke a ccache someone already copied.
+
+**If you ever run `samba-gpupdate` on the DC**, it writes `MaxRenewAge` from the
+Default Domain Policy into `gpo.tdb`, and that value takes precedence over
+`smb.conf` — so the ceiling would silently drop back to 7 days. Nothing in this
+stack runs it (`apply group policies` defaults to `no`); a site that does needs
+`MaxRenewAge` set in the GPO to match.
+
+---
+
 ## SSH key logins and `sec=krb5p` home directories
 
 Symptom: a user logs in fine, `id` shows the right AD groups, but their home
 directory and every share under `/data` give "Permission denied". It reads as a
 mount failure and isn't one.
+
+(If the session *did* work earlier and stopped hours later, `klist` shows an
+expired ticket rather than no cache at all — see the previous section.)
 
 ```bash
 $ ls ~

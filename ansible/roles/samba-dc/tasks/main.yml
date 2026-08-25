@@ -17,6 +17,12 @@
 - name: Install packages and manage services
   ansible.builtin.import_tasks: install.yml
 
+# After install.yml (dig is now present) and before configure.yml points the
+# DC's resolver at Samba: a forwarder that cannot answer must fail here, while
+# the host still has working DNS, rather than as an unrelated apt error later.
+- name: Verify the DNS forwarders answer
+  ansible.builtin.import_tasks: dns-forwarders.yml
+
 - name: Provision Samba AD domain
   ansible.builtin.include_tasks: provision.yml
 

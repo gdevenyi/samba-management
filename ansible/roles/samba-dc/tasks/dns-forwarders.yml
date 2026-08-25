@@ -1,0 +1,72 @@
+# dns-forwarders.yml - Prove every DNS forwarder answers before Samba becomes
+# the DC's resolver.
+#
+# The role points the DC's own resolution at Samba (DNS=127.0.0.1 with
+# Domains=<realm> ~.), and Samba forwards everything outside the AD zone to
+# samba_dns_forwarders.  A forwarder that does not answer therefore takes the
+# DC's entire external resolution with it, and the failure surfaces several
+# tasks later as `apt` reporting "Temporary failure resolving
+# archive.ubuntu.com" -- a message that names neither the forwarder nor this
+# role.  Worse, it is not self-healing: the package tasks run BEFORE the
+# smb.conf template task, so a DC that already carries a bad forwarder cannot
+# be repaired by fixing the variable alone (fix /etc/samba/smb.conf on the host
+# and restart samba-ad-dc, or rebuild).
+#
+# Imported twice on purpose: from assertions.yml, which runs before the package
+# tasks and catches exactly that stale-forwarder re-run (dig is present because
+# an earlier run installed it), and from main.yml after install.yml, where dig
+# is guaranteed and the resolver has not been switched over yet.
+---
+# dig ships in bind9-dnsutils, which install.yml adds -- so on the very first
+# run of a fresh host this file is a no-op and the post-install import does the
+# work.  Probing without it would mean parsing a raw DNS response by hand.
+- name: Check whether dig is available for the forwarder probe
+  ansible.builtin.stat:
+    path: /usr/bin/dig
+  register: _samba_dig
+
+# Read-only probe.  The default query is the root NS set: every recursive
+# resolver answers it, it needs no assumption about which external names a site
+# can resolve, and it is not cached away to nothing.  failed_when is false so
+# every forwarder is probed and the assert below can name all the dead ones at
+# once rather than stopping at the first.
+- name: Probe each DNS forwarder
+  ansible.builtin.command:
+    argv:
+      - dig
+      - +short
+      - "+time={{ samba_dns_forwarder_probe_timeout }}"
+      - +tries=1
+      - "@{{ item }}"
+      - "{{ samba_dns_forwarder_probe_name }}"
+      - "{{ samba_dns_forwarder_probe_type }}"
+  loop: "{{ samba_dns_forwarders }}"
+  register: _samba_forwarder_probe
+  changed_when: false
+  failed_when: false
+  when:
+    - samba_dns_forwarder_check | bool
+    - _samba_dig.stat.exists
+
+# rc alone is not enough: a resolver can answer with an empty NOERROR, which
+# means it is reachable but resolves nothing useful for the DC.
+- name: Fail when a DNS forwarder does not answer
+  ansible.builtin.assert:
+    that:
+      - item.rc == 0
+      - (item.stdout | default('') | trim) != ''
+    fail_msg: >-
+      DNS forwarder {{ item.item }} did not answer
+      {{ samba_dns_forwarder_probe_name }} {{ samba_dns_forwarder_probe_type }}
+      (rc={{ item.rc | default('n/a') }}).  Samba forwards everything outside
+      {{ samba_realm | lower }} to it, so provisioning would continue until the
+      DC loses external DNS entirely and a later apt task fails with an
+      unrelated-looking "Temporary failure resolving" error.  Fix
+      samba_dns_forwarders (group_vars/dc.yml), or set
+      samba_dns_forwarder_check=false to probe nothing.
+    quiet: true
+  loop: >-
+    {{ _samba_forwarder_probe.results | default([])
+       | rejectattr('skipped', 'defined') | list }}
+  loop_control:
+    label: "{{ item.item | default('') }}"

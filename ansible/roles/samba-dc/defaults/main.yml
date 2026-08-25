@@ -142,6 +142,21 @@ samba_account_reset_lockout_after: 30
 # match or it will quietly drop back to 7 days.
 samba_kdc_renewal_lifetime_hours: 720
 
+# --- DNS forwarder validation ---
+# Probe every samba_dns_forwarders entry before Samba becomes the DC's
+# resolver.  Without this a forwarder that does not answer takes the DC's whole
+# external resolution with it and surfaces as `apt` failing with "Temporary
+# failure resolving ..." several tasks later -- naming neither the forwarder
+# nor this role.  See tasks/dns-forwarders.yml.
+samba_dns_forwarder_check: true
+# What to ask the forwarder for.  The root NS set is answered by every
+# recursive resolver and assumes nothing about which external names a site is
+# allowed to resolve; point it at a name you require if you want a stricter
+# test (e.g. the distro mirror).
+samba_dns_forwarder_probe_name: "."
+samba_dns_forwarder_probe_type: "NS"
+samba_dns_forwarder_probe_timeout: 3
+
 # --- Schema extensions ---
 samba_enable_sudo_schema: true
 

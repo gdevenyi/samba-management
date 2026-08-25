@@ -31,3 +31,12 @@
 # CURRENT address.  The check used to live here and only rejected 127.0.0.1,
 # so a stale-but-routable address (the state a DHCP lease change leaves behind)
 # passed every run.
+
+# Early, best-effort forwarder probe.  On a fresh host dig does not exist yet
+# and this is a no-op -- the import after install.yml covers that run.  Its
+# reason for being here is the re-run against a DC that already carries a dead
+# forwarder: resolution is Samba's by now, so the package tasks below would
+# fail first with "Temporary failure resolving ...", which points nowhere near
+# the cause.  This names it instead.
+- name: Verify the DNS forwarders answer (best-effort, pre-install)
+  ansible.builtin.import_tasks: dns-forwarders.yml

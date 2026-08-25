@@ -13,6 +13,9 @@
 # via UBUNTU_CODENAME / UBUNTU_VERSION (e.g. UBUNTU_CODENAME=noble
 # UBUNTU_VERSION=24.04 ./test/setup.sh).
 #
+# The DC's DNS forwarder defaults to the libvirt NAT gateway; override with
+# DNS_FORWARDER=<ip> when the VMs need a specific upstream resolver.
+#
 # Requires libvirt group membership (usermod -aG libvirt $USER).
 # Usage: [TEST_MODE=separate] ./test/setup.sh
 set -Eeuo pipefail
@@ -66,6 +69,17 @@ CLIENT_DISK="10G"
 TEST_DOMAIN="samba.test"
 TEST_REALM="SAMBA.TEST"
 GATEWAY="192.168.122.1"
+
+# DNS forwarder handed to the DC for everything outside the AD zone.  Defaults
+# to the libvirt NAT gateway, which is the resolver the VMs already get from
+# cloud-init above and which forwards to whatever the host uses -- so it works
+# on any host, including one whose network refuses outbound DNS to a public
+# resolver.  A hardcoded public address (this used to be 8.8.8.8) fails there
+# in a way that is hard to read: once the samba-dc role points the DC's own
+# resolver at Samba, every external lookup goes through this address, and the
+# next apt task dies with "Temporary failure resolving archive.ubuntu.com".
+# Override for a specific resolver: DNS_FORWARDER=10.0.0.53 ./test/setup.sh
+DNS_FORWARDER="${DNS_FORWARDER:-$GATEWAY}"
 
 # shellcheck source=lib.sh
 source "${SCRIPT_DIR}/lib.sh"
@@ -368,7 +382,7 @@ samba_domain: "SAMBA"
 samba_netbios: "SAMBA"
 samba_admin_password: "${SMB_TEST_ADMIN_PASSWORD}"
 samba_dns_forwarders:
-  - "8.8.8.8"
+  - "${DNS_FORWARDER}"
 samba_tls_enabled: false
 healthcheck_realm: "${TEST_REALM}"
 healthcheck_dc_hostname: "dc01"

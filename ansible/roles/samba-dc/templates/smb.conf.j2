@@ -15,6 +15,14 @@
     {# here, this template would silently widen the DC to all interfaces.  #}
     interfaces = lo {{ ansible_facts['default_ipv4']['interface'] }}
     bind interfaces only = yes
+    {# How long a TGT stays renewable, in HOURS (Samba's default is 168 = 7 #}
+    {# days).  This is the ceiling: the clients' sssd_krb5_renewable_lifetime #}
+    {# is a request the KDC reduces to this value, so the two move together.  #}
+    {# Past the ceiling a logged-in user's ticket can no longer be renewed and #}
+    {# sec=krb5p access starts failing until they kinit again.  Note that      #}
+    {# `samba-gpupdate` writes the same setting into gpo.tdb (from the Default #}
+    {# Domain Policy's MaxRenewAge) and the tdb value takes precedence.        #}
+    kdc:renewal lifetime = {{ samba_kdc_renewal_lifetime_hours }}
     {# rfc2307 enables POSIX UID/GID attributes in AD for NFS interop #}
     idmap_ldb:use rfc2307 = {{ 'yes' if samba_use_rfc2307 else 'no' }}
 {% if samba_tls_enabled %}

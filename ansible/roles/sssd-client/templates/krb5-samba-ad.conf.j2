@@ -3,6 +3,19 @@
 [libdefaults]
     rdns = false
     dns_canonicalize_hostname = false
+{% if sssd_krb5_lifetime %}
+    ticket_lifetime = {{ sssd_krb5_lifetime }}
+{% endif %}
+{% if sssd_krb5_renewable_lifetime %}
+{# A manual `kinit` reads this file, never sssd.conf.  With no renew_lifetime #}
+{# here MIT asks for its own default and the KDC granted a ticket renewable   #}
+{# for ONE DAY, while a PAM login through pam_sss got the full window -- same #}
+{# user, same host, two different answers.  Driven by the same variable as    #}
+{# sssd.conf's krb5_renewable_lifetime so the two cannot drift.  SSSD renews  #}
+{# only the tickets it minted, so a hand-run kinit still has to be renewed by #}
+{# hand (`kinit -R`); this just makes the window it is granted the real one.  #}
+    renew_lifetime = {{ sssd_krb5_renewable_lifetime }}
+{% endif %}
 {% if sssd_krb5_realm_map | length > 0 %}
 
 # Pin AD servers reached by a non-AD DNS name (site FQDNs) to the AD realm.

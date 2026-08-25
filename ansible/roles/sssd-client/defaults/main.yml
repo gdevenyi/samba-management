@@ -186,7 +186,14 @@ sssd_group_resolve_delay: 2
 # 7 days).  Asking for more than the KDC allows is silently reduced, not
 # rejected, so a mismatch shows up only as a shorter "renew until" in klist.
 #
-# Empty string = omit the option entirely (SSSD default: no renewal).
+# The lifetimes feed BOTH sssd.conf and the /etc/krb5.conf.d/samba-ad.conf
+# drop-in (renew_lifetime / ticket_lifetime), because a manual `kinit` reads
+# krb5.conf and never sssd.conf: without the drop-in entry MIT asks for its own
+# default and a hand-run kinit came back renewable for one day while a PAM login
+# on the same host got 30.  One variable per value keeps the two consistent.
+#
+# Empty string = omit the option entirely, from both files (SSSD default: no
+# renewal; krb5 default: MIT's built-in).
 sssd_krb5_renewable_lifetime: "30d"
 sssd_krb5_renew_interval: "1h"
 # Requested TGT lifetime.  Empty = whatever the KDC hands out (10h on Samba).

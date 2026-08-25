@@ -422,6 +422,12 @@ Four limits worth knowing:
   is a separate knob, and the ticket still expires every 10h between renewals.
 - It can only renew a ticket that exists, which is the next section's problem,
   not this one.
+- A manual `kinit` reads `/etc/krb5.conf`, not `sssd.conf`, so the role renders
+  the same lifetimes into `/etc/krb5.conf.d/samba-ad.conf` as `renew_lifetime` /
+  `ticket_lifetime`. Without that, MIT asks for its own default and a hand-run
+  `kinit` comes back renewable for a single day while a `pam_sss` login on the
+  same host gets 30. SSSD renews only the tickets it minted, so a manual one
+  still needs a manual `kinit -R`.
 - A long renewable window is a security trade-off: a stolen credential cache
   stays renewable for its whole length. Renewals are KDC round trips, so
   disabling the account stops them at the next renewal — but a password change

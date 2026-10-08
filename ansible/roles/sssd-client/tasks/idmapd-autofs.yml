@@ -51,6 +51,32 @@
     marker: "# {mark} ANSIBLE MANAGED [domain_realm] (sssd-client)"
     state: absent
 
+# Mount-option defaults for the domain's NFS mounts.  These go client-side in
+# nfsmount.conf.d rather than into the AD map entries, so they cover
+# auto.home and every existing operator-written auto.shares entry alike.
+# mount.nfs reads the file on each mount, so no service restart is needed.
+- name: Create the nfsmount.conf drop-in directory
+  ansible.builtin.file:
+    path: /etc/nfsmount.conf.d
+    state: directory
+    mode: "0755"
+  when: sssd_nfs_nconnect | string | length > 0
+
+- name: Deploy NFS client mount defaults (nconnect)
+  ansible.builtin.template:
+    src: nfsmount-samba-ad.conf.j2
+    dest: /etc/nfsmount.conf.d/samba-ad.conf
+    mode: "0644"
+    owner: root
+    group: root
+  when: sssd_nfs_nconnect | string | length > 0
+
+- name: Remove NFS client mount defaults when nconnect is unmanaged
+  ansible.builtin.file:
+    path: /etc/nfsmount.conf.d/samba-ad.conf
+    state: absent
+  when: sssd_nfs_nconnect | string | length == 0
+
 # Maps are stored in AD under OU=automount and consumed by SSSD's autofs
 # service; no per-client map files are written.  We only set up the
 # mount-base directories, the NSS routing, and start the service.

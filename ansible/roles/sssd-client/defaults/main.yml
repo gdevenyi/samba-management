@@ -115,6 +115,21 @@ sssd_krb5_realm_map: {}
 # Kerberos security flavour: krb5 (auth), krb5i (auth+integrity), krb5p (full encryption)
 samba_nfs_sec: "krb5p"
 
+# TCP connections per NFS server (mount option nconnect=, 1-16), set for every
+# NFS mount on the client via /etc/nfsmount.conf.d/samba-ad.conf.  With one
+# connection, all of a host's traffic to a server -- every user's home and
+# every share -- runs over a single TCP stream with a single rpciod receive
+# path, so one bulk copy queues everyone's interactive requests behind its
+# writes, and sec=krb5p encryption/decryption for that server is effectively
+# serialised.  Extra connections spread both.  The NFSv4.1 session's slot
+# table is still shared across them, so this does not raise the number of
+# requests in flight per server.  The kernel keeps one client per server, and
+# the first mount to that server decides the connection count, so a change
+# only takes effect once every mount from that server has expired (autofs
+# timeout) or after a reboot.  "" = don't manage (the file is removed and
+# mount.nfs falls back to a single connection).
+sssd_nfs_nconnect: "4"
+
 sssd_enable_ssh: true
 
 # --- Require a PAM password step for SSH key logins ---

@@ -433,6 +433,7 @@ Key variables in role defaults (overridden by `group_vars/`):
 | `sssd_enable_sudo` | `true` | sssd-client | Configure SSSD sudo provider + nsswitch routing |
 | `sssd_configure_autofs` | `true` | sssd-client | Install autofs and create mount-base directories |
 | `sssd_enable_autofs` | `true` | sssd-client | Pull autofs maps from AD via SSSD (requires `sssd_configure_autofs`) |
+| `sssd_nfs_nconnect` | `"4"` | sssd-client | TCP connections per NFS server (`nconnect=`, 1–16) for every NFS mount on the client, via `/etc/nfsmount.conf.d/samba-ad.conf`; `""` leaves it unmanaged |
 | `sssd_deploy_client_scripts` | `true` | sssd-client | Deploy `client/linux/healthcheck.sh` to `/usr/local/sbin/domain-healthcheck.sh` |
 | `sssd_cache_credentials` | `true` | sssd-client | Cache credentials for offline authentication |
 | `sssd_use_fully_qualified_names` | `false` | sssd-client | Allow bare usernames for login |

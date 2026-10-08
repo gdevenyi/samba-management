@@ -27,3 +27,15 @@
       credentials and NFSv4 sec=krb5p mounts.  Rename this host to <=15
       characters (system hostname, /etc/hosts, and inventory) and re-provision.
     success_msg: "Hostname '{{ ansible_facts['hostname'] }}' is within the 15-character NetBIOS limit"
+
+# mount.nfs rejects an nconnect outside 1-16, and the value lands in the global
+# section of nfsmount.conf -- so a bad one fails every home and share mount on
+# the host, which users see as a login with no home directory.
+- name: Assert sssd_nfs_nconnect is empty or 1-16
+  ansible.builtin.assert:
+    that:
+      - >-
+        sssd_nfs_nconnect | string | length == 0 or
+        (sssd_nfs_nconnect | string is match('^[0-9]+$') and
+         sssd_nfs_nconnect | int >= 1 and sssd_nfs_nconnect | int <= 16)
+    fail_msg: "sssd_nfs_nconnect must be empty (unmanaged) or an integer from 1 to 16, got '{{ sssd_nfs_nconnect }}'"

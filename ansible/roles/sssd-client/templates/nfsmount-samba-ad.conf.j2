@@ -1,0 +1,6 @@
+# Managed by the sssd-client role -- do not edit.
+# NFS client mount defaults for the Samba AD stack (see idmapd-autofs.yml).
+# Applies to every NFS mount this host makes, so the autofs-mounted homes and
+# all auto.shares entries get the same value without touching the AD maps.
+[ NFSMount_Global_Options ]
+nconnect={{ sssd_nfs_nconnect }}

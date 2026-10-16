@@ -31,7 +31,7 @@ NC='\033[0m'
 # Centralised so setup, exercise, and cleanup all reference the same names.
 TEST_USERS=(testuser1 testuser2 homeuser1 homeuser2 perm_reader perm_writer perm_both perm_outsider login_allowed login_denied edgeuser archiveuser dryuser shortpwuser injuser)
 TEST_GROUPS=(TestGroupNested GidGroup EdgeGroup TestGroup ShareReaders ShareWriters computenode-login login-delete-probe)
-TEST_SHARES=(perm_rw_share perm_admin_share public edgeshare pathshare dryshare syncshare newentry cifsentry notarget badsync)
+TEST_SHARES=(perm_rw_share perm_admin_share public edgeshare pathshare dryshare syncshare newentry cifsentry notarget badsync modeshare)
 TEST_SUDO_RULES=(admin-all users-nopasswd edge-rule edge-rule2 inj-rule)
 TEST_SSH_KEY_COMMENT="samba-mgmt-test-data"
 TEST_SSH_KEY_FILE=""
@@ -110,8 +110,8 @@ cleanup_test_state() {
         ssh_nfs "sudo rm -rf /data/${share}" 2>/dev/null || true
     done
     ssh_nfs "sudo exportfs -ra" 2>/dev/null || true
-    # Staged invalid-NFS_SYNC_MODE config from test_share_edge_cases
-    ssh_dc "sudo rm -f /root/bad-sync.conf" 2>/dev/null || true
+    # Staged NFS_SYNC_MODE configs from test_share_edge_cases / test_export_fsid
+    ssh_dc "sudo rm -f /root/bad-sync.conf /root/sync-mode.conf" 2>/dev/null || true
 
     # Groups (must come after users-from-group operations are done)
     local group
@@ -289,6 +289,30 @@ test_export_fsid() {
         ssh_nfs "sudo exportfs -v | grep 'fsid=101' | grep -qE '[(,]async[,)]'"
     run_test "kernel exports homes async" \
         ssh_nfs "sudo exportfs -v | grep 'fsid=100' | grep -qE '[(,]async[,)]'"
+    # The async checks above cannot tell a configured mode from a hardcoded
+    # one, since async is the default everywhere.  So: the deployed config
+    # must carry the key (samba-automount.sh silently falls back to async
+    # when it is missing), and add-share driven by a copy of that config set
+    # to sync must write and export sync.  The value has to come from a
+    # config FILE -- config.sh exports the file's NFS_SYNC_MODE over any
+    # environment value.  The staging grep guards a silent sed no-match.
+    local sync_conf=/root/sync-mode.conf
+    run_test "deployed samba-mgmt.conf carries NFS_SYNC_MODE=async" \
+        ssh_dc "sudo grep -qx 'NFS_SYNC_MODE=async' /opt/samba-management/config/samba-mgmt.conf"
+    run_test "Stage config copy with NFS_SYNC_MODE=sync" \
+        ssh_dc "sudo sh -c \"sed 's/^NFS_SYNC_MODE=.*/NFS_SYNC_MODE=sync/' /opt/samba-management/config/samba-mgmt.conf > ${sync_conf} && chmod 0600 ${sync_conf} && grep -qx 'NFS_SYNC_MODE=sync' ${sync_conf}\""
+    run_test "modeshare export absent before add-share (precondition)" \
+        ssh_nfs "! test -e /etc/exports.d/modeshare.exports"
+    run_test "add-share modeshare --fsid=160 with NFS_SYNC_MODE=sync" \
+        ssh_dc "sudo env CONFIG_FILE=${sync_conf} samba-automount.sh add-share modeshare --fsid=160"
+    run_test "modeshare export file is sync, not async" \
+        ssh_nfs "grep -qE '[(,]sync[,)]' /etc/exports.d/modeshare.exports && ! grep -qE '[(,]async[,)]' /etc/exports.d/modeshare.exports"
+    run_test "kernel exports modeshare (fsid=160) sync, not async" \
+        ssh_nfs "sudo exportfs -v | grep 'fsid=160' | grep -qE '[(,]sync[,)]' && ! sudo exportfs -v | grep 'fsid=160' | grep -qE '[(,]async[,)]'"
+    run_test "Delete modeshare with --remove-data" \
+        ssh_dc "sudo samba-automount.sh delete-share modeshare --remove-data --force"
+    run_test "Remove staged NFS_SYNC_MODE=sync config" \
+        ssh_dc "sudo rm -f ${sync_conf}"
     # samba_nfs_sec / NFS_SEC default: krb5p (authentication + integrity +
     # encryption).  kinit-then-access also works under krb5/krb5i, so no
     # access test notices a weakened flavour; and an export that loses its

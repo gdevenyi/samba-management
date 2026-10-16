@@ -261,10 +261,12 @@ lint_fact_convention() {
     done
 
     hits=$( {
-        (cd "$ANSIBLE_DIR" && grep -rnE '\bansible_[a-z0-9_]+\b' roles playbooks inventory 2>/dev/null \
+        # `|| true` on each grep: under pipefail a source with no match
+        # would otherwise fail the pipeline with an empty offender list.
+        (cd "$ANSIBLE_DIR" && { grep -rnE '\bansible_[a-z0-9_]+\b' roles playbooks inventory 2>/dev/null || true; } \
             | sed 's|^|ansible/|')
-        (cd "$REPO_ROOT" && grep -HnE '\bansible_[a-z0-9_]+\b' test/setup.sh 2>/dev/null)
-        (cd "$REPO_ROOT" && grep -HnoE '\{\{[^}]*\}\}' AGENTS.md 2>/dev/null)
+        (cd "$REPO_ROOT" && grep -HnE '\bansible_[a-z0-9_]+\b' test/setup.sh 2>/dev/null || true)
+        (cd "$REPO_ROOT" && grep -HnoE '\{\{[^}]*\}\}' AGENTS.md 2>/dev/null || true)
     } | fact_token_offenders) || {
         echo "Top-level gathered facts are undefined with inject_facts_as_vars=False" >&2
         echo "(use ansible_facts['<name>']):" >&2
@@ -539,7 +541,10 @@ def scan(node, where, found, bad):
     if isinstance(node, dict):
         if isinstance(node.get("name"), str):
             where = node["name"]
-        for v in node.values():
+        for k, v in node.items():
+            # A task title mentioning the command is not an invocation.
+            if k == "name" and isinstance(v, str):
+                continue
             scan(v, where, found, bad)
     elif isinstance(node, list):
         if node and all(isinstance(x, (str, int, float)) for x in node) \
@@ -588,6 +593,10 @@ for fx in FIXTURES_BAD:
     found, bad = check(fx)
     if not found or not bad:
         sys.exit(f"self-test: matcher accepted a query missing a flag: {fx}")
+FIXTURES_GOOD.append(
+    [{"name": "Run samba-tool dns query for the apex", "command": {"argv": [
+        "samba-tool", "dns", "query", "h", "z", "@", "A",
+        "--authority", "--no-children"]}}])
 for fx in FIXTURES_GOOD:
     found, bad = check(fx)
     if not found or bad:
@@ -605,7 +614,7 @@ for path in sys.argv[1:]:
         total += len(found)
         rel = os.path.relpath(path, root)
         for where, missing in bad:
-            problems.append(f"{rel}: {where!r} lacks {" ".join(missing)}")
+            problems.append(f"{rel}: {where!r} lacks {' '.join(missing)}")
 
 if problems:
     print("samba-tool dns query must pass both --authority and --no-children:",
@@ -763,7 +772,9 @@ def shell_logical_lines(text):
         line = raw
         if re.match(r'^\s*#', line):
             line = ''
-        m = re.search(r'<<-?\s*[\'"]?([A-Za-z_][A-Za-z0-9_]*)[\'"]?', line)
+        # (?<!<)...(?!<): a here-string (<<< word) is not a heredoc; matching
+        # it would skip the rest of the file as a never-terminated body.
+        m = re.search(r'(?<!<)<<(?!<)-?\s*[\'"]?([A-Za-z_][A-Za-z0-9_]*)[\'"]?', line)
         if m:
             heredoc = m.group(1)
         if start is None:
@@ -799,13 +810,35 @@ for path in shell_files:
         # A secret in the same pipeline segment as an exec word is on argv;
         # one that only reaches the program through `printf ... |` is not.
         for seg in re.split(r'(?<!\|)\|(?!\|)', line):
-            if EXEC_WORD.search(seg) and SECRET_VAR.search(seg):
+            # A here-string operand reaches the program on stdin, not argv.
+            argv_part = re.sub(r'<<<\s*("[^"]*"|\'[^\']*\'|\S+)', '', seg)
+            if EXEC_WORD.search(argv_part) and SECRET_VAR.search(argv_part):
                 problems.append(f"{rel}:{n}: secret variable passed as an "
                                 f"argument (pipe it via stdin): {seg.strip()[:120]}")
                 break
 
 # -------------------------------------------------------------- ansible ----
-SECRET = re.compile(r'(samba_admin_password|sssd_admin_password|nfs_server_admin_password)')
+# Same definition as check 8: any *_password variable inside a Jinja
+# expression (a hand-kept list had already missed windows_admin_password).
+JINJA = re.compile(r'\{\{.*?\}\}', re.S)
+NOT_SECRET = {'sssd_ssh_require_password'}
+PW_NAME = re.compile(r'\b([a-z0-9_]+_password)\b')
+
+
+class _Secret:
+    @staticmethod
+    def search(text):
+        return any(n not in NOT_SECRET
+                   for expr in JINJA.findall(text)
+                   for n in PW_NAME.findall(expr))
+
+
+SECRET = _Secret()
+# Only these modules turn task values into a process command line; a secret
+# passed as an ordinary module option (microsoft.ad.membership's
+# domain_admin_password, say) never reaches argv.
+SPAWNS = re.compile(r'^\s+(-\s+)?(ansible\.(builtin|legacy)\.)?'
+                    r'(command|shell|raw|script|expect):', re.M)
 # The one-time `samba-tool domain provision` has no stdin form for the
 # administrator password; it runs once, before any user can log in.
 ALLOW = {('roles/samba-dc/tasks/provision.yml', '--adminpass=')}
@@ -831,6 +864,8 @@ for path in sorted(ans.rglob('*.yml')) if ans.is_dir() else []:
             continue
         # assert only evaluates the expression; it is never a process.
         if re.search(r'^\s+(ansible\.builtin\.)?assert:\s*$', body, re.M):
+            continue
+        if not SPAWNS.search(body):
             continue
         if re.search(r'^\s+(ansible\.builtin\.)?shell:', body, re.M):
             problems.append(f"ansible/{rel}:{a+1}: shell task references a "
@@ -879,6 +914,7 @@ local -a cmd=(samba-tool user create "$username" --random-password)
 printf '%s\n%s\n' "$password" "$password" \
     | setsid "${cmd[@]}" 2>&1
 parse_kv_args opts "--password" "$@"
+"${cmd[@]}" <<< "$password"
 [[ -z "$password" ]] && read -rsp "Password: " password
 usage() { cat <<USAGE
     --password=PASS   eval this
@@ -900,6 +936,10 @@ EOF
   ansible.builtin.assert:
     that:
       - samba_admin_password | length > 0
+- name: Module option, not argv
+  microsoft.ad.membership:
+    domain_admin_password: "{{ windows_admin_password }}"
+  no_log: true
 EOF
     out=$(_secrets_argv_violations "$tmp")
     if [[ -n "$out" ]]; then
@@ -911,6 +951,8 @@ EOF
         'local -a cmd=(samba-tool user create "$username")'
         '"${cmd[@]}" "$password"'
         'cmd+=(--password="$pw")'
+        'grep -q x <<< foo
+samba-tool user setpassword "$u" --newpassword="$password"'
         'smbclient -U "admin%${password}" //h/s'
         'local -a cmd=(samba-tool user create "$u"
     --random-password "$password")'
@@ -920,6 +962,7 @@ EOF
         $'- name: Leak\n  ansible.builtin.shell: kinit Administrator\n  args:\n    stdin: "{{ samba_admin_password }}"'
         $'- name: Leak\n  ansible.builtin.command:\n    argv:\n      - realm\n      - "--password={{ sssd_admin_password }}"'
         $'- name: Leak\n  ansible.builtin.shell: echo \'{{ x_password }}\' | kinit'
+        $'- name: Leak\n  ansible.builtin.command:\n    argv:\n      - adcli\n      - "--stdin-password={{ foo_join_password }}"'
     )
     local s
     for s in "${bad_sh[@]}"; do

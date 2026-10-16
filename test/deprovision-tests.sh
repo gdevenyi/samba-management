@@ -99,6 +99,13 @@ ALL_SSSD_SOCKETS="sssd-nss.socket sssd-pam.socket sssd-sudo.socket sssd-ssh.sock
 test_deprovision_client() {
     echo ""
     echo "=== Deprovision: Linux Client ==="
+    # Preconditions for the "routing removed" assertions below: without
+    # them those `! grep` checks also pass when provisioning never wrote the
+    # lines, reporting a teardown of routing that never existed.
+    run_test "client: nsswitch automount SSS routing present before deprovision" \
+        ssh_client "grep -qE '^automount:.*sss' /etc/nsswitch.conf"
+    run_test "client: nsswitch sudoers SSS routing present before deprovision" \
+        ssh_client "grep -qE '^sudoers:.*sss' /etc/nsswitch.conf"
     run_playbook "deprovision-linux.yml runs cleanly" deprovision-linux.yml
     [[ "$PB_OK" -ne 0 ]] && { log_warn "Skipping client assertions (playbook failed)."; return; }
 
@@ -143,6 +150,14 @@ test_deprovision_client() {
 test_deprovision_nfs() {
     echo ""
     echo "=== Deprovision: NFS Storage Server ==="
+    # Preconditions for the "routing removed" assertions below: without
+    # them those `! grep` checks also pass when provisioning never wrote the
+    # lines, reporting a teardown of routing that never existed.
+    # (No automount precondition here: provision-nfs-server.yml sets
+    # sssd_enable_autofs=false, so storage hosts are provisioned with
+    # `automount: files` and the removal check below is trivially true.)
+    run_test "storage: nsswitch sudoers SSS routing present before deprovision" \
+        ssh_nfs "grep -qE '^sudoers:.*sss' /etc/nsswitch.conf"
     run_playbook "deprovision-nfs-server.yml runs cleanly" deprovision-nfs-server.yml
     [[ "$PB_OK" -ne 0 ]] && { log_warn "Skipping storage assertions (playbook failed)."; return; }
 

@@ -651,6 +651,34 @@ test_sudo_rules() {
     # silently inert no matter how correct the SSSD config is.
     run_test "client sudo implementation can consume SSSD rules (not sudo-rs)" \
         ssh_client "! sudo sudo -V 2>&1 | head -1 | grep -qi 'sudo-rs'"
+    # The client half of AD sudo delivery.  Each of these was removed or
+    # broken once and the suite stayed green: 79cd360 dropped the
+    # ldap_sudo_search_base pin as a "restated default" and SSSD's full
+    # refresh then downloaded 0 rules.  Pure state checks, same rationale as
+    # above.  sssd.conf is 0600, hence `sudo grep`.  The sssd-client role
+    # also runs on nfs_servers, so in separate mode the storage host renders
+    # the same wiring and is checked too (in colocated mode ssh_nfs is the
+    # DC, whose own sssd.conf deliberately carries no sudo provider).
+    local -a sudo_hosts=(client)
+    [[ "${SMB_TEST_MODE:-colocated}" == "separate" ]] && sudo_hosts+=(storage)
+    local sh sfn
+    for sh in "${sudo_hosts[@]}"; do
+        sfn=ssh_client
+        [[ "$sh" == "storage" ]] && sfn=ssh_nfs
+        run_test "${sh} sssd.conf sets sudo_provider = ad" \
+            "$sfn" "sudo grep -qx 'sudo_provider = ad' /etc/sssd/sssd.conf"
+        run_test "${sh} sssd.conf pins ldap_sudo_search_base to OU=SUDOers" \
+            "$sfn" "sudo grep -qx 'ldap_sudo_search_base = OU=SUDOers,DC=samba,DC=test' /etc/sssd/sssd.conf"
+        run_test "${sh} nsswitch routes sudoers through sss" \
+            "$sfn" "grep -qE '^sudoers:[[:space:]]+files[[:space:]]+sss([[:space:]]|\$)' /etc/nsswitch.conf"
+        run_test "${sh} has libsss-sudo installed" \
+            "$sfn" "dpkg-query -W -f='\${Status}' libsss-sudo 2>/dev/null | grep -q 'install ok installed'"
+    done
+    # The DC-side half of the same contract: the rule samba-sudorule.sh wrote
+    # must live under the base the clients are pinned to, so renaming
+    # SUDO_OU / samba_ous on only one side fails here.
+    run_test "sudo rule lives under the clients' pinned search base" \
+        ssh_dc "sudo ldbsearch -H /var/lib/samba/private/sam.ldb -b 'OU=SUDOers,DC=samba,DC=test' -s one '(cn=users-nopasswd)' dn 2>/dev/null | grep -qi '^dn: CN=users-nopasswd,OU=SUDOers,DC=samba,DC=test\$'"
     # Inline delete kept here so the verification "rules deleted" assertion
     # below runs in the same section.  The EXIT-trap cleanup also tries to
     # delete these, so an early failure still leaves the DC clean.

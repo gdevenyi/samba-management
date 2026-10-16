@@ -104,7 +104,7 @@ The test uses domain `samba.test` (RFC 2606 reserved TLD). A random admin passwo
 | `test_autofs_kerberos` | client triggers `auto.shares` and `auto.home` via Kerberos NFS, verifies actual mount and that both mounts negotiated `sec=krb5p` (`/proc/mounts`); `homeuser2` (own ticket, own home readable) is denied list/write on `homeuser1`'s home |
 | `test_password_policy` | `password-policy show` |
 | `test_ssh_keys` | add/list/remove via `samba-user.sh`, retrieval from client via `sss_ssh_authorizedkeys` |
-| `test_sudo_rules` | create/list/show/modify/delete; verify enforcement on client via SSSD |
+| `test_sudo_rules` | create/list/show/modify/delete on the DC; rule lands under `OU=SUDOers`; SUDOers OU + `sudoRole` schema Authenticated-Users read ACEs; client (and storage in separate mode) SSSD sudo wiring: `sudo_provider = ad`, pinned `ldap_sudo_search_base`, `sudoers: files sss`, `libsss-sudo`, not sudo-rs. Live `sudo -l` enforcement is deliberately not tested (cache-convergence flakiness) |
 | `test_client_verification` | getent user/group lookup, autofs NFS mounts (shares + homes) |
 | `test_login_access_filter` | anchor/catch-all group creation, DOM:-prefixed chain matching, dynamic class group nesting, `login-*` group delete guard |
 | `test_dns_persistence` | reboot test verifying persistent DNS resolver config (DC stays the resolver) |

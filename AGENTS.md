@@ -107,7 +107,7 @@ The test uses domain `samba.test` (RFC 2606 reserved TLD). A random admin passwo
 | `test_ssh_keys` | add/list/remove via `samba-user.sh`, retrieval from client via `sss_ssh_authorizedkeys` |
 | `test_sudo_rules` | create/list/show/modify/delete on the DC; rule lands under `OU=SUDOers`; SUDOers OU + `sudoRole` schema Authenticated-Users read ACEs; client (and storage in separate mode) SSSD sudo wiring: `sudo_provider = ad`, pinned `ldap_sudo_search_base`, `sudoers: files sss`, `libsss-sudo`, not sudo-rs. Live `sudo -l` enforcement is deliberately not tested (cache-convergence flakiness) |
 | `test_client_verification` | getent user/group lookup, autofs NFS mounts (shares + homes) |
-| `test_login_access_filter` | anchor/catch-all group creation, DOM:-prefixed chain matching, dynamic class group nesting, `login-*` group delete guard |
+| `test_login_access_filter` | anchor/catch-all group creation, DOM:-prefixed chain matching, dynamic class group nesting, `login-*` group delete guard (exit 4 + anchor warning, mixed-case `LOGIN-*` name also refused, group survives both refusals) |
 | `test_dns_persistence` | reboot test verifying persistent DNS resolver config (DC stays the resolver) |
 | `test_client_dns_registration` | client's A/PTR are registered in the DC's AD zone (default: explicit `sssd_register_dns`); DC resolves the client by name |
 | `test_autofs_maps` | explicit map listing and entry verification via `samba-automount.sh` |

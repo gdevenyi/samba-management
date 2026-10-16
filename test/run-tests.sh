@@ -807,11 +807,20 @@ test_login_access_filter() {
 
     # samba-group.sh refuses to delete login-* groups without --force,
     # because those are SSSD anchor groups whose removal locks the host.
+    # The refusal must be the guard's own exit 4 plus its message -- a bare
+    # `!` also passed on a lookup failure (3) or an ERR-trap crash (1).
+    # The mixed-case attempt pins the case-insensitive match: AD resolves
+    # sAMAccountName case-insensitively, so a case-sensitive `login-*` test
+    # let `delete LOGIN-node01` find and delete a live anchor.  </dev/null
+    # makes a regressed guard fall through to confirm_action, read EOF and
+    # exit 0 (not 4) instead of hanging or deleting the group.
     run_test "Create probe anchor group login-delete-probe" \
         ssh_dc 'sudo samba-group.sh add login-delete-probe --description="anchor delete guard test"'
-    run_test "Delete of login-* without --force is refused" \
-        ssh_dc "! sudo samba-group.sh delete login-delete-probe"
-    run_test "login-delete-probe still exists after refused delete" \
+    run_test "Delete of login-* without --force is refused with exit 4 and the anchor warning" \
+        ssh_dc "out=\$(sudo samba-group.sh delete login-delete-probe </dev/null 2>&1); rc=\$?; test \$rc -eq 4 && printf '%s\\n' \"\$out\" | grep -q 'looks like a per-host SSSD login anchor'"
+    run_test "Mixed-case delete of login-* without --force is refused with exit 4" \
+        ssh_dc "out=\$(sudo samba-group.sh delete LOGIN-Delete-Probe </dev/null 2>&1); rc=\$?; test \$rc -eq 4 && printf '%s\\n' \"\$out\" | grep -q 'looks like a per-host SSSD login anchor'"
+    run_test "login-delete-probe still exists after both refused deletes" \
         ssh_dc 'sudo samba-tool group show login-delete-probe'
     run_test "Delete of login-* with --force succeeds" \
         ssh_dc 'sudo samba-group.sh delete login-delete-probe --force'

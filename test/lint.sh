@@ -15,6 +15,7 @@
 #   9. YAML-boolean trap on samba_password_complexity
 #  10. AGENTS.md test-suite table vs. the functions run-tests.sh defines
 #  11. Every role variable a template references has a default
+#  12. Every samba-tool dns query passes --authority and --no-children
 #
 # This is the cheap gate: it catches the class of regression that would
 # otherwise only surface an hour into a libvirt matrix run.
@@ -453,6 +454,133 @@ PY
 }
 
 # ---------------------------------------------------------------------------
+# 12. Every `samba-tool dns query` passes BOTH --authority and --no-children.
+#     --no-children alone makes samba's cmd_query skip its authority default
+#     and return Records=0; without --no-children an apex query also returns
+#     every child node.  Either regression is invisible at runtime: the add
+#     hits a tolerated "already exists", the prune list comes out empty, and
+#     the idempotence pass still reports changed=0 -- pruning of stale A/PTR
+#     values just silently stops.  Both flag bugs reached a production DC.
+#
+#     Parses the YAML (so comments explaining the flags can't satisfy it) and
+#     checks every argv list and every command string, wherever it sits --
+#     block/rescue/always, plays, loops -- so the module spelling is
+#     irrelevant.  A built-in self-test proves the matcher fires, and finding
+#     zero queries fails, so a parser drift can't pass by matching nothing.
+# ---------------------------------------------------------------------------
+lint_dns_query_flags() {
+    local -a files
+    mapfile -t files < <(tracked_ansible_yaml)
+    python3 - "${files[@]}" <<'PY'
+import os
+import re
+import shlex
+import sys
+
+import yaml
+
+REQUIRED = ("--authority", "--no-children")
+QUERY_RE = re.compile(r"(^|[\s/])samba-tool\s+dns\s+query(\s|$)")
+
+
+def tokens_of(value):
+    try:
+        return shlex.split(value)
+    except ValueError:
+        return value.split()
+
+
+def is_query(tokens):
+    toks = [os.path.basename(str(t)) for t in tokens]
+    return any(toks[i:i + 3] == ["samba-tool", "dns", "query"]
+               for i in range(len(toks) - 2))
+
+
+def scan(node, where, found, bad):
+    """Collect (where, missing-flags) for every samba-tool dns query."""
+    if isinstance(node, dict):
+        if isinstance(node.get("name"), str):
+            where = node["name"]
+        for v in node.values():
+            scan(v, where, found, bad)
+    elif isinstance(node, list):
+        if node and all(isinstance(x, (str, int, float)) for x in node) \
+                and is_query(node):
+            found.append(where)
+            missing = [f for f in REQUIRED if f not in [str(x) for x in node]]
+            if missing:
+                bad.append((where, missing))
+            return
+        for v in node:
+            scan(v, where, found, bad)
+    elif isinstance(node, str) and QUERY_RE.search(node):
+        found.append(where)
+        toks = tokens_of(node)
+        missing = [f for f in REQUIRED if f not in toks]
+        if missing:
+            bad.append((where, missing))
+
+
+def check(doc):
+    found, bad = [], []
+    scan(doc, "<top>", found, bad)
+    return found, bad
+
+
+# Self-test: the matcher must catch each dropped flag in both argv and string
+# form, and must accept the correct forms.
+FIXTURES_BAD = [
+    [{"name": "t", "ansible.builtin.command": {"argv": [
+        "samba-tool", "dns", "query", "127.0.0.1", "z", "@", "A",
+        "--no-children"]}}],
+    [{"name": "t", "block": [{"name": "u", "command": {"argv": [
+        "/usr/bin/samba-tool", "dns", "query", "h", "z", "n", "A",
+        "--authority"]}}]}],
+    [{"name": "t", "ansible.builtin.shell":
+        "samba-tool dns query 127.0.0.1 z n PTR --authority -U x"}],
+]
+FIXTURES_GOOD = [
+    [{"name": "t", "ansible.builtin.command": {"argv": [
+        "samba-tool", "dns", "query", "h", "z", "n", "A",
+        "--authority", "--no-children"]}}],
+    [{"name": "t", "command":
+        "samba-tool dns query h z n A --no-children --authority"}],
+]
+for fx in FIXTURES_BAD:
+    found, bad = check(fx)
+    if not found or not bad:
+        sys.exit(f"self-test: matcher accepted a query missing a flag: {fx}")
+for fx in FIXTURES_GOOD:
+    found, bad = check(fx)
+    if not found or bad:
+        sys.exit(f"self-test: matcher rejected a correct query: {fx}")
+
+root = os.getcwd()
+total, problems = 0, []
+for path in sys.argv[1:]:
+    try:
+        docs = list(yaml.safe_load_all(open(path)))
+    except Exception:
+        continue  # the YAML-parse check reports this
+    for doc in docs:
+        found, bad = check(doc)
+        total += len(found)
+        rel = os.path.relpath(path, root)
+        for where, missing in bad:
+            problems.append(f"{rel}: {where!r} lacks {" ".join(missing)}")
+
+if problems:
+    print("samba-tool dns query must pass both --authority and --no-children:",
+          file=sys.stderr)
+    for p in problems:
+        print("  " + p, file=sys.stderr)
+    sys.exit(1)
+if total == 0:
+    sys.exit("no samba-tool dns query found -- the scan has drifted from the tree")
+PY
+}
+
+# ---------------------------------------------------------------------------
 # Main
 # ---------------------------------------------------------------------------
 main() {
@@ -490,6 +618,7 @@ main() {
     check "password-bearing tasks carry no_log" lint_no_log_coverage
     check "samba_password_complexity is a quoted string" lint_complexity_quoted
     check "template variables have role defaults" lint_template_vars_defaulted
+    check "samba-tool dns query passes --authority and --no-children" lint_dns_query_flags
 
     echo ""
     echo "--- Documentation ---"

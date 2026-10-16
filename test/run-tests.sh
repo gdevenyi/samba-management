@@ -29,10 +29,10 @@ NC='\033[0m'
 
 # --- Test data --------------------------------------------------------------
 # Centralised so setup, exercise, and cleanup all reference the same names.
-TEST_USERS=(testuser1 testuser2 homeuser1 homeuser2 perm_reader perm_writer perm_both perm_outsider login_allowed login_denied edgeuser archiveuser dryuser shortpwuser)
+TEST_USERS=(testuser1 testuser2 homeuser1 homeuser2 perm_reader perm_writer perm_both perm_outsider login_allowed login_denied edgeuser archiveuser dryuser shortpwuser injuser)
 TEST_GROUPS=(TestGroupNested GidGroup EdgeGroup TestGroup ShareReaders ShareWriters computenode-login login-delete-probe)
 TEST_SHARES=(perm_rw_share perm_admin_share public edgeshare pathshare dryshare syncshare newentry cifsentry notarget badsync)
-TEST_SUDO_RULES=(admin-all users-nopasswd edge-rule edge-rule2)
+TEST_SUDO_RULES=(admin-all users-nopasswd edge-rule edge-rule2 inj-rule)
 TEST_SSH_KEY_COMMENT="samba-mgmt-test-data"
 TEST_SSH_KEY_FILE=""
 TEST_SSH_KEY=""
@@ -913,6 +913,15 @@ test_user_edge_cases() {
         ssh_dc "sudo samba-user.sh add edgeuser2 --group=NoSuchGroup --password=EdgePass123456 --force >/dev/null 2>&1; test \$? -eq 3 && ! sudo samba-tool user show edgeuser2 >/dev/null 2>&1"
     run_test "Reject too-short password (exit 2, user not created)" \
         ssh_dc "sudo samba-user.sh add shortpwuser --password=Short1 --force >/dev/null 2>&1; test \$? -eq 2 && ! sudo samba-tool user show shortpwuser >/dev/null 2>&1"
+    # LDIF injection guard (validate_ldif_value) at each samba-user.sh call
+    # site.  Every newline-bearing value is built ON the DC with printf --
+    # a local \$'...' would not survive ssh_dc's "\$*" flattening.  Each
+    # payload is a well-formed LDIF continuation, so with the guard removed
+    # it would apply cleanly (exit 0) rather than fail for another reason;
+    # the stderr match pins the rejection to the guard, not to some other
+    # exit-2 path.
+    run_test "add rejects newline in --office before creating the account" \
+        ssh_dc 'v=$(printf "HQ\n-\nreplace: title\ntitle: injected"); out=$(sudo samba-user.sh add injuser --office="$v" --password=EdgePass123456 --force 2>&1); rc=$?; test $rc -eq 2 && printf "%s" "$out" | grep -q "contains newline or carriage return" && ! sudo samba-tool user show injuser >/dev/null 2>&1'
     run_test "Show of nonexistent user exits 3" \
         ssh_dc "sudo samba-user.sh show nosuchuser123 >/dev/null 2>&1; test \$? -eq 3"
     run_test "modify with no attributes exits 2" \
@@ -931,6 +940,16 @@ test_user_edge_cases() {
         ssh_dc "sudo samba-user.sh modify edgeuser --clear=bogus >/dev/null 2>&1; test \$? -eq 2"
     run_test "set and clear same attribute exits 2" \
         ssh_dc "sudo samba-user.sh modify edgeuser --title=X --clear=title >/dev/null 2>&1; test \$? -eq 2"
+    run_test "modify of nonexistent user exits 3" \
+        ssh_dc "sudo samba-user.sh modify nosuchuser123 --title=x >/dev/null 2>&1; test \$? -eq 3"
+    # title and description were both cleared above, so any value showing up
+    # in either attribute below can only have come from an injected stanza.
+    run_test "modify rejects newline in --title (exit 2, nothing injected)" \
+        ssh_dc 'v=$(printf "x\n-\nreplace: description\ndescription: injected"); out=$(sudo samba-user.sh modify edgeuser --title="$v" 2>&1); rc=$?; test $rc -eq 2 && printf "%s" "$out" | grep -q "contains newline or carriage return" && d=$(sudo ldbsearch -H /var/lib/samba/private/sam.ldb "(sAMAccountName=edgeuser)" title description) && printf "%s" "$d" | grep -q "^dn: " && ! printf "%s" "$d" | grep -qE "^(title|description):"'
+    run_test "modify rejects carriage return in --title (exit 2)" \
+        ssh_dc 'v=$(printf "x\rdescription: injected"); out=$(sudo samba-user.sh modify edgeuser --title="$v" 2>&1); rc=$?; test $rc -eq 2 && printf "%s" "$out" | grep -q "contains newline or carriage return" && d=$(sudo ldbsearch -H /var/lib/samba/private/sam.ldb "(sAMAccountName=edgeuser)" title description) && printf "%s" "$d" | grep -q "^dn: " && ! printf "%s" "$d" | grep -qE "^(title|description):"'
+    run_test "modify rejects leading-colon and leading-< values (exit 2)" \
+        ssh_dc 'for v in ":evil" "<x"; do out=$(sudo samba-user.sh modify edgeuser --title="$v" 2>&1); rc=$?; test $rc -eq 2 || exit 1; printf "%s" "$out" | grep -q "leading space" || exit 1; done; d=$(sudo ldbsearch -H /var/lib/samba/private/sam.ldb "(sAMAccountName=edgeuser)" title) && printf "%s" "$d" | grep -q "^dn: " && ! printf "%s" "$d" | grep -q "^title:"'
     run_test "modify --must-change-pw sets pwdLastSet=0" \
         ssh_dc "sudo samba-user.sh modify edgeuser --must-change-pw && sudo ldbsearch -H /var/lib/samba/private/sam.ldb '(sAMAccountName=edgeuser)' pwdLastSet | grep -q '^pwdLastSet: 0$'"
     run_test "set-expiry --days sets a finite expiry" \
@@ -951,6 +970,13 @@ test_user_edge_cases() {
         ssh_dc "printf '%s\n' '${TEST_SSH_KEY}' | sudo tee /tmp/edgekey.pub >/dev/null && sudo samba-user.sh add-sshkey edgeuser --key-file=/tmp/edgekey.pub && sudo rm -f /tmp/edgekey.pub"
     run_test "key-file key is listed" \
         ssh_dc "sudo samba-user.sh list-sshkeys edgeuser | grep -Fq '${TEST_SSH_KEY_COMMENT}'"
+    # One key is on edgeuser now; a rejected add/remove must leave the list
+    # exactly as it is.  The snapshot must itself contain that key, so an
+    # empty-vs-empty comparison can't pass by accident.
+    run_test "add-sshkey rejects newline and leading-< keys (key list unchanged)" \
+        ssh_dc "before=\$(sudo samba-user.sh list-sshkeys edgeuser) && printf '%s' \"\$before\" | grep -Fq '${TEST_SSH_KEY_COMMENT}' || exit 1; v=\$(printf 'ssh-ed25519 AAAAinj x\naltSecurityIdentities: injected'); out=\$(sudo samba-user.sh add-sshkey edgeuser --key=\"\$v\" 2>&1); r1=\$?; printf '%s' \"\$out\" | grep -q 'contains newline or carriage return' || exit 1; sudo samba-user.sh add-sshkey edgeuser --key='<x' >/dev/null 2>&1; r2=\$?; test \$r1 -eq 2 && test \$r2 -eq 2 && test \"\$before\" = \"\$(sudo samba-user.sh list-sshkeys edgeuser)\""
+    run_test "remove-sshkey rejects newline in --key (key list unchanged)" \
+        ssh_dc "before=\$(sudo samba-user.sh list-sshkeys edgeuser) && printf '%s' \"\$before\" | grep -Fq '${TEST_SSH_KEY_COMMENT}' || exit 1; v=\$(printf 'ssh-ed25519 AAAAinj x\naltSecurityIdentities: injected'); out=\$(sudo samba-user.sh remove-sshkey edgeuser --key=\"\$v\" 2>&1); rc=\$?; test \$rc -eq 2 && printf '%s' \"\$out\" | grep -q 'contains newline or carriage return' && test \"\$before\" = \"\$(sudo samba-user.sh list-sshkeys edgeuser)\""
     run_test "add-sshkey with missing file exits 2" \
         ssh_dc "sudo samba-user.sh add-sshkey edgeuser --key-file=/tmp/no-such-key.pub >/dev/null 2>&1; test \$? -eq 2"
     run_test "Remove key-file key" \
@@ -1001,6 +1027,10 @@ test_group_edge_cases() {
         ssh_dc "sudo ldbsearch -H /var/lib/samba/private/sam.ldb '(sAMAccountName=GidGroup)' gidNumber | grep -q '^gidNumber: 15001'"
     run_test "gidNumber stays paired with msSFU30NisDomain" \
         ssh_dc "sudo ldbsearch -H /var/lib/samba/private/sam.ldb '(sAMAccountName=GidGroup)' msSFU30NisDomain | grep -qi '^msSFU30NisDomain: '"
+    # LDIF injection guard on --description: the payload would replace
+    # gidNumber with 0 (root's group) if the guard were dropped.
+    run_test "group modify rejects newline in --description (gidNumber unchanged)" \
+        ssh_dc 'v=$(printf "d\n-\nreplace: gidNumber\ngidNumber: 0"); out=$(sudo samba-group.sh modify GidGroup --description="$v" 2>&1); rc=$?; test $rc -eq 2 && printf "%s" "$out" | grep -q "contains newline or carriage return" && d=$(sudo ldbsearch -H /var/lib/samba/private/sam.ldb "(sAMAccountName=GidGroup)" gidNumber description) && printf "%s" "$d" | grep -qx "gidNumber: 15001" && printf "%s" "$d" | grep -qx "description: updated gid group"'
     run_test "group modify --gid=0 exits 2" \
         ssh_dc "sudo samba-group.sh modify GidGroup --gid=0 >/dev/null 2>&1; test \$? -eq 2"
     run_test "group modify with no attributes exits 2" \
@@ -1052,6 +1082,12 @@ test_sudorule_extended() {
         ssh_dc "sudo samba-sudorule.sh modify edge-rule --order=7"
     run_test "sudoOrder replaced, not appended" \
         ssh_dc "sudo samba-sudorule.sh show edge-rule | grep -q 'sudoOrder: 7' && ! sudo samba-sudorule.sh show edge-rule | grep -q 'sudoOrder: 5'"
+    # LDIF injection guard (_validate_sudo_attrs -> validate_ldif_value).  A
+    # dropped guard would let a newline smuggle "sudoUser: ALL" into the rule.
+    run_test "add rejects newline in --user (exit 2, rule not created)" \
+        ssh_dc 'v=$(printf "edgeuser\nsudoUser: ALL"); out=$(sudo samba-sudorule.sh add inj-rule --user="$v" 2>&1); rc=$?; test $rc -eq 2 && printf "%s" "$out" | grep -q "contains newline or carriage return" && l=$(sudo samba-sudorule.sh list) && printf "%s" "$l" | grep -qx edge-rule && ! printf "%s" "$l" | grep -qx inj-rule'
+    run_test "modify rejects newline in --command (rule unchanged)" \
+        ssh_dc 'v=$(printf "/usr/bin/id\nsudoUser: ALL"); out=$(sudo samba-sudorule.sh modify edge-rule --command="$v" 2>&1); rc=$?; test $rc -eq 2 && printf "%s" "$out" | grep -q "contains newline or carriage return" && r=$(sudo samba-sudorule.sh show edge-rule) && printf "%s" "$r" | grep -q "sudoCommand: /usr/bin/id" && ! printf "%s" "$r" | grep -q "sudoUser: ALL"'
     run_test "Duplicate rule creation fails" \
         ssh_dc "! sudo samba-sudorule.sh add edge-rule --user=edgeuser"
     run_test "Rule without --user exits 2" \

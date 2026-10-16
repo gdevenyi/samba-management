@@ -99,9 +99,9 @@ The test uses domain `samba.test` (RFC 2606 reserved TLD). A random admin passwo
 | `test_users` | create, list, show, disable, enable, set-password, delete |
 | `test_groups` | create, add-members, list-members, show, remove-members, delete |
 | `test_shares_basic` | directory creation (fresh share is `root:"Domain Users"` 0770), NFS export deployment, export verification |
-| `test_export_fsid` | share (`fsid=101`) and homes (`fsid=100`) export files carry the expected `fsid=` and the default `async` write mode, and the kernel accepted each export with both (`exportfs -v`) |
+| `test_export_fsid` | share (`fsid=101`) and homes (`fsid=100`) export files carry the expected `fsid=`, the default `async` write mode and `sec=krb5p`, and the kernel accepted each export with all three (`exportfs -v`) |
 | `test_permissions_setup` + `test_permissions` | POSIX read/write access via Kerberos+NFS, secondary-group resolution through SSSD; `perm_both` writes under its own uid and owns the file; deny cases (`run_test_deny`, requires EACCES): `perm_outsider`/`perm_reader` with valid tickets cannot list or write either 2770 share |
-| `test_autofs_kerberos` | client triggers `auto.shares` and `auto.home` via Kerberos NFS, verifies actual mount; `homeuser2` (own ticket, own home readable) is denied list/write on `homeuser1`'s home |
+| `test_autofs_kerberos` | client triggers `auto.shares` and `auto.home` via Kerberos NFS, verifies actual mount and that both mounts negotiated `sec=krb5p` (`/proc/mounts`); `homeuser2` (own ticket, own home readable) is denied list/write on `homeuser1`'s home |
 | `test_password_policy` | `password-policy show` |
 | `test_ssh_keys` | add/list/remove via `samba-user.sh`, retrieval from client via `sss_ssh_authorizedkeys` |
 | `test_sudo_rules` | create/list/show/modify/delete; verify enforcement on client via SSSD |

@@ -289,6 +289,19 @@ test_export_fsid() {
         ssh_nfs "sudo exportfs -v | grep 'fsid=101' | grep -qE '[(,]async[,)]'"
     run_test "kernel exports homes async" \
         ssh_nfs "sudo exportfs -v | grep 'fsid=100' | grep -qE '[(,]async[,)]'"
+    # samba_nfs_sec / NFS_SEC default: krb5p (authentication + integrity +
+    # encryption).  kinit-then-access also works under krb5/krb5i, so no
+    # access test notices a weakened flavour; and an export that loses its
+    # sec= falls back to sys, which the kernel reports as sec=sys.  Matched
+    # as a whole option (`:` allows a multi-flavour sec=krb5p:krb5i list).
+    run_test "public share export file is sec=krb5p" \
+        ssh_nfs "grep -qE '[(,]sec=krb5p[,):]' /etc/exports.d/public.exports"
+    run_test "homes export file is sec=krb5p" \
+        ssh_nfs "grep -qE '[(,]sec=krb5p[,):]' /etc/exports.d/homes.exports"
+    run_test "kernel exports public share sec=krb5p" \
+        ssh_nfs "sudo exportfs -v | grep 'fsid=101' | grep -qE '[(,]sec=krb5p[,):]'"
+    run_test "kernel exports homes sec=krb5p" \
+        ssh_nfs "sudo exportfs -v | grep 'fsid=100' | grep -qE '[(,]sec=krb5p[,):]'"
 }
 
 # Stand up users, groups, share directories, and NFS exports for the
@@ -468,6 +481,10 @@ test_autofs_kerberos() {
         ssh_client "ls /data/public/ && mount | grep 'public.*nfs4'"
     run_test "Autofs NFS mount carries the role's nconnect default" \
         ssh_client "grep -E ' /data/public nfs4 .*nconnect=4' /proc/mounts"
+    # The flavour the client actually negotiated, not just the one the map
+    # asks for: a weakened export + map pair would still mount and serve.
+    run_test "Autofs public mount negotiated sec=krb5p" \
+        ssh_client "grep -E ' /data/public nfs4 (.*,)?sec=krb5p[, ]' /proc/mounts"
     run_test "Write and read file via autofs-mounted public share" \
         ssh_client "echo 'autofs test content' > /data/public/autofs_test.txt && cat /data/public/autofs_test.txt && rm /data/public/autofs_test.txt"
     run_test "kdestroy perm_writer ticket" \
@@ -484,6 +501,8 @@ test_autofs_kerberos() {
         ssh_client "echo 'H0mePass1!2345' | sudo -u homeuser1 kinit homeuser1@SAMBA.TEST"
     run_test "Trigger autofs home mount for homeuser1 and verify NFS" \
         ssh_client "sudo -u homeuser1 ls /home/ad/homeuser1/ && mount | grep 'homeuser1.*nfs4'"
+    run_test "Autofs home mount negotiated sec=krb5p" \
+        ssh_client "grep -E ' /home/ad/homeuser1 nfs4 (.*,)?sec=krb5p[, ]' /proc/mounts"
     run_test "Write and read file via autofs-mounted home directory" \
         ssh_client "sudo -u homeuser1 bash -c 'echo autofs-home-test > /home/ad/homeuser1/autofs_home_test.txt && cat /home/ad/homeuser1/autofs_home_test.txt && rm /home/ad/homeuser1/autofs_home_test.txt'"
     run_test "kdestroy homeuser1 ticket" \

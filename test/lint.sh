@@ -17,6 +17,7 @@
 #  11. Every role variable a template references has a default
 #  12. Every samba-tool dns query passes --authority and --no-children
 #  13. lib/ pure helpers and the config.sh parser behave (test/lib-units.sh)
+#  14. Shell scripts set errtrace (set -E) and declare their ERR trap
 #
 # This is the cheap gate: it catches the class of regression that would
 # otherwise only surface an hour into a libvirt matrix run.
@@ -594,6 +595,85 @@ lint_lib_units() {
 }
 
 # ---------------------------------------------------------------------------
+# 14. errtrace + ERR trap.  AGENTS.md: every script must use
+#     `set -Eeuo pipefail`, not `set -euo pipefail` -- bash does not run an
+#     ERR trap inside shell functions without errtrace, and nearly all work
+#     happens inside cmd_*/test_* functions, so without -E a failure exits
+#     with the right status but no diagnostic at all.  bash -n and shellcheck
+#     are both blind to it.
+#
+#     Scope: every tracked *.sh under bin/, lib/, client/linux/ and test/,
+#     so a new script is covered by default.  For bin/* this is consistency
+#     more than bug-catching (sourcing lib/common.sh sets -E again); the
+#     regressions it really prevents are in lib/ and the standalone client/
+#     and test/ scripts, which nothing else re-enables it for.
+# ---------------------------------------------------------------------------
+# Deliberate exceptions, each with its reason:
+#   test/lib.sh        sourced by other test scripts; sets no shell options
+#   test/lint.sh       set -uo pipefail on purpose: counts failures, carries on
+#   test/run-matrix.sh set -uo pipefail on purpose: continues after a failed combo
+ERRTRACE_EXEMPT=(test/lib.sh test/lint.sh test/run-matrix.sh)
+
+# _errtrace_violations <file> -- print one line per broken rule, if any.
+_errtrace_violations() {
+    local f="$1" name="${2:-$1}"
+    # Rule 1: errtrace is enabled (set -E... cluster or set -o errtrace).
+    grep -qE '^[[:space:]]*set (-[a-zA-Z]*E[a-zA-Z]*([[:space:]]|$)|.*-o errtrace)' "$f" \
+        || echo "${name}: no 'set -Eeuo pipefail' (errtrace is off)"
+    # Rule 2: no errexit cluster that leaves -E out (e.g. set -euo pipefail).
+    local bad
+    bad=$(grep -nE '^[[:space:]]*set -[a-zA-Z]*e[a-zA-Z]*([[:space:]]|$)' "$f" \
+        | grep -vE '^[0-9]+:[[:space:]]*set -[a-zA-Z]*E' || true)
+    [[ -z "$bad" ]] || echo "${name}: errexit without errtrace at line ${bad%%:*}: ${bad#*:}"
+    # Rule 3: the ERR trap itself is declared.
+    grep -qE '^[[:space:]]*trap .* ERR$' "$f" \
+        || echo "${name}: no 'trap ... ERR' line"
+}
+
+lint_errtrace_convention() {
+    local rc=0 rel out ex skip_it tmp
+
+    # Self-test: the matcher must still reject the regression shapes it exists
+    # for, or a broken regex would pass the whole tree silently.
+    tmp=$(mktemp -d) || return 1
+    printf '%s\n' '#!/usr/bin/env bash' 'set -Eeuo pipefail' \
+        "trap 'exit 1' ERR" > "${tmp}/good.sh"
+    printf '%s\n' '#!/usr/bin/env bash' 'set -euo pipefail' \
+        "trap 'exit 1' ERR" > "${tmp}/no-E.sh"
+    printf '%s\n' '#!/usr/bin/env bash' 'set -Eeuo pipefail' > "${tmp}/no-trap.sh"
+    if [[ -n "$(_errtrace_violations "${tmp}/good.sh")" ]]; then
+        echo "self-test: compliant fixture was flagged"; rc=1
+    fi
+    if [[ -z "$(_errtrace_violations "${tmp}/no-E.sh")" ]]; then
+        echo "self-test: 'set -euo pipefail' was not flagged"; rc=1
+    fi
+    if [[ -z "$(_errtrace_violations "${tmp}/no-trap.sh")" ]]; then
+        echo "self-test: missing ERR trap was not flagged"; rc=1
+    fi
+    rm -rf "$tmp"
+
+    local n=0
+    while IFS= read -r rel; do
+        [[ -n "$rel" ]] || continue
+        skip_it=0
+        for ex in "${ERRTRACE_EXEMPT[@]}"; do
+            [[ "$rel" == "$ex" ]] && skip_it=1
+        done
+        [[ $skip_it -eq 0 ]] || continue
+        n=$((n + 1))
+        out=$(_errtrace_violations "${REPO_ROOT}/${rel}" "$rel")
+        if [[ -n "$out" ]]; then
+            printf '%s\n' "$out"
+            rc=1
+        fi
+    done < <(git -C "$REPO_ROOT" ls-files 'bin/*.sh' 'lib/*.sh' 'client/linux/*.sh' 'test/*.sh')
+    if [[ $n -eq 0 ]]; then
+        echo "no shell scripts found to check"; rc=1
+    fi
+    return $rc
+}
+
+# ---------------------------------------------------------------------------
 # Main
 # ---------------------------------------------------------------------------
 main() {
@@ -632,6 +712,7 @@ main() {
     check "samba_password_complexity is a quoted string" lint_complexity_quoted
     check "template variables have role defaults" lint_template_vars_defaulted
     check "samba-tool dns query passes --authority and --no-children" lint_dns_query_flags
+    check "shell scripts set errtrace with their ERR trap" lint_errtrace_convention
 
     echo ""
     echo "--- Library ---"

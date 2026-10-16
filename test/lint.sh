@@ -276,8 +276,14 @@ lint_fact_convention() {
 
 # ---------------------------------------------------------------------------
 # 8. Secrets: any task feeding an admin/join password must carry no_log.
-#    Heuristic but targeted -- it looks for the password variables this repo
-#    actually defines, and checks the enclosing task block for no_log.
+#    A secret is any variable whose name ends in "_password" referenced
+#    inside a Jinja "{{ ... }}" expression -- not a hand-kept list, which had
+#    already missed windows_admin_password (provision-windows.yml, a path no
+#    VM suite covers).  Only Jinja references count, so a module option key
+#    (domain_admin_password:) and a defaults/group_vars definition do not.
+#    The one non-secret name ending in _password, the boolean
+#    sssd_ssh_require_password, is excluded by name.  A built-in self-test
+#    proves the matcher catches a new *_password and ignores that boolean.
 #
 #    ansible.builtin.assert is exempt: it reports the *expression* that failed
 #    ("samba_admin_password | length > 0"), never the resolved value, so the
@@ -291,8 +297,37 @@ import re
 import sys
 
 root = pathlib.Path(sys.argv[1])
-# The password-bearing variables this repo defines.
-SECRET = re.compile(r'(samba_admin_password|sssd_admin_password|nfs_server_admin_password)')
+JINJA = re.compile(r'\{\{.*?\}\}', re.S)
+# Booleans/knobs whose name happens to end in _password.  Keep this to
+# non-secrets only; a real secret must never be listed here.
+NOT_SECRET = {'sssd_ssh_require_password'}
+NAME = re.compile(r'\b([a-z0-9_]+_password)\b')
+
+
+class _Secret:
+    """search(text): truthy when a Jinja expression names a *_password var."""
+
+    @staticmethod
+    def search(text):
+        return any(n not in NOT_SECRET
+                   for expr in JINJA.findall(text)
+                   for n in NAME.findall(expr))
+
+
+SECRET = _Secret()
+
+# Self-test: a matcher that misses a new secret, or flags the boolean, is
+# a silent pass.
+for fx, want in [
+    ('pw: "{{ windows_admin_password }}"', True),
+    ('pw: "{{ foo_join_password | default(\'\') }}"', True),
+    ('when: "{{ sssd_ssh_require_password | bool }}"', False),
+    ('domain_admin_password: literal', False),
+    ('samba_admin_password: ""', False),
+]:
+    if bool(SECRET.search(fx)) != want:
+        sys.exit(f"self-test: secret matcher wrong on {fx!r} (want {want})")
+
 problems = []
 
 

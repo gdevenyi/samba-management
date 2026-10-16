@@ -31,7 +31,7 @@ NC='\033[0m'
 # Centralised so setup, exercise, and cleanup all reference the same names.
 TEST_USERS=(testuser1 testuser2 homeuser1 homeuser2 perm_reader perm_writer perm_both perm_outsider login_allowed login_denied edgeuser archiveuser dryuser shortpwuser)
 TEST_GROUPS=(TestGroupNested GidGroup EdgeGroup TestGroup ShareReaders ShareWriters computenode-login login-delete-probe)
-TEST_SHARES=(perm_rw_share perm_admin_share public edgeshare pathshare dryshare syncshare newentry cifsentry notarget)
+TEST_SHARES=(perm_rw_share perm_admin_share public edgeshare pathshare dryshare syncshare newentry cifsentry notarget badsync)
 TEST_SUDO_RULES=(admin-all users-nopasswd edge-rule edge-rule2)
 TEST_SSH_KEY_COMMENT="samba-mgmt-test-data"
 TEST_SSH_KEY_FILE=""
@@ -110,6 +110,8 @@ cleanup_test_state() {
         ssh_nfs "sudo rm -rf /data/${share}" 2>/dev/null || true
     done
     ssh_nfs "sudo exportfs -ra" 2>/dev/null || true
+    # Staged invalid-NFS_SYNC_MODE config from test_share_edge_cases
+    ssh_dc "sudo rm -f /root/bad-sync.conf" 2>/dev/null || true
 
     # Groups (must come after users-from-group operations are done)
     local group
@@ -1075,6 +1077,46 @@ test_share_edge_cases() {
         ssh_dc "sudo samba-automount.sh add-share edgeshare"
     run_test "Duplicate add-share fails" \
         ssh_dc "! sudo samba-automount.sh add-share edgeshare"
+
+    # NFS_SYNC_MODE lands verbatim in /etc/exports.d/*.exports, and exportfs -ra
+    # fails on an unknown option for EVERY export on the host -- so add-share and
+    # the auto.shares map-edit export rewrite must reject it (exit 2) before any
+    # side effect.  The bad value has to come from a config FILE: config.sh
+    # exports the file's NFS_SYNC_MODE over any environment value.  The grep in
+    # the staging step guards against a silent sed no-match, which would run
+    # the commands below against the valid config and pass on a regression.
+    local bad_conf=/root/bad-sync.conf
+    run_test "Stage config copy with NFS_SYNC_MODE=bogus" \
+        ssh_dc "sudo sh -c \"sed 's/^NFS_SYNC_MODE=.*/NFS_SYNC_MODE=bogus/' /opt/samba-management/config/samba-mgmt.conf > ${bad_conf} && chmod 0600 ${bad_conf} && grep -qx 'NFS_SYNC_MODE=bogus' ${bad_conf}\""
+    run_test "badsync absent before the rejected add-share (precondition)" \
+        ssh_nfs "! test -e /etc/exports.d/badsync.exports && ! test -e /data/badsync"
+    run_test "add-share rejects invalid NFS_SYNC_MODE (exit 2)" \
+        ssh_dc "sudo env CONFIG_FILE=${bad_conf} samba-automount.sh add-share badsync >/dev/null 2>&1; test \$? -eq 2"
+    run_test "Invalid NFS_SYNC_MODE left no badsync export or directory" \
+        ssh_nfs "! test -e /etc/exports.d/badsync.exports && ! test -e /data/badsync"
+    run_test "Invalid NFS_SYNC_MODE left no badsync auto.shares entry" \
+        ssh_dc "! sudo samba-automount.sh list auto.shares | grep -qE '^badsync[[:space:]]'"
+
+    # Map-edit path: a sec= change on edgeshare (same host and path, so the
+    # server/path validators pass) reaches _sync_share_export's
+    # validate_sync_mode.  Entry and export are captured first and compared
+    # after, so the rejection is shown to have touched neither.
+    local edge_entry edge_export_sum
+    edge_entry=$(ssh_dc "sudo samba-automount.sh show auto.shares edgeshare" 2>/dev/null \
+        | sed -n 's/^nisMapEntry: //p') || true
+    edge_export_sum=$(ssh_nfs "md5sum < /etc/exports.d/edgeshare.exports" 2>/dev/null) || true
+    run_test "edgeshare entry carries sec=krb5p (precondition)" \
+        test "${edge_entry/sec=krb5p/}" != "$edge_entry"
+    run_test "edgeshare export file is readable (precondition)" \
+        test -n "$edge_export_sum"
+    run_test "modify auto.shares rejects invalid NFS_SYNC_MODE (exit 2)" \
+        ssh_dc "sudo env CONFIG_FILE=${bad_conf} samba-automount.sh modify auto.shares edgeshare --value='${edge_entry/sec=krb5p/sec=krb5i}' >/dev/null 2>&1; test \$? -eq 2"
+    run_test "Rejected modify left the edgeshare export unchanged" \
+        test "$(ssh_nfs "md5sum < /etc/exports.d/edgeshare.exports" 2>/dev/null || true)" = "$edge_export_sum"
+    run_test "Rejected modify left the edgeshare map entry unchanged" \
+        test "$(ssh_dc "sudo samba-automount.sh show auto.shares edgeshare" 2>/dev/null | sed -n 's/^nisMapEntry: //p' || true)" = "$edge_entry"
+    run_test "Remove staged bad NFS_SYNC_MODE config" \
+        ssh_dc "sudo rm -f ${bad_conf}"
     run_test "Create pathshare with custom --path" \
         ssh_dc "sudo samba-automount.sh add-share pathshare --path=/data/custom_pathshare"
     run_test "pathshare export references the custom path" \

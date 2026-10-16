@@ -16,6 +16,7 @@
 #  10. AGENTS.md test-suite table vs. the functions run-tests.sh defines
 #  11. Every role variable a template references has a default
 #  12. Every samba-tool dns query passes --authority and --no-children
+#  13. lib/ pure helpers and the config.sh parser behave (test/lib-units.sh)
 #
 # This is the cheap gate: it catches the class of regression that would
 # otherwise only surface an hour into a libvirt matrix run.
@@ -581,6 +582,18 @@ PY
 }
 
 # ---------------------------------------------------------------------------
+# 13. lib/common.sh's pure helpers and the lib/config.sh parser, exercised
+#     locally by test/lib-units.sh.  The VM suites only ever read the
+#     role-rendered samba-mgmt.conf, so a regression in the parser's handling
+#     of a hand-edited file (unterminated last line, quotes, stray lines,
+#     partial file) or in the LDIF/filter validators would otherwise ship.
+#     env -i so no inherited REALM/SHARE_BASE/LOG_FILE can satisfy a default.
+# ---------------------------------------------------------------------------
+lint_lib_units() {
+    env -i PATH="$PATH" HOME="${HOME:-/tmp}" bash "${SCRIPT_DIR}/lib-units.sh"
+}
+
+# ---------------------------------------------------------------------------
 # Main
 # ---------------------------------------------------------------------------
 main() {
@@ -619,6 +632,10 @@ main() {
     check "samba_password_complexity is a quoted string" lint_complexity_quoted
     check "template variables have role defaults" lint_template_vars_defaulted
     check "samba-tool dns query passes --authority and --no-children" lint_dns_query_flags
+
+    echo ""
+    echo "--- Library ---"
+    check "lib/ helpers and config.sh parser behave" lint_lib_units
 
     echo ""
     echo "--- Documentation ---"

@@ -381,6 +381,8 @@ test_autofs_kerberos() {
         ssh_client "echo 'Wr1terPass!234' | kinit perm_writer@SAMBA.TEST"
     run_test "Trigger autofs mount of public share and verify NFS" \
         ssh_client "ls /data/public/ && mount | grep 'public.*nfs4'"
+    run_test "Autofs NFS mount carries the role's nconnect default" \
+        ssh_client "grep -E ' /data/public nfs4 .*nconnect=4' /proc/mounts"
     run_test "Write and read file via autofs-mounted public share" \
         ssh_client "echo 'autofs test content' > /data/public/autofs_test.txt && cat /data/public/autofs_test.txt && rm /data/public/autofs_test.txt"
     run_test "kdestroy perm_writer ticket" \

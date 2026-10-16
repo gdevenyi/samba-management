@@ -1087,6 +1087,61 @@ test_share_edge_cases() {
         ssh_nfs "! test -f /etc/exports.d/pathshare.exports && test -d /data/custom_pathshare"
     run_test "Remove preserved pathshare data" \
         ssh_nfs "sudo rm -rf /data/custom_pathshare"
+
+    # delete-share --remove-data reads the path back from the AD entry and
+    # rm -rf's it on the serving host.  A non-NFS entry's path never passed
+    # validate_export_path (add-entry/modify skip the export sync for it), so
+    # the guard just before the rm is all that stands between an entry like
+    # '-fstype=cifs host:/' and `rm -rf /`.  The paths below are ones the guard
+    # must reject but that are harmless if it regresses: without it, rm deletes
+    # the canary ('..' is not the LAST component) and the command exits 0, and
+    # the entry is gone -- all three assertions per case fail.  The entries
+    # name the real serving host, so a regressed rm lands where the canary is.
+    local nfs_host
+    nfs_host=$(ssh_dc "sudo samba-automount.sh show auto.shares edgeshare" 2>/dev/null \
+        | sed -n 's|^nisMapEntry: .* \([^ :]*\):/data/edgeshare$|\1|p') || true
+    run_test "edgeshare entry names its serving host (precondition)" \
+        test -n "$nfs_host"
+    run_test "Create /tmp/rmguard/canary on the NFS host" \
+        ssh_nfs "sudo mkdir -p /tmp/rmguard && sudo touch /tmp/rmguard/canary && test -f /tmp/rmguard/canary"
+    run_test "add-entry cifs guarddot with a '..' path" \
+        ssh_dc "sudo samba-automount.sh add-entry auto.shares guarddot --value='-fstype=cifs ${nfs_host}:/tmp/rmguard/../rmguard/canary'"
+    run_test "guarddot entry present (precondition)" \
+        ssh_dc "sudo samba-automount.sh list auto.shares | grep -qE '^guarddot[[:space:]]'"
+    run_test "delete-share --remove-data rejects a '..' path (exit 2)" \
+        ssh_dc "sudo samba-automount.sh delete-share guarddot --remove-data --force >/dev/null 2>&1; test \$? -eq 2"
+    run_test "'..' path guard left the canary in place" \
+        ssh_nfs "test -f /tmp/rmguard/canary"
+    run_test "'..' path guard ran before the entry was deleted" \
+        ssh_dc "sudo samba-automount.sh list auto.shares | grep -qE '^guarddot[[:space:]]'"
+
+    run_test "Create /data/bad@path on the NFS host" \
+        ssh_nfs "sudo mkdir -p '/data/bad@path' && test -d '/data/bad@path'"
+    run_test "add-entry cifs guardat with a bad-charset path" \
+        ssh_dc "sudo samba-automount.sh add-entry auto.shares guardat --value='-fstype=cifs ${nfs_host}:/data/bad@path'"
+    run_test "guardat entry present (precondition)" \
+        ssh_dc "sudo samba-automount.sh list auto.shares | grep -qE '^guardat[[:space:]]'"
+    run_test "delete-share --remove-data rejects a bad-charset path (exit 2)" \
+        ssh_dc "sudo samba-automount.sh delete-share guardat --remove-data --force >/dev/null 2>&1; test \$? -eq 2"
+    run_test "Bad-charset path guard left /data/bad@path in place" \
+        ssh_nfs "test -d '/data/bad@path'"
+    run_test "Bad-charset path guard ran before the entry was deleted" \
+        ssh_dc "sudo samba-automount.sh list auto.shares | grep -qE '^guardat[[:space:]]'"
+
+    # The NFS-side guard: an nfs entry is validated by _sync_share_export
+    # before its export is written, and the export goes before the map entry.
+    run_test "add-entry nfs4 entry targeting host:/ rejected (exit 2)" \
+        ssh_dc "sudo samba-automount.sh add-entry auto.shares badroot --value='-fstype=nfs4,sec=krb5p ${nfs_host}:/' >/dev/null 2>&1; test \$? -eq 2"
+    run_test "Rejected badroot entry was not created" \
+        ssh_dc "! sudo samba-automount.sh list auto.shares | grep -qE '^badroot[[:space:]]'"
+    run_test "Rejected badroot wrote no export" \
+        ssh_nfs "! test -e /etc/exports.d/badroot.exports"
+
+    run_test "Remove guard test entries (cifs: no export, no ssh)" \
+        ssh_dc "sudo samba-automount.sh delete-entry auto.shares guarddot --force && sudo samba-automount.sh delete-entry auto.shares guardat --force"
+    run_test "Remove guard test data" \
+        ssh_nfs "sudo rm -rf /tmp/rmguard '/data/bad@path'"
+
     run_test "Delete edgeshare with --remove-data" \
         ssh_dc "sudo samba-automount.sh delete-share edgeshare --remove-data --force"
     run_test "delete-share of nonexistent share exits 3" \

@@ -60,6 +60,28 @@ run_test() {
     fi
 }
 
+# Inverse of run_test for access-control checks: passes only when the
+# command fails AND its output carries "Permission denied" (EACCES).  The
+# pattern matters: a deny check that passed on any non-zero exit would also
+# pass when the precondition broke -- an unknown user, a missing mount
+# ("No such file or directory"), a typo -- and so could never catch a
+# regression that widens access.  Each caller still asserts its kinit as a
+# separate run_test and proves the same ticket works somewhere it should.
+run_test_deny() {
+    local desc="$1"
+    shift
+    local output rc
+    output=$("$@" 2>&1) && rc=0 || rc=$?
+    if [[ $rc -ne 0 ]] && grep -q 'Permission denied' <<<"$output"; then
+        printf "  ${GREEN}PASS${NC} %s\n" "$desc"
+        TESTS_PASS=$((TESTS_PASS + 1))
+    else
+        printf "  ${RED}FAIL${NC} %s (expected Permission denied, got rc=%s)\n" "$desc" "$rc"
+        printf "    %s\n" "$output" | head -5
+        TESTS_FAIL=$((TESTS_FAIL + 1))
+    fi
+}
+
 # --- Cleanup ----------------------------------------------------------------
 # Idempotent removal of every test-created object.  Registered via trap so it
 # runs even on early exit; safe to call when objects don't exist because the
@@ -214,6 +236,12 @@ test_shares_basic() {
         ssh_nfs "sudo exportfs -v | grep -q /data/testshare"
     run_test "add-share created testshare directory" \
         ssh_nfs "test -d /data/testshare"
+    # The documented contract for a directory add-share creates: 0770
+    # root:"Domain Users".  test_permissions re-chmods its own shares to
+    # 2770, so this freshly created share is the only place a widened
+    # add-share mode (0775/0777) is visible.
+    run_test "add-share created testshare as root:'Domain Users' mode 0770" \
+        ssh_nfs "stat -c '%U %G %a' /data/testshare | grep -qix 'root domain users 770'"
     run_test "add-share published testshare auto.shares entry" \
         ssh_dc "sudo samba-automount.sh list auto.shares | grep -q '^testshare'"
     run_test "delete-share --remove-data tears testshare down" \
@@ -349,7 +377,7 @@ test_permissions() {
     # loop exits 0 even when SSSD never came online, and the warm-up would
     # poison the cache with offline (incomplete) initgroups answers.
     run_test "Restart SSSD and warm initgroups on storage host" \
-        ssh_nfs "sudo systemctl restart sssd && for i in \$(seq 1 30); do sudo sssctl domain-status samba.test 2>/dev/null | grep -q 'Online status: Online' && break; sleep 2; done && sudo sssctl domain-status samba.test | grep -q 'Online status: Online' && sudo bash -c 'for f in /proc/net/rpc/auth.unix.gid /proc/net/rpc/nfs4.nametoid /proc/net/rpc/nfs4.idtoname; do [ -e \"\$f/flush\" ] && date +%s > \"\$f/flush\"; done' && for u in perm_writer perm_both perm_reader; do getent initgroups \"\$u\" >/dev/null; done"
+        ssh_nfs "sudo systemctl restart sssd && for i in \$(seq 1 30); do sudo sssctl domain-status samba.test 2>/dev/null | grep -q 'Online status: Online' && break; sleep 2; done && sudo sssctl domain-status samba.test | grep -q 'Online status: Online' && sudo bash -c 'for f in /proc/net/rpc/auth.unix.gid /proc/net/rpc/nfs4.nametoid /proc/net/rpc/nfs4.idtoname; do [ -e \"\$f/flush\" ] && date +%s > \"\$f/flush\"; done' && for u in perm_writer perm_both perm_reader perm_outsider; do getent initgroups \"\$u\" >/dev/null; done"
     diag_dump "after warmup"
     # 60s budget, with a cache-expiry nudge every 10s in case the first
     # post-restart initgroups was cached while the backend was still offline.
@@ -358,6 +386,10 @@ test_permissions() {
     # the wrong value forever while both sides converge.
     run_test "Verify ShareWriters visible in perm_writer initgroups" \
         ssh_nfs "for i in \$(seq 1 60); do SW_GID=\$(getent group ShareWriters 2>/dev/null | cut -d: -f3); [ -n \"\$SW_GID\" ] && getent initgroups perm_writer 2>/dev/null | grep -qw \"\$SW_GID\" && exit 0; [ \$((i % 10)) -eq 0 ] && sudo sss_cache -E; sleep 1; done; echo 'ShareWriters GID not found in initgroups after 60s' >&2; exit 1"
+    # perm_both's write below runs under its own uid (own GSS context), so
+    # the server must resolve perm_both's own ShareWriters membership too.
+    run_test "Verify ShareWriters visible in perm_both initgroups" \
+        ssh_nfs "for i in \$(seq 1 60); do SW_GID=\$(getent group ShareWriters 2>/dev/null | cut -d: -f3); [ -n \"\$SW_GID\" ] && getent initgroups perm_both 2>/dev/null | grep -qw \"\$SW_GID\" && exit 0; [ \$((i % 10)) -eq 0 ] && sudo sss_cache -E; sleep 1; done; echo 'ShareWriters GID not found in perm_both initgroups after 60s' >&2; exit 1"
     diag_dump "after initgroups verify"
     # Re-chown share directories with the now-fresh SSSD GID for ShareWriters.
     # The initial chown in test_permissions_setup may have used a stale GID
@@ -371,10 +403,49 @@ test_permissions() {
     diag_dump "after perm_writer write attempt 1"
     run_test "perm_writer can read from perm_rw_share via NFS" \
         ssh_client "echo 'Wr1terPass!234' | kinit perm_writer@SAMBA.TEST && cat /data/perm_rw_share/writer_file.txt; rc=\$?; kdestroy; exit \$rc"
-    run_test "perm_both can write to perm_rw_share via NFS" \
-        ssh_client "echo 'B0thPass!12345' | kinit perm_both@SAMBA.TEST && echo 'both test' > /data/perm_rw_share/both_file.txt; rc=\$?; kdestroy; exit \$rc"
+    # perm_both under its OWN local uid: the kernel caches one GSS context
+    # per uid per server, so a kinit as `ubuntu` here would silently reuse
+    # perm_writer's context and prove nothing about perm_both.  The owner
+    # check on the NFS host confirms the write really ran as perm_both.
+    run_test "kinit as perm_both (own uid) on client" \
+        ssh_client "echo 'B0thPass!12345' | sudo -u perm_both kinit perm_both@SAMBA.TEST"
+    run_test "perm_both can write to perm_rw_share via NFS (own uid)" \
+        ssh_client "sudo -u perm_both sh -c 'echo both test > /data/perm_rw_share/both_file.txt'"
+    run_test "both_file.txt is owned by perm_both on the NFS host" \
+        ssh_nfs "sudo stat -c %U /data/perm_rw_share/both_file.txt | grep -qx perm_both"
+    run_test "kdestroy perm_both ticket" \
+        ssh_client "sudo -u perm_both kdestroy"
     run_test "perm_writer can write to perm_admin_share via NFS" \
         ssh_client "echo 'Wr1terPass!234' | kinit perm_writer@SAMBA.TEST && echo 'admin test' > /data/perm_admin_share/admin_file.txt; rc=\$?; kdestroy; exit \$rc"
+
+    # --- Deny cases ---------------------------------------------------------
+    # Both shares are 2770 root:ShareWriters.  perm_outsider is in no share
+    # group; perm_reader is in ShareReaders only, which has no grant on
+    # either directory.  Each identity gets its own uid and ticket; the kinit
+    # is asserted on its own, and the same ticket must open the
+    # 'public' share (0770 root:"Domain Users") -- so a denial below is the
+    # POSIX check, not a broken credential or mount.
+    local u pw
+    for u in perm_outsider perm_reader; do
+        case "$u" in
+            perm_outsider) pw='0utside!1234567' ;;
+            perm_reader)   pw='Read3rPass!234' ;;
+        esac
+        run_test "kinit as $u (own uid) on client" \
+            ssh_client "echo '$pw' | sudo -u $u kinit $u@SAMBA.TEST"
+        run_test "$u's ticket can list the Domain Users 'public' share" \
+            ssh_client "sudo -u $u ls /data/public/"
+        run_test_deny "$u cannot list perm_rw_share" \
+            ssh_client "sudo -u $u ls /data/perm_rw_share/"
+        run_test_deny "$u cannot write perm_rw_share" \
+            ssh_client "sudo -u $u touch /data/perm_rw_share/${u}_file.txt"
+        run_test_deny "$u cannot write perm_admin_share" \
+            ssh_client "sudo -u $u touch /data/perm_admin_share/${u}_file.txt"
+        run_test "$u's denied files do not exist on the NFS host" \
+            ssh_nfs "sudo test ! -e /data/perm_rw_share/${u}_file.txt && sudo test ! -e /data/perm_admin_share/${u}_file.txt"
+        run_test "kdestroy $u ticket" \
+            ssh_client "sudo -u $u kdestroy"
+    done
     diag_dump "end of test_permissions"
 }
 
@@ -414,6 +485,24 @@ test_autofs_kerberos() {
         ssh_client "sudo -u homeuser1 bash -c 'echo autofs-home-test > /home/ad/homeuser1/autofs_home_test.txt && cat /home/ad/homeuser1/autofs_home_test.txt && rm /home/ad/homeuser1/autofs_home_test.txt'"
     run_test "kdestroy homeuser1 ticket" \
         ssh_client "sudo -u homeuser1 kdestroy"
+
+    # Home privacy over NFS: homes are 0700 under a root_squash krb5p
+    # export, so another authenticated user must be refused.  homeuser2's
+    # own ticket must first open homeuser2's own home (proving the
+    # credential and the auto.home mount path work), so the denial on
+    # homeuser1's home is the permission check and nothing else.
+    run_test "kinit as homeuser2 (own uid) on client" \
+        ssh_client "echo 'H0mePass2!3456' | sudo -u homeuser2 kinit homeuser2@SAMBA.TEST"
+    run_test "homeuser2 can list its own autofs home" \
+        ssh_client "sudo -u homeuser2 ls /home/ad/homeuser2/ && mount | grep 'homeuser2.*nfs4'"
+    run_test_deny "homeuser2 cannot list homeuser1's home" \
+        ssh_client "sudo -u homeuser2 ls /home/ad/homeuser1/"
+    run_test_deny "homeuser2 cannot write into homeuser1's home" \
+        ssh_client "sudo -u homeuser2 touch /home/ad/homeuser1/intruder.txt"
+    run_test "homeuser2's intruder file does not exist on the homes host" \
+        ssh_nfs "sudo test ! -e /home/ad/homeuser1/intruder.txt"
+    run_test "kdestroy homeuser2 ticket" \
+        ssh_client "sudo -u homeuser2 kdestroy"
 
     run_test "Verify pre-provisioned public share is accessible via autofs" \
         ssh_client "echo 'H0mePass1!2345' | kinit homeuser1@SAMBA.TEST && ls /data/public/ && kdestroy"

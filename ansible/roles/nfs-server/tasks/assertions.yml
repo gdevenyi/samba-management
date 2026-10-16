@@ -6,3 +6,12 @@
       - sssd_domain | length > 0
       - sssd_realm | length > 0
     fail_msg: "sssd_domain and sssd_realm are required (inherited from domain_members group_vars)"
+
+# The value lands verbatim in /etc/exports.d/homes.exports, and exportfs
+# rejects an unknown option -- which fails every export on the host, not
+# just this one.
+- name: Assert samba_nfs_sync_mode is sync or async
+  ansible.builtin.assert:
+    that:
+      - samba_nfs_sync_mode in ['sync', 'async']
+    fail_msg: "samba_nfs_sync_mode must be 'sync' or 'async', got '{{ samba_nfs_sync_mode }}'"

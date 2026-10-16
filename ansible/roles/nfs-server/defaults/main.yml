@@ -17,6 +17,8 @@ samba_home_base: "/home/ad"
 
 # --- NFS options (shared with samba-dc role; same defaults) ---
 samba_nfs_sec: "krb5p"
+# Server write mode for the homes export: "async" or "sync" (see samba-dc).
+samba_nfs_sync_mode: "async"
 # Whether to export samba_home_base (default /home/ad) via NFS for home directory mounts.
 samba_nfs_export_homes: true
 # Stable NFS filesystem id for the /home/ad export.  Empty (default) lets the

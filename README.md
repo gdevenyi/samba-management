@@ -450,6 +450,7 @@ Key variables in role defaults (overridden by `group_vars/`):
 | `samba_manage_hosts_file` | `true` | samba-dc | Keep `/etc/hosts` pointing `samba_dc_canonical_fqdn` at the DC's *current* address, and drop `127.0.1.1` bindings of its own name |
 | `samba_dns_self_heal` | `true` | samba-dc | Each run, re-point the DC's own A records (host + zone apex) at its current address, prune values left by a previous one, and refresh SRV/`_msdcs` via `samba_dnsupdate` |
 | `samba_nfs_sec` | `krb5p` | samba-dc | NFS Kerberos security flavour — drives both the server-side exports and the `sec=` baked into the seeded autofs map entries |
+| `samba_nfs_sync_mode` | `async` | samba-dc, nfs-server | Server write mode (`async`/`sync`) for the homes export and new `add-share` exports (via `NFS_SYNC_MODE` in `samba-mgmt.conf`). `async` acknowledges writes before they reach disk — much faster, but a server crash loses writes clients believe are committed. Existing per-share export files keep the mode they were written with |
 | `samba_nfs_server` | `""` | samba-dc | If set, NFS exports live on this host; DC only seeds autofs maps in AD |
 | `samba_nfs_homes_server` | `""` | samba-dc | Override host for `/home` exports; falls back to `samba_nfs_server`, then the DC |
 | `samba_nfs_export_homes` | `true` | samba-dc | Export `/home/ad` via NFS for home directory mounts |

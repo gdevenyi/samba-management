@@ -1426,11 +1426,40 @@ _run_client_healthcheck() {
         < "${SCRIPT_DIR}/../client/linux/healthcheck.sh"
 }
 
+# The run above pins REALM and DC_HOST, so detect_realm (realm list / sssd.conf)
+# and detect_dc (the _ldap._tcp SRV parse) return immediately and never run --
+# yet unset is how the deployed /usr/local/sbin/domain-healthcheck.sh is
+# normally invoked.  Run it as root (sssd.conf is 0600, the fallback source)
+# with neither set.  rc 0 alone is not enough: an empty DC_HOST makes the
+# script SKIP the DC A-record and DC port checks rather than fail them, so the
+# detected values are asserted from the Configuration block, and the DC
+# A-record check must have actually run and passed.
+_run_client_healthcheck_autodetect() {
+    local nfs_host="dc01.samba.test"
+    [[ "${SMB_TEST_MODE:-colocated}" == "separate" ]] && nfs_host="storage01.samba.test"
+    local out rc bad=0
+    out=$(ssh_client "sudo env NFS_HOST=${nfs_host} HEALTHCHECK_TEST_USER=Administrator bash -s" \
+        < "${SCRIPT_DIR}/../client/linux/healthcheck.sh" 2>&1) && rc=0 || rc=$?
+    [[ $rc -eq 0 ]] || { echo "healthcheck.sh exited rc=${rc}"; bad=1; }
+    grep -qiE '^ *Realm: +samba\.test *$' <<<"$out" \
+        || { echo "realm not auto-detected as SAMBA.TEST"; bad=1; }
+    grep -qE '^ *DC Host: +dc01\.samba\.test *$' <<<"$out" \
+        || { echo "DC not auto-detected from SRV as dc01.samba.test (no trailing dot)"; bad=1; }
+    grep -qE 'PASS.* DNS A record for DC' <<<"$out" \
+        || { echo "DC A-record check did not run/pass"; bad=1; }
+    if [[ $bad -ne 0 ]]; then
+        grep -E 'Realm:|DC Host:|NFS Host:|FAIL|Results' <<<"$out" | head -12
+        return 1
+    fi
+}
+
 test_client_healthcheck() {
     echo ""
     echo "--- Client Healthcheck Script ---"
     run_test "healthcheck.sh passes on the client (all hard checks)" \
         _run_client_healthcheck
+    run_test "healthcheck.sh auto-detects realm and DC (SRV) when REALM/DC_HOST unset" \
+        _run_client_healthcheck_autodetect
 }
 
 # --- samba-healthcheck role (healthcheck.yml) --------------------------------
@@ -1526,6 +1555,48 @@ test_healthcheck_role() {
     run_test "healthcheck_require_nfs=false demotes a closed 2049 to informational" \
         _hc_expect ok "NFS port 2049: +CLOSED +\\[nosuchnfs\\.${realm_re}\\]" -- "Healthcheck FAILED" \
         ::: --limit "$client" -e healthcheck_nfs_server=nosuchnfs -e healthcheck_require_nfs=false
+
+    # The production case 9328e98 fixed: a member with sssd_dc_hostname unset
+    # and healthcheck_dc_hostname left to its role default (setup.sh no longer
+    # pins either healthcheck_* identity var).  The first run in this suite
+    # overrides healthcheck_dc_hostname itself, so a self-hostname fallback put back into
+    # its DEFAULT (e.g. `sssd_dc_hostname | default(ansible_facts['hostname'],
+    # true)`) would sail through it; this run leaves the default in force.
+    # healthcheck_realm is also unpinned, so the SRV fact naming the DC proves
+    # the realm derivation too (a broken one falls to example.internal, whose
+    # SRV lookup returns nothing).  Every host's summary must name dc01 -- the
+    # count is checked so one host printing it can't stand in for all of them.
+    run_test "healthcheck.yml with sssd_dc_hostname unset: every host probes dc01, none itself" \
+        _hc_dc_on_every_host
+}
+
+# Runs healthcheck.yml with sssd_dc_hostname blanked (JSON form, so the value is
+# "" rather than the string '""') and checks rc, the derived realm, the SRV
+# fact, and that the DC A-record line names dc01 once per inventory host.
+_hc_dc_on_every_host() {
+    local realm_re="${SMB_TEST_REALM,,}"; realm_re="${realm_re//./\\.}"
+    local want_hosts=2 out rc n bad=0
+    [[ "${SMB_TEST_MODE:-colocated}" == "separate" ]] && want_hosts=3
+    out=$(_healthcheck_role -v -e '{"sssd_dc_hostname": ""}') && rc=0 || rc=$?
+    [[ $rc -eq 0 ]] || { echo "expected healthcheck.yml rc 0, got rc=${rc}"; bad=1; }
+    grep -qE "_ldap\\._tcp\\.${realm_re}" <<<"$out" \
+        || { echo "SRV lookup did not use the derived realm ${SMB_TEST_REALM,,}"; bad=1; }
+    ! grep -qiE 'example\.internal' <<<"$out" \
+        || { echo "realm derivation fell through to EXAMPLE.INTERNAL"; bad=1; }
+    grep -qE "\"_healthcheck_srv_dc\": \" *dc01\\.${realm_re}\"" <<<"$out" \
+        || { echo "SRV-derived DC fact is not dc01.${SMB_TEST_REALM,,}"; bad=1; }
+    n=$(grep -oE "DNS A record \(DC\): +PASS +\[dc01\\.${realm_re}\]" <<<"$out" | wc -l)
+    [[ "$n" -eq "$want_hosts" ]] \
+        || { echo "DNS A record (DC) PASS [dc01] on ${n} host(s), expected ${want_hosts}"; bad=1; }
+    # Every host's DC line, whatever it names, must be one of those: a member
+    # that probed itself prints [client01...]/[storage01...] here instead.
+    n=$(grep -oE 'DNS A record \(DC\):' <<<"$out" | wc -l)
+    [[ "$n" -eq "$want_hosts" ]] \
+        || { echo "expected ${want_hosts} DNS A record (DC) summary lines, got ${n}"; bad=1; }
+    if [[ $bad -ne 0 ]]; then
+        grep -E 'Healthcheck FAILED|DNS A record|_healthcheck_srv_dc|PLAY RECAP|failed=' <<<"$out" | head -10
+        return 1
+    fi
 }
 
 # Verifies the socket-activation responder model.  Core invariant: sssd.conf

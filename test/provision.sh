@@ -77,10 +77,15 @@ verify_idempotence "${ANSIBLE_DIR}/playbooks/provision-linux-sssd.yml"
 
 echo ""
 log_info "=== Running Health Check ==="
-# Health check is informational; surface failures loudly but don't abort the
-# script since the rest of provisioning has already succeeded by this point.
-ansible-playbook "${INVENTORY[@]}" "${ANSIBLE_DIR}/playbooks/healthcheck.yml" || \
-    log_error "Health check failed; provisioning completed but services may not be fully functional"
+# Fatal.  healthcheck.yml exits non-zero when a hard check fails on any host
+# (its final assert, gated on healthcheck_fail_on_error).  This used to be
+# `|| log_error` with exit 0, so run-matrix.sh -- which only looks at this
+# script's exit status -- passed a combo whose healthcheck failed on a healthy
+# domain (wrong derived names, a host probing itself as the DC) as one log line.
+ansible-playbook "${INVENTORY[@]}" "${ANSIBLE_DIR}/playbooks/healthcheck.yml" || {
+    log_error "Health check failed (see the summary and 'Healthcheck FAILED' message above)."
+    exit 1
+}
 
 echo ""
 log_info "=== Provisioning Complete ==="

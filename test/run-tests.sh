@@ -1433,6 +1433,101 @@ test_client_healthcheck() {
         _run_client_healthcheck
 }
 
+# --- samba-healthcheck role (healthcheck.yml) --------------------------------
+# provision.sh runs healthcheck.yml once with the pinned group_vars names, so it
+# only ever sees the PASS path.  Nothing exercised the role's failure
+# machinery: the final assert, the wait_for probes' ignore_errors (reverting to
+# failed_when: false makes every port render OPEN and never trips the assert),
+# and the healthcheck_fail_on_error / healthcheck_require_nfs gates.  These
+# runs drive each of them from the control node with extra-vars, which beat
+# setup.sh's group_vars.  The bogus names are under the AD zone, so the DC
+# answers NXDOMAIN immediately and each probe fails within its 5s timeout.
+#
+# JSON result format: the test ansible.cfg uses YAML, whose serializer wraps
+# long strings near 80 columns and would split the assert message mid-phrase.
+_healthcheck_role() {
+    ANSIBLE_CONFIG="${SCRIPT_DIR}/ansible.cfg" ANSIBLE_CALLBACK_RESULT_FORMAT=json \
+        ansible-playbook -i "${SCRIPT_DIR}/inventory.yml" "$@" \
+        "${SCRIPT_DIR}/../ansible/playbooks/healthcheck.yml" < /dev/null 2>&1
+}
+
+# _hc_expect <ok|fail> <grep -E patterns that must match...> [-- <patterns that
+# must NOT match...>] ::: <ansible-playbook args...>
+# Checks the exit status AND the output, so a run that fails (or passes) for
+# a reason other than the one under test does not count.
+_hc_expect() {
+    local want="$1"; shift
+    local -a must=() mustnot=()
+    local mode=must
+    while [[ $# -gt 0 && "$1" != ":::" ]]; do
+        if [[ "$1" == "--" ]]; then mode=mustnot; shift; continue; fi
+        if [[ "$mode" == must ]]; then must+=("$1"); else mustnot+=("$1"); fi
+        shift
+    done
+    shift  # :::
+    local out rc p bad=0
+    out=$(_healthcheck_role "$@") && rc=0 || rc=$?
+    if [[ "$want" == ok && $rc -ne 0 ]]; then
+        echo "expected healthcheck.yml rc 0, got rc=${rc}"; bad=1
+    elif [[ "$want" == fail && $rc -eq 0 ]]; then
+        echo "expected healthcheck.yml to fail, got rc 0"; bad=1
+    fi
+    for p in "${must[@]}"; do
+        grep -qE -- "$p" <<<"$out" || { echo "missing from output: ${p}"; bad=1; }
+    done
+    for p in "${mustnot[@]}"; do
+        ! grep -qE -- "$p" <<<"$out" || { echo "unexpected in output: ${p}"; bad=1; }
+    done
+    if [[ $bad -ne 0 ]]; then
+        grep -E 'Healthcheck FAILED|port 2049|port 88|DNS A record|PLAY RECAP|failed=' <<<"$out" | head -8
+        return 1
+    fi
+}
+
+test_healthcheck_role() {
+    echo ""
+    echo "--- Healthcheck Role (healthcheck.yml) ---"
+    local realm="${SMB_TEST_REALM,,}"
+    local client="${SMB_TEST_CLIENT_IP}"
+    local realm_re="${realm//./\\.}"
+
+    # Auto-discovery (empty healthcheck_dc_hostname -> DC from the _ldap._tcp
+    # SRV answer) on every host.  A fallback to the host's own hostname would
+    # make the client and storage host probe themselves and fail here.  The
+    # role's last-resort literal is also dc01.<realm>, so `[dc01...]` in the
+    # summary alone can't prove the SRV parse worked: -v prints the set_fact
+    # result, and the SRV-derived fact itself must carry the DC's name.
+    run_test "healthcheck.yml passes on all hosts with the DC auto-discovered from SRV" \
+        _hc_expect ok "\"_healthcheck_srv_dc\": \" *dc01\\.${realm_re}\"" "\\[dc01\\.${realm_re}\\]" \
+            -- "Healthcheck FAILED" \
+        ::: -v -e '{"healthcheck_dc_hostname": ""}'
+
+    # Unreachable DC: the assert must fire and must name the closed port --
+    # that string is what disappears if the probes regress to failed_when: false
+    # (rc alone would stay non-zero from the failed A-record lookup).
+    run_test "healthcheck.yml fails on the client when the DC is unreachable" \
+        _hc_expect fail "Healthcheck FAILED on ${client//./\\.}" "DC port 88 \\(Kerberos\\) closed" \
+            "DC port 53 \\(DNS\\) closed" \
+        ::: --limit "$client" -e healthcheck_dc_hostname=nosuchdc
+
+    # Same broken target with healthcheck_fail_on_error=false: still reports
+    # CLOSED (the probe really failed) but the play exits 0.
+    run_test "healthcheck_fail_on_error=false reports CLOSED but exits 0" \
+        _hc_expect ok "DC port 88 \\(Kerberos\\): CLOSED" -- "Healthcheck FAILED" \
+        ::: --limit "$client" -e healthcheck_dc_hostname=nosuchdc -e healthcheck_fail_on_error=false
+
+    # Unreachable NFS host with a good DC: 2049 is the ONLY hard failure, which
+    # is what makes the require_nfs=false run below a test of that gate alone.
+    run_test "healthcheck.yml fails on the client when NFS port 2049 is unreachable" \
+        _hc_expect fail "NFS port 2049 closed on nosuchnfs\\.${realm_re}" \
+            -- "DC port 88 \\(Kerberos\\) closed" "DC port 53 \\(DNS\\) closed" "DNS A record for" \
+        ::: --limit "$client" -e healthcheck_nfs_server=nosuchnfs
+
+    run_test "healthcheck_require_nfs=false demotes a closed 2049 to informational" \
+        _hc_expect ok "NFS port 2049: +CLOSED +\\[nosuchnfs\\.${realm_re}\\]" -- "Healthcheck FAILED" \
+        ::: --limit "$client" -e healthcheck_nfs_server=nosuchnfs -e healthcheck_require_nfs=false
+}
+
 # Verifies the socket-activation responder model.  Core invariant: sssd.conf
 # has NO `services` line (listing a responder there AND having its socket
 # enabled trips sssd_check_socket_activated_responders -> exit 17 -> the
@@ -1713,6 +1808,7 @@ main() {
     test_dry_run
     test_password_policy_set
     test_client_healthcheck
+    test_healthcheck_role
     test_login_access_filter
     test_client_dns_registration
     # Keep DNS persistence last because it reboots the client; tests

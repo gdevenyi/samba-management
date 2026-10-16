@@ -31,7 +31,7 @@ NC='\033[0m'
 # Centralised so setup, exercise, and cleanup all reference the same names.
 TEST_USERS=(testuser1 testuser2 homeuser1 homeuser2 perm_reader perm_writer perm_both perm_outsider login_allowed login_denied edgeuser archiveuser dryuser shortpwuser)
 TEST_GROUPS=(TestGroupNested GidGroup EdgeGroup TestGroup ShareReaders ShareWriters computenode-login login-delete-probe)
-TEST_SHARES=(perm_rw_share perm_admin_share public edgeshare pathshare dryshare)
+TEST_SHARES=(perm_rw_share perm_admin_share public edgeshare pathshare dryshare syncshare newentry cifsentry notarget)
 TEST_SUDO_RULES=(admin-all users-nopasswd edge-rule edge-rule2)
 TEST_SSH_KEY_COMMENT="samba-mgmt-test-data"
 TEST_SSH_KEY_FILE=""
@@ -135,6 +135,7 @@ cleanup_test_state() {
     ssh_dc "sudo samba-automount.sh delete-map testmap --force" 2>/dev/null || true
     ssh_dc "sudo rm -f /tmp/edgekey.pub" 2>/dev/null || true
     ssh_nfs "sudo rm -rf /data/custom_pathshare" 2>/dev/null || true
+    ssh_nfs "sudo rm -rf /data/syncshare_v2" 2>/dev/null || true
     # Restore the password policy in case test_password_policy_set died
     # between the change and its own restore step.
     ssh_dc "sudo samba-tool domain passwordsettings set --min-pwd-length=14" >/dev/null 2>&1 || true
@@ -1092,6 +1093,115 @@ test_share_edge_cases() {
         ssh_dc "sudo samba-automount.sh delete-share nosuchshare --force >/dev/null 2>&1; test \$? -eq 3"
 }
 
+# auto.shares map edits must carry the NFS export with them.  add-share writes
+# the same host/path/sec into the AD entry and /etc/exports.d/<name>.exports,
+# so add-entry / modify / delete-entry on an auto.shares NFS entry rewrite or
+# withdraw that export (_sync_share_export / _remove_share_export).  Every
+# check reads the export file or `exportfs -v` on the serving host, so a
+# map-only edit, a dropped fsid=, a sync export flipped to async, an orphaned
+# export, or an ssh to a host named by a non-NFS / target-less entry all fail.
+test_share_map_export_sync() {
+    echo ""
+    echo "--- auto.shares Map Edits Carry the NFS Export ---"
+    local f=/etc/exports.d/syncshare.exports
+
+    run_test "Create syncshare via add-share --fsid=150" \
+        ssh_dc "sudo samba-automount.sh add-share syncshare --fsid=150"
+    # The host exactly as add-share recorded it (NFS_SERVER: the DC's FQDN
+    # colocated, the short 'storage01' in separate mode).  Reusing it keeps the
+    # modify below a same-host edit rather than a host move.
+    local nfs_host
+    nfs_host=$(ssh_dc "sudo samba-automount.sh show auto.shares syncshare" 2>/dev/null \
+        | sed -n 's|^nisMapEntry: .* \([^ :]*\):/data/syncshare$|\1|p') || true
+    run_test "syncshare entry names its serving host (precondition)" \
+        test -n "$nfs_host"
+
+    # Hand-set the export to sync: a rewrite must keep the operator's choice
+    # instead of reverting to the async default.
+    run_test "Hand-edit syncshare export to sync and re-export" \
+        ssh_nfs "sudo sed -i -E 's/(^|[(,])async([,)])/\1sync\2/' ${f} && sudo exportfs -ra"
+    run_test "syncshare export is sync with fsid=150 (precondition)" \
+        ssh_nfs "grep -qE '[(,]sync[,)]' ${f} && ! grep -qE '[(,]async[,)]' ${f} && grep -q 'fsid=150' ${f}"
+    run_test "Kernel exports /data/syncshare (precondition)" \
+        ssh_nfs "sudo exportfs -v | grep -qE '^/data/syncshare([[:space:]]|\$)'"
+    # exportfs never exports a path that does not exist, so the new target is
+    # created up front; modify itself only re-exports.
+    run_test "Create /data/syncshare_v2 on the NFS host" \
+        ssh_nfs "sudo mkdir -p /data/syncshare_v2"
+
+    run_test "modify auto.shares syncshare (new path + sec=krb5i)" \
+        ssh_dc "sudo samba-automount.sh modify auto.shares syncshare --value='-fstype=nfs4,sec=krb5i ${nfs_host}:/data/syncshare_v2'"
+    run_test "AD entry now names /data/syncshare_v2 with sec=krb5i" \
+        ssh_dc "sudo samba-automount.sh show auto.shares syncshare | grep -q 'nisMapEntry:.*sec=krb5i .*:/data/syncshare_v2\$'"
+    run_test "Export file rewritten to /data/syncshare_v2" \
+        ssh_nfs "grep -q '^/data/syncshare_v2 ' ${f}"
+    run_test "Rewritten export carries sec=krb5i" \
+        ssh_nfs "grep -q 'sec=krb5i' ${f} && ! grep -q 'sec=krb5p' ${f}"
+    run_test "Rewritten export kept the pinned fsid=150" \
+        ssh_nfs "grep -q 'fsid=150' ${f}"
+    run_test "Rewritten export kept the hand-set sync (not async)" \
+        ssh_nfs "grep -qE '[(,]sync[,)]' ${f} && ! grep -qE '[(,]async[,)]' ${f}"
+    run_test "Kernel exports /data/syncshare_v2" \
+        ssh_nfs "sudo exportfs -v | grep -qE '^/data/syncshare_v2([[:space:]]|\$)'"
+    run_test "Kernel no longer exports the old /data/syncshare" \
+        ssh_nfs "! sudo exportfs -v | grep -qE '^/data/syncshare([[:space:]]|\$)'"
+
+    run_test "delete-entry auto.shares syncshare" \
+        ssh_dc "sudo samba-automount.sh delete-entry auto.shares syncshare --force"
+    run_test "syncshare entry gone from auto.shares" \
+        ssh_dc "! sudo samba-automount.sh list auto.shares | grep -q '^syncshare'"
+    run_test "delete-entry withdrew the syncshare export file" \
+        ssh_nfs "! test -e ${f}"
+    run_test "Kernel no longer exports /data/syncshare_v2" \
+        ssh_nfs "! sudo exportfs -v | grep -qE '^/data/syncshare_v2([[:space:]]|\$)'"
+    run_test "delete-entry preserved the share data directories" \
+        ssh_nfs "test -d /data/syncshare && test -d /data/syncshare_v2"
+
+    # add-entry on a fresh NFS entry deploys an export with add-share's
+    # defaults (async) since no export file exists yet.
+    run_test "newentry export absent before add-entry (precondition)" \
+        ssh_nfs "! test -e /etc/exports.d/newentry.exports"
+    run_test "Create /data/newentry on the NFS host" \
+        ssh_nfs "sudo mkdir -p /data/newentry"
+    run_test "add-entry auto.shares newentry (NFS)" \
+        ssh_dc "sudo samba-automount.sh add-entry auto.shares newentry --value='-fstype=nfs4,sec=krb5p ${nfs_host}:/data/newentry'"
+    run_test "newentry entry present in auto.shares" \
+        ssh_dc "sudo samba-automount.sh list auto.shares | grep -q '^newentry'"
+    run_test "add-entry deployed newentry export (path, sec=krb5p, async default)" \
+        ssh_nfs "grep -q '^/data/newentry ' /etc/exports.d/newentry.exports && grep -q 'sec=krb5p' /etc/exports.d/newentry.exports && grep -qE '[(,]async[,)]' /etc/exports.d/newentry.exports"
+    run_test "Kernel exports /data/newentry" \
+        ssh_nfs "sudo exportfs -v | grep -qE '^/data/newentry([[:space:]]|\$)'"
+    run_test "delete-entry auto.shares newentry" \
+        ssh_dc "sudo samba-automount.sh delete-entry auto.shares newentry --force"
+    run_test "delete-entry withdrew the newentry export" \
+        ssh_nfs "! test -e /etc/exports.d/newentry.exports && ! sudo exportfs -v | grep -qE '^/data/newentry([[:space:]]|\$)'"
+
+    # A non-NFS entry has no export and must not ssh to the host it names: an
+    # attempt at the unresolvable .invalid host would exit non-zero.
+    run_test "add-entry auto.shares cifs entry exits 0 (no ssh to its host)" \
+        ssh_dc "timeout 60 sudo samba-automount.sh add-entry auto.shares cifsentry --value='-fstype=cifs nosuchhost.invalid:/x'"
+    run_test "cifsentry entry present in auto.shares" \
+        ssh_dc "sudo samba-automount.sh list auto.shares | grep -q '^cifsentry'"
+    run_test "cifs entry wrote no export" \
+        ssh_nfs "! test -e /etc/exports.d/cifsentry.exports"
+    run_test "delete-entry of the cifs entry exits 0 (no ssh to its host)" \
+        ssh_dc "timeout 60 sudo samba-automount.sh delete-entry auto.shares cifsentry --force"
+
+    # An NFS entry with no host:/path target warns and touches nothing; the
+    # old IFS-read parser shifted sec= into the server slot and ssh'd 'krb5p'.
+    run_test "add-entry with no host:/path target exits 0 and warns" \
+        ssh_dc "out=\$(timeout 60 sudo samba-automount.sh add-entry auto.shares notarget --value='-fstype=nfs4,sec=krb5p' 2>&1) && printf '%s\n' \"\$out\" | grep -q 'no host:/path target'"
+    run_test "notarget entry present in auto.shares" \
+        ssh_dc "sudo samba-automount.sh list auto.shares | grep -q '^notarget'"
+    run_test "Target-less entry wrote no export" \
+        ssh_nfs "! test -e /etc/exports.d/notarget.exports"
+    run_test "delete-entry of the target-less entry exits 0" \
+        ssh_dc "timeout 60 sudo samba-automount.sh delete-entry auto.shares notarget --force"
+
+    run_test "Remove syncshare/newentry test data" \
+        ssh_nfs "sudo rm -rf /data/syncshare /data/syncshare_v2 /data/newentry"
+}
+
 # --dry-run must preview without side effects and must never prompt.
 test_dry_run() {
     echo ""
@@ -1419,6 +1529,7 @@ main() {
     test_sudorule_extended
     test_automount_map_lifecycle
     test_share_edge_cases
+    test_share_map_export_sync
     test_dry_run
     test_password_policy_set
     test_client_healthcheck

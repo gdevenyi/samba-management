@@ -116,6 +116,7 @@ The test uses domain `samba.test` (RFC 2606 reserved TLD). A random admin passwo
 | `test_sudorule_extended` | full attribute set (`--host`/`--runas-*`/`--order`), order replace-not-append, duplicate/validation errors |
 | `test_automount_map_lifecycle` | add-map/add-entry/show/modify/delete-entry/delete-map plus every guard (auto.master, non-empty map, LDIF values) |
 | `test_share_edge_cases` | `--sec`/`--fsid`/`--path`/`--server` validation, duplicate add, custom `--path`, data preservation on delete |
+| `test_share_map_export_sync` | `auto.shares` `modify` rewrites the export (new path + `sec=`, pinned `fsid=` and hand-set `sync` preserved, old path un-exported); `delete-entry` withdraws it (data kept); `add-entry` deploys one with the async default; a `cifs` entry and a target-less entry exit 0 with no export and no SSH |
 | `test_dry_run` | `--dry-run` previews with zero side effects and never prompts |
 | `test_password_policy_set` | set/verify/restore round trip; empty-options error |
 | `test_client_healthcheck` | `client/linux/healthcheck.sh` streamed to the client; all hard checks must pass |

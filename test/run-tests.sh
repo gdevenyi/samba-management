@@ -31,7 +31,7 @@ NC='\033[0m'
 # Centralised so setup, exercise, and cleanup all reference the same names.
 TEST_USERS=(testuser1 testuser2 homeuser1 homeuser2 perm_reader perm_writer perm_both perm_outsider login_allowed login_denied edgeuser archiveuser dryuser shortpwuser injuser)
 TEST_GROUPS=(TestGroupNested GidGroup EdgeGroup TestGroup ShareReaders ShareWriters computenode-login login-delete-probe)
-TEST_SHARES=(perm_rw_share perm_admin_share public edgeshare pathshare dryshare syncshare newentry cifsentry notarget badsync modeshare)
+TEST_SHARES=(perm_rw_share perm_admin_share public edgeshare pathshare dryshare syncshare newentry cifsentry notarget badsync modeshare guarddot guardat badroot)
 TEST_SUDO_RULES=(admin-all users-nopasswd edge-rule edge-rule2 inj-rule)
 TEST_SSH_KEY_COMMENT="samba-mgmt-test-data"
 TEST_SSH_KEY_FILE=""
@@ -138,6 +138,8 @@ cleanup_test_state() {
     ssh_dc "sudo rm -f /tmp/edgekey.pub" 2>/dev/null || true
     ssh_nfs "sudo rm -rf /data/custom_pathshare" 2>/dev/null || true
     ssh_nfs "sudo rm -rf /data/syncshare_v2" 2>/dev/null || true
+    # delete-share --remove-data path-guard fixtures (test_share_edge_cases)
+    ssh_nfs "sudo rm -rf /tmp/rmguard '/data/bad@path'" 2>/dev/null || true
     # Restore the password policy in case test_password_policy_set died
     # between the change and its own restore step.
     ssh_dc "sudo samba-tool domain passwordsettings set --min-pwd-length=14" >/dev/null 2>&1 || true
@@ -1250,7 +1252,7 @@ test_share_edge_cases() {
     run_test "badsync absent before the rejected add-share (precondition)" \
         ssh_nfs "! test -e /etc/exports.d/badsync.exports && ! test -e /data/badsync"
     run_test "add-share rejects invalid NFS_SYNC_MODE (exit 2)" \
-        ssh_dc "sudo env CONFIG_FILE=${bad_conf} samba-automount.sh add-share badsync >/dev/null 2>&1; test \$? -eq 2"
+        ssh_dc "out=\$(sudo env CONFIG_FILE=${bad_conf} samba-automount.sh add-share badsync 2>&1); rc=\$?; test \$rc -eq 2 && printf '%s\\n' \"\$out\" | grep -q 'Invalid NFS_SYNC_MODE'"
     run_test "Invalid NFS_SYNC_MODE left no badsync export or directory" \
         ssh_nfs "! test -e /etc/exports.d/badsync.exports && ! test -e /data/badsync"
     run_test "Invalid NFS_SYNC_MODE left no badsync auto.shares entry" \
@@ -1269,7 +1271,7 @@ test_share_edge_cases() {
     run_test "edgeshare export file is readable (precondition)" \
         test -n "$edge_export_sum"
     run_test "modify auto.shares rejects invalid NFS_SYNC_MODE (exit 2)" \
-        ssh_dc "sudo env CONFIG_FILE=${bad_conf} samba-automount.sh modify auto.shares edgeshare --value='${edge_entry/sec=krb5p/sec=krb5i}' >/dev/null 2>&1; test \$? -eq 2"
+        ssh_dc "out=\$(sudo env CONFIG_FILE=${bad_conf} samba-automount.sh modify auto.shares edgeshare --value='${edge_entry/sec=krb5p/sec=krb5i}' 2>&1); rc=\$?; test \$rc -eq 2 && printf '%s\\n' \"\$out\" | grep -q 'Invalid NFS_SYNC_MODE'"
     run_test "Rejected modify left the edgeshare export unchanged" \
         test "$(ssh_nfs "md5sum < /etc/exports.d/edgeshare.exports" 2>/dev/null || true)" = "$edge_export_sum"
     run_test "Rejected modify left the edgeshare map entry unchanged" \
@@ -1310,7 +1312,7 @@ test_share_edge_cases() {
     run_test "guarddot entry present (precondition)" \
         ssh_dc "sudo samba-automount.sh list auto.shares | grep -qE '^guarddot[[:space:]]'"
     run_test "delete-share --remove-data rejects a '..' path (exit 2)" \
-        ssh_dc "sudo samba-automount.sh delete-share guarddot --remove-data --force >/dev/null 2>&1; test \$? -eq 2"
+        ssh_dc "out=\$(sudo samba-automount.sh delete-share guarddot --remove-data --force 2>&1); rc=\$?; test \$rc -eq 2 && printf '%s\\n' \"\$out\" | grep -q 'Invalid --path'"
     run_test "'..' path guard left the canary in place" \
         ssh_nfs "test -f /tmp/rmguard/canary"
     run_test "'..' path guard ran before the entry was deleted" \
@@ -1323,7 +1325,7 @@ test_share_edge_cases() {
     run_test "guardat entry present (precondition)" \
         ssh_dc "sudo samba-automount.sh list auto.shares | grep -qE '^guardat[[:space:]]'"
     run_test "delete-share --remove-data rejects a bad-charset path (exit 2)" \
-        ssh_dc "sudo samba-automount.sh delete-share guardat --remove-data --force >/dev/null 2>&1; test \$? -eq 2"
+        ssh_dc "out=\$(sudo samba-automount.sh delete-share guardat --remove-data --force 2>&1); rc=\$?; test \$rc -eq 2 && printf '%s\\n' \"\$out\" | grep -q 'Invalid --path'"
     run_test "Bad-charset path guard left /data/bad@path in place" \
         ssh_nfs "test -d '/data/bad@path'"
     run_test "Bad-charset path guard ran before the entry was deleted" \
@@ -1332,7 +1334,7 @@ test_share_edge_cases() {
     # The NFS-side guard: an nfs entry is validated by _sync_share_export
     # before its export is written, and the export goes before the map entry.
     run_test "add-entry nfs4 entry targeting host:/ rejected (exit 2)" \
-        ssh_dc "sudo samba-automount.sh add-entry auto.shares badroot --value='-fstype=nfs4,sec=krb5p ${nfs_host}:/' >/dev/null 2>&1; test \$? -eq 2"
+        ssh_dc "out=\$(sudo samba-automount.sh add-entry auto.shares badroot --value='-fstype=nfs4,sec=krb5p ${nfs_host}:/' 2>&1); rc=\$?; test \$rc -eq 2 && printf '%s\\n' \"\$out\" | grep -q 'Invalid --path'"
     run_test "Rejected badroot entry was not created" \
         ssh_dc "! sudo samba-automount.sh list auto.shares | grep -qE '^badroot[[:space:]]'"
     run_test "Rejected badroot wrote no export" \

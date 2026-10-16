@@ -530,6 +530,49 @@ test_autofs_kerberos() {
         ssh_client "echo 'H0mePass1!2345' | kinit homeuser1@SAMBA.TEST && ls /data/public/ && kdestroy"
 }
 
+# Kerberos ticket renewal on domain members (sssd-client role: sssd.conf.j2 +
+# krb5-samba-ad.conf.j2, capped by the DC's kdc:renewal lifetime).  Without
+# it the TGT minted at login expires mid-session and every sec=krb5p access
+# returns "Key has expired" while the mount stays up on the machine
+# credential.  Both sssd.conf options are required because either one alone
+# does nothing.  The end-to-end kinit is the strong check: a plain kinit
+# (no -r) takes its window from the drop-in's renew_lifetime and the KDC
+# caps it at the DC ceiling, so >= 20 days fails on all three regressions --
+# drop-in entry gone (1 day), DC ceiling missing (Samba's 168h = 7 days), or
+# the ceiling written in the wrong unit (e.g. 30 hours).  A bare "renew
+# until" grep would not: the broken states still print one.  Needs
+# perm_writer (created in test_permissions_setup, removed by cleanup).
+test_client_kerberos_renewal() {
+    echo ""
+    echo "--- Client Kerberos Ticket Renewal ---"
+    local -a hosts=(client)
+    [[ "${SMB_TEST_MODE:-colocated}" == "separate" ]] && hosts+=(storage)
+    local h fn
+    for h in "${hosts[@]}"; do
+        fn=ssh_client
+        [[ "$h" == "storage" ]] && fn=ssh_nfs
+        run_test "${h}: sssd.conf requests renewable TGTs (krb5_renewable_lifetime = 30d)" \
+            "$fn" "sudo grep -qE '^krb5_renewable_lifetime = 30d$' /etc/sssd/sssd.conf"
+        run_test "${h}: sssd.conf renews them (krb5_renew_interval = 1h)" \
+            "$fn" "sudo grep -qE '^krb5_renew_interval = 1h$' /etc/sssd/sssd.conf"
+        run_test "${h}: krb5.conf.d drop-in sets renew_lifetime = 30d for manual kinit" \
+            "$fn" "grep -qE '^[[:space:]]*renew_lifetime = 30d$' /etc/krb5.conf.d/samba-ad.conf"
+        # Throwaway ccache so no other suite's default ccache (or the
+        # kernel's per-uid GSS context) is touched.  The kinit and the klist
+        # parse are asserted inside the same command so a failed kinit or an
+        # unparseable klist fails the check instead of reading as a pass.
+        # LC_ALL=C pins klist's date to %m/%d/%y, which `date -d` reads.
+        run_test "${h}: plain kinit is granted a renewable window of >= 20 days" \
+            "$fn" "cc=/tmp/renew-probe.\$\$; rm -f \$cc; export KRB5CCNAME=FILE:\$cc LC_ALL=C; \
+                   echo 'Wr1terPass!234' | kinit perm_writer@SAMBA.TEST >/dev/null || { echo 'kinit perm_writer failed' >&2; rm -f \$cc; exit 1; }; \
+                   ru=\$(klist | sed -n 's/^[[:space:]]*renew until //p' | head -1); kdestroy >/dev/null 2>&1; rm -f \$cc; \
+                   [ -n \"\$ru\" ] || { echo 'ticket is not renewable (no renew until line)' >&2; exit 1; }; \
+                   ts=\$(date -d \"\$ru\" +%s) || { echo \"unparseable renew until: \$ru\" >&2; exit 1; }; \
+                   left=\$(( ts - \$(date +%s) )); \
+                   [ \$left -ge \$((20*86400)) ] || { echo \"renew until \$ru is only \$((left/3600))h away (want >= 480h)\" >&2; exit 1; }"
+    done
+}
+
 test_password_policy() {
     echo ""
     echo "--- Password Policy ---"
@@ -1856,6 +1899,7 @@ main() {
     test_permissions_setup
     test_permissions
     test_autofs_kerberos
+    test_client_kerberos_renewal
     test_password_policy
     test_client_verification
     # Ansible-provisioned state (roles/samba-dc): these assert what the

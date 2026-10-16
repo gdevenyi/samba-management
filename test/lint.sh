@@ -18,6 +18,7 @@
 #  12. Every samba-tool dns query passes --authority and --no-children
 #  13. lib/ pure helpers and the config.sh parser behave (test/lib-units.sh)
 #  14. Shell scripts set errtrace (set -E) and declare their ERR trap
+#  15. No eval and no passwords on argv in bin/, lib/, client/ and Ansible
 #
 # This is the cheap gate: it catches the class of regression that would
 # otherwise only surface an hour into a libvirt matrix run.
@@ -674,6 +675,239 @@ lint_errtrace_convention() {
 }
 
 # ---------------------------------------------------------------------------
+# 15. No eval, and no secrets on a process command line
+# ---------------------------------------------------------------------------
+# no_log (check 8) only hides a password from Ansible's output; it does
+# nothing for /proc/<pid>/cmdline, which every local user can read.  The
+# repo's history has already regressed this once (a5cd0c0 put
+# --newpassword="$password", a positional "$password" and
+# `echo '{{ pw }}' | kinit` back on argv) and nothing functional notices:
+# samba-tool behaves the same either way.  This scan pins the conventions in
+# AGENTS.md ("Password handling", "Command construction") for bin/, lib/,
+# client/linux/ and the Ansible tasks.
+#
+# _secrets_argv_violations <root> -- scan <root>/{bin,lib,client/linux}/*.sh
+# and <root>/ansible/**/*.yml, print file:line per hit, exit 1 on any.
+_secrets_argv_violations() {
+    python3 - "$1" <<'PY'
+import pathlib
+import re
+import sys
+
+root = pathlib.Path(sys.argv[1])
+problems = []
+
+# ---------------------------------------------------------------- shell ----
+# A variable that plausibly holds a secret: $password, ${new_passwd}, $pw...
+# (Not any *_pw: $must_change_pw is a flag.)
+SECRET_VAR = re.compile(r'\$\{?([A-Za-z_]*pass(word|wd)?[A-Za-z0-9_]*|pw)\b', re.I)
+# A pipeline segment that hands its words to an external program's argv, or
+# builds an array that is later executed ("${cmd[@]}").
+EXEC_WORD = re.compile(
+    r'(\bsamba-tool\b|\bkinit\b|\brealm\b|\bnet\s|\bsmbclient\b|\bldb[a-z]+\b'
+    r'|\badcli\b|"\$\{[A-Za-z_]+\[@\]\}"|\b[A-Za-z_][A-Za-z0-9_]*\+?=\()')
+SHELL_RULES = [
+    (re.compile(r'(^|[^A-Za-z0-9_])eval\s'), 'eval (build the command as an array)'),
+    (re.compile(r'--newpassword(?!-file)'), '--newpassword on argv (pipe it via stdin)'),
+    (re.compile(r'--adminpass'), '--adminpass on argv'),
+    (re.compile(r'--password(=|\s+)["\']?\$'), '--password=$var on argv'),
+    (re.compile(r'-U\s*\S*%\$'), '-U user%$secret on argv'),
+    (re.compile(r'%\$\{?[A-Za-z_]*pass', re.I), 'user%$password credential on argv'),
+]
+
+
+def shell_logical_lines(text):
+    """Yield (first_lineno, joined_text) with comments and heredoc bodies
+    removed and backslash / open-array continuations joined."""
+    out, buf, start, depth, heredoc = [], [], None, 0, None
+    for n, raw in enumerate(text.splitlines(), 1):
+        if heredoc is not None:
+            if raw.strip() == heredoc:
+                heredoc = None
+            continue
+        line = raw
+        if re.match(r'^\s*#', line):
+            line = ''
+        m = re.search(r'<<-?\s*[\'"]?([A-Za-z_][A-Za-z0-9_]*)[\'"]?', line)
+        if m:
+            heredoc = m.group(1)
+        if start is None:
+            start = n
+        buf.append(line)
+        # Track an array assignment left open across lines: cmd=( ... ).
+        if depth or re.search(r'=\(', line):
+            depth = max(depth + line.count('(') - line.count(')'), 0)
+        if line.rstrip().endswith('\\') or depth > 0:
+            continue
+        out.append((start, ' '.join(l.rstrip().rstrip('\\') for l in buf)))
+        buf, start, depth = [], None, 0
+    if buf:
+        out.append((start, ' '.join(buf)))
+    return out
+
+
+shell_files = []
+for sub in ('bin', 'lib', 'client/linux'):
+    shell_files += sorted((root / sub).glob('*.sh'))
+if not shell_files or not (root / 'ansible').is_dir():
+    problems.append(f"{root}: no shell scripts or no ansible/ found to scan")
+for path in shell_files:
+    rel = path.relative_to(root)
+    for n, line in shell_logical_lines(path.read_text()):
+        for rx, why in SHELL_RULES:
+            if rx.search(line):
+                problems.append(f"{rel}:{n}: {why}: {line.strip()[:120]}")
+        if re.search(r'samba-tool\s+user\s+(create|add)\b', line) \
+                and '--random-password' not in line:
+            problems.append(f"{rel}:{n}: samba-tool user create without "
+                            f"--random-password: {line.strip()[:120]}")
+        # A secret in the same pipeline segment as an exec word is on argv;
+        # one that only reaches the program through `printf ... |` is not.
+        for seg in re.split(r'(?<!\|)\|(?!\|)', line):
+            if EXEC_WORD.search(seg) and SECRET_VAR.search(seg):
+                problems.append(f"{rel}:{n}: secret variable passed as an "
+                                f"argument (pipe it via stdin): {seg.strip()[:120]}")
+                break
+
+# -------------------------------------------------------------- ansible ----
+SECRET = re.compile(r'(samba_admin_password|sssd_admin_password|nfs_server_admin_password)')
+# The one-time `samba-tool domain provision` has no stdin form for the
+# administrator password; it runs once, before any user can log in.
+ALLOW = {('roles/samba-dc/tasks/provision.yml', '--adminpass=')}
+
+ans = root / 'ansible'
+for path in sorted(ans.rglob('*.yml')) if ans.is_dir() else []:
+    if '.ansible' in path.parts:
+        continue
+    rel = path.relative_to(ans).as_posix()
+    lines = ['' if re.match(r'^\s*#', l) else l for l in path.read_text().splitlines()]
+    for i, l in enumerate(lines):
+        if re.search(r'\becho\b.*pass.*\|', l, re.I):
+            problems.append(f"ansible/{rel}:{i+1}: password echoed into a pipe "
+                            f"(use stdin:): {l.strip()[:120]}")
+    if not SECRET.search('\n'.join(lines)):
+        continue
+    starts = [i for i, l in enumerate(lines) if re.match(r'^\s*-\s+name:', l)]
+    starts.append(len(lines))
+    for a, b in zip(starts, starts[1:]):
+        block = lines[a:b]
+        body = '\n'.join(block)
+        if not SECRET.search(body):
+            continue
+        # assert only evaluates the expression; it is never a process.
+        if re.search(r'^\s+(ansible\.builtin\.)?assert:\s*$', body, re.M):
+            continue
+        if re.search(r'^\s+(ansible\.builtin\.)?shell:', body, re.M):
+            problems.append(f"ansible/{rel}:{a+1}: shell task references a "
+                            f"password (use command + stdin:): {block[0].strip()}")
+            continue
+        for j, l in enumerate(block):
+            if not SECRET.search(l):
+                continue
+            if any(rel == f and tok in l for f, tok in ALLOW):
+                continue
+            # Accept the reference when it, or any enclosing key, is
+            # stdin: or environment: (environment: -> PASSWD: "{{ ... }}").
+            ok, ind = False, len(l) - len(l.lstrip())
+            if re.match(r'^\s*stdin:', l):
+                ok = True
+            for k in range(j - 1, -1, -1):
+                p = block[k]
+                if ok or not p.strip():
+                    continue
+                pind = len(p) - len(p.lstrip())
+                if pind < ind:
+                    if re.match(r'^\s*(-\s+)?(stdin|environment):', p):
+                        ok = True
+                    ind = pind
+            if not ok:
+                problems.append(f"ansible/{rel}:{a+j+1}: password outside "
+                                f"stdin:/environment: (reaches argv): {l.strip()[:120]}")
+
+if problems:
+    for p in problems:
+        print(p)
+    sys.exit(1)
+PY
+}
+
+lint_secrets_off_argv() {
+    local rc=0 tmp out
+
+    # Self-test: every regression shape this check exists for must be caught,
+    # and the compliant forms the tree uses must not be, or a broken regex
+    # would pass the whole tree silently.
+    tmp=$(mktemp -d) || return 1
+    mkdir -p "${tmp}/bin" "${tmp}/ansible/roles/r/tasks"
+    cat > "${tmp}/bin/good.sh" <<'EOF'
+local -a cmd=(samba-tool user create "$username" --random-password)
+printf '%s\n%s\n' "$password" "$password" \
+    | setsid "${cmd[@]}" 2>&1
+parse_kv_args opts "--password" "$@"
+[[ -z "$password" ]] && read -rsp "Password: " password
+usage() { cat <<USAGE
+    --password=PASS   eval this
+USAGE
+}
+EOF
+    cat > "${tmp}/ansible/roles/r/tasks/good.yml" <<'EOF'
+- name: Kinit
+  ansible.builtin.command: kinit Administrator
+  args:
+    stdin: "{{ samba_admin_password }}"
+  no_log: true
+- name: DNS
+  ansible.builtin.command: samba-tool dns add 127.0.0.1 z n A 1.2.3.4 -U Administrator
+  environment:
+    PASSWD: "{{ samba_admin_password }}"
+  no_log: true
+- name: Assert
+  ansible.builtin.assert:
+    that:
+      - samba_admin_password | length > 0
+EOF
+    out=$(_secrets_argv_violations "$tmp")
+    if [[ -n "$out" ]]; then
+        echo "self-test: compliant fixture was flagged:"; printf '%s\n' "$out"; rc=1
+    fi
+    local -a bad_sh=(
+        'eval "$cmd"'
+        'samba-tool user setpassword "$username" --newpassword="$password"'
+        'local -a cmd=(samba-tool user create "$username")'
+        '"${cmd[@]}" "$password"'
+        'cmd+=(--password="$pw")'
+        'smbclient -U "admin%${password}" //h/s'
+        'local -a cmd=(samba-tool user create "$u"
+    --random-password "$password")'
+    )
+    local -a bad_yml=(
+        $'- name: Leak\n  ansible.builtin.command: samba-tool dns add h z n A 1.1.1.1 --password={{ samba_admin_password }}\n  no_log: true'
+        $'- name: Leak\n  ansible.builtin.shell: kinit Administrator\n  args:\n    stdin: "{{ samba_admin_password }}"'
+        $'- name: Leak\n  ansible.builtin.command:\n    argv:\n      - realm\n      - "--password={{ sssd_admin_password }}"'
+        $'- name: Leak\n  ansible.builtin.shell: echo \'{{ x_password }}\' | kinit'
+    )
+    local s
+    for s in "${bad_sh[@]}"; do
+        rm -f "${tmp}/bin/"*.sh "${tmp}/ansible/roles/r/tasks/"*.yml
+        printf '%s\n' "$s" > "${tmp}/bin/bad.sh"
+        if [[ -z "$(_secrets_argv_violations "$tmp")" ]]; then
+            echo "self-test: not flagged: $s"; rc=1
+        fi
+    done
+    for s in "${bad_yml[@]}"; do
+        rm -f "${tmp}/bin/"*.sh "${tmp}/ansible/roles/r/tasks/"*.yml
+        printf '%s\n' "$s" > "${tmp}/ansible/roles/r/tasks/bad.yml"
+        if [[ -z "$(_secrets_argv_violations "$tmp")" ]]; then
+            echo "self-test: not flagged: ${s//$'\n'/ / }"; rc=1
+        fi
+    done
+    rm -rf "$tmp"
+
+    _secrets_argv_violations "$REPO_ROOT" || rc=1
+    return $rc
+}
+
+# ---------------------------------------------------------------------------
 # Main
 # ---------------------------------------------------------------------------
 main() {
@@ -713,6 +947,7 @@ main() {
     check "template variables have role defaults" lint_template_vars_defaulted
     check "samba-tool dns query passes --authority and --no-children" lint_dns_query_flags
     check "shell scripts set errtrace with their ERR trap" lint_errtrace_convention
+    check "no eval and no secrets on a process command line" lint_secrets_off_argv
 
     echo ""
     echo "--- Library ---"

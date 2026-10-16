@@ -177,21 +177,97 @@ PY
 # ---------------------------------------------------------------------------
 # 7. Fact convention: ansible.cfg sets inject_facts_as_vars = False, so
 #    top-level gathered facts (ansible_hostname, ansible_fqdn, ...) are
-#    UNDEFINED.  Connection vars and ansible_managed are legitimately
-#    top-level and are allow-listed, as is meta/'s min_ansible_version.
+#    UNDEFINED.  Only connection vars, ansible_managed and Ansible's built-in
+#    magic vars are legitimately top-level.
+#
+#    The audit works per *token*, not per line, and the allow-list is anchored
+#    at both ends: a line-level filter let `ansible_hostname` through because
+#    `ansible_host` is a prefix of it, and dropped any line that also mentioned
+#    ansible_facts.  `\b` keeps meta/'s min_ansible_version from producing a
+#    token at all ('_' is a word character).
+#
+#    Scope: roles/playbooks/inventory, plus test/setup.sh (it generates the
+#    test inventory and group_vars -- an `ansible_hostname:` host var there
+#    would make a reintroduced bare reference resolve in the VM matrix while
+#    failing on every real site) and the {{ ... }} expressions in AGENTS.md
+#    (examples operators copy into group_vars; prose naming the forbidden
+#    forms is left alone).
 # ---------------------------------------------------------------------------
-lint_fact_convention() {
-    local hits
-    hits=$( (cd "$ANSIBLE_DIR" && grep -rEn 'ansible_[a-z_]+' roles playbooks inventory 2>/dev/null) \
-        | grep -v 'ansible_facts' \
-        | grep -vE 'ansible_(host|user|port|connection|become|become_user|become_method|password|winrm[a-z_]*|shell_type|python_interpreter|managed)' \
-        | grep -vE 'min_ansible_version' || true)
-    if [[ -n "$hits" ]]; then
-        echo "Top-level gathered facts are undefined with inject_facts_as_vars=False:" >&2
-        printf '%s\n' "$hits" >&2
+FACT_TOKEN_ALLOW='^ansible_(facts|host|user|port|connection|password|become|become_user|become_method|become_password|become_flags|ssh_[a-z0-9_]+|winrm_[a-z0-9_]+|shell_type|shell_executable|python_interpreter|managed|check_mode|diff_mode|play_hosts|play_batch|play_name|play_role_names|role_names|parent_role_names|role_name|run_tags|skip_tags|limit|version|loop|loop_var|index_var|forks|inventory_sources|playbook_python|config_file|search_path|verbosity)$'
+
+# Reads `file:line:text` records on stdin, prints `file:line:token` for every
+# ansible_* token that is not allow-listed.  Exit 1 when anything was printed.
+fact_token_offenders() {
+    local rec loc text tok found=1
+    while IFS= read -r rec; do
+        loc="${rec%%:*}"
+        rec="${rec#*:}"
+        loc="${loc}:${rec%%:*}"
+        text="${rec#*:}"
+        while IFS= read -r tok; do
+            [[ -z "$tok" ]] && continue
+            [[ "$tok" =~ $FACT_TOKEN_ALLOW ]] && continue
+            printf '%s:%s\n' "$loc" "$tok"
+            found=0
+        done < <(grep -oE '\bansible_[a-z0-9_]+\b' <<<"$text" || true)
+    done
+    return $(( found == 0 ? 1 : 0 ))
+}
+
+# The matcher must reject the forms the old line filter let through, and must
+# accept the legitimate ones -- otherwise the scan below proves nothing.
+fact_token_selftest() {
+    local out
+    out=$(printf '%s\n' \
+        'f:1:x: "{{ ansible_hostname }}"' \
+        "f:2:y: \"{{ ansible_facts['fqdn'] }} {{ ansible_fqdn }}\"" \
+        'f:3:z: "{{ ansible_user_id }}"' | fact_token_offenders) && {
+        echo "self-test: matcher accepted a fixture of bare gathered facts" >&2
+        return 1
+    }
+    local want
+    for want in f:1:ansible_hostname f:2:ansible_fqdn f:3:ansible_user_id; do
+        grep -qxF "$want" <<<"$out" || {
+            echo "self-test: matcher missed $want" >&2
+            return 1
+        }
+    done
+    if out=$(printf '%s\n' \
+        "f:1:{{ ansible_host }} {{ ansible_facts['hostname'] }} {{ ansible_user }}" \
+        'f:2:min_ansible_version: "2.15"' \
+        'f:3:{{ ansible_managed }} {{ ansible_check_mode }}' | fact_token_offenders); then
+        :
+    else
+        echo "self-test: matcher rejected legitimate top-level vars:" >&2
+        printf '%s\n' "$out" >&2
         return 1
     fi
     return 0
+}
+
+lint_fact_convention() {
+    local rc=0 hits cfg
+    fact_token_selftest || return 1
+
+    for cfg in "${ANSIBLE_DIR}/ansible.cfg" "${SCRIPT_DIR}/ansible.cfg"; do
+        if ! grep -qE '^[[:space:]]*inject_facts_as_vars[[:space:]]*=[[:space:]]*False[[:space:]]*$' "$cfg"; then
+            echo "${cfg#"${REPO_ROOT}"/}: missing 'inject_facts_as_vars = False'" >&2
+            rc=1
+        fi
+    done
+
+    hits=$( {
+        (cd "$ANSIBLE_DIR" && grep -rnE '\bansible_[a-z0-9_]+\b' roles playbooks inventory 2>/dev/null \
+            | sed 's|^|ansible/|')
+        (cd "$REPO_ROOT" && grep -HnE '\bansible_[a-z0-9_]+\b' test/setup.sh 2>/dev/null)
+        (cd "$REPO_ROOT" && grep -HnoE '\{\{[^}]*\}\}' AGENTS.md 2>/dev/null)
+    } | fact_token_offenders) || {
+        echo "Top-level gathered facts are undefined with inject_facts_as_vars=False" >&2
+        echo "(use ansible_facts['<name>']):" >&2
+        printf '%s\n' "$hits" >&2
+        rc=1
+    }
+    return $rc
 }
 
 # ---------------------------------------------------------------------------

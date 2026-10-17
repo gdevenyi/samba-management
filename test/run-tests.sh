@@ -29,10 +29,10 @@ NC='\033[0m'
 
 # --- Test data --------------------------------------------------------------
 # Centralised so setup, exercise, and cleanup all reference the same names.
-TEST_USERS=(testuser1 testuser2 homeuser1 homeuser2 perm_reader perm_writer perm_both perm_outsider login_allowed login_denied edgeuser archiveuser dryuser shortpwuser)
+TEST_USERS=(testuser1 testuser2 homeuser1 homeuser2 perm_reader perm_writer perm_both perm_outsider login_allowed login_denied edgeuser archiveuser dryuser shortpwuser injuser)
 TEST_GROUPS=(TestGroupNested GidGroup EdgeGroup TestGroup ShareReaders ShareWriters computenode-login login-delete-probe)
-TEST_SHARES=(perm_rw_share perm_admin_share public edgeshare pathshare dryshare)
-TEST_SUDO_RULES=(admin-all users-nopasswd edge-rule edge-rule2)
+TEST_SHARES=(perm_rw_share perm_admin_share public edgeshare pathshare dryshare syncshare newentry cifsentry notarget badsync modeshare guarddot guardat badroot)
+TEST_SUDO_RULES=(admin-all users-nopasswd edge-rule edge-rule2 inj-rule)
 TEST_SSH_KEY_COMMENT="samba-mgmt-test-data"
 TEST_SSH_KEY_FILE=""
 TEST_SSH_KEY=""
@@ -55,6 +55,28 @@ run_test() {
         TESTS_PASS=$((TESTS_PASS + 1))
     else
         printf "  ${RED}FAIL${NC} %s\n" "$desc"
+        printf "    %s\n" "$output" | head -5
+        TESTS_FAIL=$((TESTS_FAIL + 1))
+    fi
+}
+
+# Inverse of run_test for access-control checks: passes only when the
+# command fails AND its output carries "Permission denied" (EACCES).  The
+# pattern matters: a deny check that passed on any non-zero exit would also
+# pass when the precondition broke -- an unknown user, a missing mount
+# ("No such file or directory"), a typo -- and so could never catch a
+# regression that widens access.  Each caller still asserts its kinit as a
+# separate run_test and proves the same ticket works somewhere it should.
+run_test_deny() {
+    local desc="$1"
+    shift
+    local output rc
+    output=$("$@" 2>&1) && rc=0 || rc=$?
+    if [[ $rc -ne 0 ]] && grep -q 'Permission denied' <<<"$output"; then
+        printf "  ${GREEN}PASS${NC} %s\n" "$desc"
+        TESTS_PASS=$((TESTS_PASS + 1))
+    else
+        printf "  ${RED}FAIL${NC} %s (expected Permission denied, got rc=%s)\n" "$desc" "$rc"
         printf "    %s\n" "$output" | head -5
         TESTS_FAIL=$((TESTS_FAIL + 1))
     fi
@@ -88,6 +110,8 @@ cleanup_test_state() {
         ssh_nfs "sudo rm -rf /data/${share}" 2>/dev/null || true
     done
     ssh_nfs "sudo exportfs -ra" 2>/dev/null || true
+    # Staged NFS_SYNC_MODE configs from test_share_edge_cases / test_export_fsid
+    ssh_dc "sudo rm -f /root/bad-sync.conf /root/sync-mode.conf" 2>/dev/null || true
 
     # Groups (must come after users-from-group operations are done)
     local group
@@ -113,6 +137,9 @@ cleanup_test_state() {
     ssh_dc "sudo samba-automount.sh delete-map testmap --force" 2>/dev/null || true
     ssh_dc "sudo rm -f /tmp/edgekey.pub" 2>/dev/null || true
     ssh_nfs "sudo rm -rf /data/custom_pathshare" 2>/dev/null || true
+    ssh_nfs "sudo rm -rf /data/syncshare_v2" 2>/dev/null || true
+    # delete-share --remove-data path-guard fixtures (test_share_edge_cases)
+    ssh_nfs "sudo rm -rf /tmp/rmguard '/data/bad@path'" 2>/dev/null || true
     # Restore the password policy in case test_password_policy_set died
     # between the change and its own restore step.
     ssh_dc "sudo samba-tool domain passwordsettings set --min-pwd-length=14" >/dev/null 2>&1 || true
@@ -214,6 +241,12 @@ test_shares_basic() {
         ssh_nfs "sudo exportfs -v | grep -q /data/testshare"
     run_test "add-share created testshare directory" \
         ssh_nfs "test -d /data/testshare"
+    # The documented contract for a directory add-share creates: 0770
+    # root:"Domain Users".  test_permissions re-chmods its own shares to
+    # 2770, so this freshly created share is the only place a widened
+    # add-share mode (0775/0777) is visible.
+    run_test "add-share created testshare as root:'Domain Users' mode 0770" \
+        ssh_nfs "stat -c '%U %G %a' /data/testshare | grep -qix 'root domain users 770'"
     run_test "add-share published testshare auto.shares entry" \
         ssh_dc "sudo samba-automount.sh list auto.shares | grep -q '^testshare'"
     run_test "delete-share --remove-data tears testshare down" \
@@ -258,6 +291,43 @@ test_export_fsid() {
         ssh_nfs "sudo exportfs -v | grep 'fsid=101' | grep -qE '[(,]async[,)]'"
     run_test "kernel exports homes async" \
         ssh_nfs "sudo exportfs -v | grep 'fsid=100' | grep -qE '[(,]async[,)]'"
+    # The async checks above cannot tell a configured mode from a hardcoded
+    # one, since async is the default everywhere.  So: the deployed config
+    # must carry the key (samba-automount.sh silently falls back to async
+    # when it is missing), and add-share driven by a copy of that config set
+    # to sync must write and export sync.  The value has to come from a
+    # config FILE -- config.sh exports the file's NFS_SYNC_MODE over any
+    # environment value.  The staging grep guards a silent sed no-match.
+    local sync_conf=/root/sync-mode.conf
+    run_test "deployed samba-mgmt.conf carries NFS_SYNC_MODE=async" \
+        ssh_dc "sudo grep -qx 'NFS_SYNC_MODE=async' /opt/samba-management/config/samba-mgmt.conf"
+    run_test "Stage config copy with NFS_SYNC_MODE=sync" \
+        ssh_dc "sudo sh -c \"sed 's/^NFS_SYNC_MODE=.*/NFS_SYNC_MODE=sync/' /opt/samba-management/config/samba-mgmt.conf > ${sync_conf} && chmod 0600 ${sync_conf} && grep -qx 'NFS_SYNC_MODE=sync' ${sync_conf}\""
+    run_test "modeshare export absent before add-share (precondition)" \
+        ssh_nfs "! test -e /etc/exports.d/modeshare.exports"
+    run_test "add-share modeshare --fsid=160 with NFS_SYNC_MODE=sync" \
+        ssh_dc "sudo env CONFIG_FILE=${sync_conf} samba-automount.sh add-share modeshare --fsid=160"
+    run_test "modeshare export file is sync, not async" \
+        ssh_nfs "grep -qE '[(,]sync[,)]' /etc/exports.d/modeshare.exports && ! grep -qE '[(,]async[,)]' /etc/exports.d/modeshare.exports"
+    run_test "kernel exports modeshare (fsid=160) sync, not async" \
+        ssh_nfs "sudo exportfs -v | grep 'fsid=160' | grep -qE '[(,]sync[,)]' && ! sudo exportfs -v | grep 'fsid=160' | grep -qE '[(,]async[,)]'"
+    run_test "Delete modeshare with --remove-data" \
+        ssh_dc "sudo samba-automount.sh delete-share modeshare --remove-data --force"
+    run_test "Remove staged NFS_SYNC_MODE=sync config" \
+        ssh_dc "sudo rm -f ${sync_conf}"
+    # samba_nfs_sec / NFS_SEC default: krb5p (authentication + integrity +
+    # encryption).  kinit-then-access also works under krb5/krb5i, so no
+    # access test notices a weakened flavour; and an export that loses its
+    # sec= falls back to sys, which the kernel reports as sec=sys.  Matched
+    # as a whole option (`:` allows a multi-flavour sec=krb5p:krb5i list).
+    run_test "public share export file is sec=krb5p" \
+        ssh_nfs "grep -qE '[(,]sec=krb5p[,):]' /etc/exports.d/public.exports"
+    run_test "homes export file is sec=krb5p" \
+        ssh_nfs "grep -qE '[(,]sec=krb5p[,):]' /etc/exports.d/homes.exports"
+    run_test "kernel exports public share sec=krb5p" \
+        ssh_nfs "sudo exportfs -v | grep 'fsid=101' | grep -qE '[(,]sec=krb5p[,):]'"
+    run_test "kernel exports homes sec=krb5p" \
+        ssh_nfs "sudo exportfs -v | grep 'fsid=100' | grep -qE '[(,]sec=krb5p[,):]'"
 }
 
 # Stand up users, groups, share directories, and NFS exports for the
@@ -349,7 +419,7 @@ test_permissions() {
     # loop exits 0 even when SSSD never came online, and the warm-up would
     # poison the cache with offline (incomplete) initgroups answers.
     run_test "Restart SSSD and warm initgroups on storage host" \
-        ssh_nfs "sudo systemctl restart sssd && for i in \$(seq 1 30); do sudo sssctl domain-status samba.test 2>/dev/null | grep -q 'Online status: Online' && break; sleep 2; done && sudo sssctl domain-status samba.test | grep -q 'Online status: Online' && sudo bash -c 'for f in /proc/net/rpc/auth.unix.gid /proc/net/rpc/nfs4.nametoid /proc/net/rpc/nfs4.idtoname; do [ -e \"\$f/flush\" ] && date +%s > \"\$f/flush\"; done' && for u in perm_writer perm_both perm_reader; do getent initgroups \"\$u\" >/dev/null; done"
+        ssh_nfs "sudo systemctl restart sssd && for i in \$(seq 1 30); do sudo sssctl domain-status samba.test 2>/dev/null | grep -q 'Online status: Online' && break; sleep 2; done && sudo sssctl domain-status samba.test | grep -q 'Online status: Online' && sudo bash -c 'for f in /proc/net/rpc/auth.unix.gid /proc/net/rpc/nfs4.nametoid /proc/net/rpc/nfs4.idtoname; do [ -e \"\$f/flush\" ] && date +%s > \"\$f/flush\"; done' && for u in perm_writer perm_both perm_reader perm_outsider; do getent initgroups \"\$u\" >/dev/null; done"
     diag_dump "after warmup"
     # 60s budget, with a cache-expiry nudge every 10s in case the first
     # post-restart initgroups was cached while the backend was still offline.
@@ -358,6 +428,10 @@ test_permissions() {
     # the wrong value forever while both sides converge.
     run_test "Verify ShareWriters visible in perm_writer initgroups" \
         ssh_nfs "for i in \$(seq 1 60); do SW_GID=\$(getent group ShareWriters 2>/dev/null | cut -d: -f3); [ -n \"\$SW_GID\" ] && getent initgroups perm_writer 2>/dev/null | grep -qw \"\$SW_GID\" && exit 0; [ \$((i % 10)) -eq 0 ] && sudo sss_cache -E; sleep 1; done; echo 'ShareWriters GID not found in initgroups after 60s' >&2; exit 1"
+    # perm_both's write below runs under its own uid (own GSS context), so
+    # the server must resolve perm_both's own ShareWriters membership too.
+    run_test "Verify ShareWriters visible in perm_both initgroups" \
+        ssh_nfs "for i in \$(seq 1 60); do SW_GID=\$(getent group ShareWriters 2>/dev/null | cut -d: -f3); [ -n \"\$SW_GID\" ] && getent initgroups perm_both 2>/dev/null | grep -qw \"\$SW_GID\" && exit 0; [ \$((i % 10)) -eq 0 ] && sudo sss_cache -E; sleep 1; done; echo 'ShareWriters GID not found in perm_both initgroups after 60s' >&2; exit 1"
     diag_dump "after initgroups verify"
     # Re-chown share directories with the now-fresh SSSD GID for ShareWriters.
     # The initial chown in test_permissions_setup may have used a stale GID
@@ -371,10 +445,49 @@ test_permissions() {
     diag_dump "after perm_writer write attempt 1"
     run_test "perm_writer can read from perm_rw_share via NFS" \
         ssh_client "echo 'Wr1terPass!234' | kinit perm_writer@SAMBA.TEST && cat /data/perm_rw_share/writer_file.txt; rc=\$?; kdestroy; exit \$rc"
-    run_test "perm_both can write to perm_rw_share via NFS" \
-        ssh_client "echo 'B0thPass!12345' | kinit perm_both@SAMBA.TEST && echo 'both test' > /data/perm_rw_share/both_file.txt; rc=\$?; kdestroy; exit \$rc"
+    # perm_both under its OWN local uid: the kernel caches one GSS context
+    # per uid per server, so a kinit as `ubuntu` here would silently reuse
+    # perm_writer's context and prove nothing about perm_both.  The owner
+    # check on the NFS host confirms the write really ran as perm_both.
+    run_test "kinit as perm_both (own uid) on client" \
+        ssh_client "echo 'B0thPass!12345' | sudo -u perm_both kinit perm_both@SAMBA.TEST"
+    run_test "perm_both can write to perm_rw_share via NFS (own uid)" \
+        ssh_client "sudo -u perm_both sh -c 'echo both test > /data/perm_rw_share/both_file.txt'"
+    run_test "both_file.txt is owned by perm_both on the NFS host" \
+        ssh_nfs "sudo stat -c %U /data/perm_rw_share/both_file.txt | grep -qx perm_both"
+    run_test "kdestroy perm_both ticket" \
+        ssh_client "sudo -u perm_both kdestroy"
     run_test "perm_writer can write to perm_admin_share via NFS" \
         ssh_client "echo 'Wr1terPass!234' | kinit perm_writer@SAMBA.TEST && echo 'admin test' > /data/perm_admin_share/admin_file.txt; rc=\$?; kdestroy; exit \$rc"
+
+    # --- Deny cases ---------------------------------------------------------
+    # Both shares are 2770 root:ShareWriters.  perm_outsider is in no share
+    # group; perm_reader is in ShareReaders only, which has no grant on
+    # either directory.  Each identity gets its own uid and ticket; the kinit
+    # is asserted on its own, and the same ticket must open the
+    # 'public' share (0770 root:"Domain Users") -- so a denial below is the
+    # POSIX check, not a broken credential or mount.
+    local u pw
+    for u in perm_outsider perm_reader; do
+        case "$u" in
+            perm_outsider) pw='0utside!1234567' ;;
+            perm_reader)   pw='Read3rPass!234' ;;
+        esac
+        run_test "kinit as $u (own uid) on client" \
+            ssh_client "echo '$pw' | sudo -u $u kinit $u@SAMBA.TEST"
+        run_test "$u's ticket can list the Domain Users 'public' share" \
+            ssh_client "sudo -u $u ls /data/public/"
+        run_test_deny "$u cannot list perm_rw_share" \
+            ssh_client "sudo -u $u ls /data/perm_rw_share/"
+        run_test_deny "$u cannot write perm_rw_share" \
+            ssh_client "sudo -u $u touch /data/perm_rw_share/${u}_file.txt"
+        run_test_deny "$u cannot write perm_admin_share" \
+            ssh_client "sudo -u $u touch /data/perm_admin_share/${u}_file.txt"
+        run_test "$u's denied files do not exist on the NFS host" \
+            ssh_nfs "sudo test ! -e /data/perm_rw_share/${u}_file.txt && sudo test ! -e /data/perm_admin_share/${u}_file.txt"
+        run_test "kdestroy $u ticket" \
+            ssh_client "sudo -u $u kdestroy"
+    done
     diag_dump "end of test_permissions"
 }
 
@@ -394,6 +507,10 @@ test_autofs_kerberos() {
         ssh_client "ls /data/public/ && mount | grep 'public.*nfs4'"
     run_test "Autofs NFS mount carries the role's nconnect default" \
         ssh_client "grep -E ' /data/public nfs4 .*nconnect=4' /proc/mounts"
+    # The flavour the client actually negotiated, not just the one the map
+    # asks for: a weakened export + map pair would still mount and serve.
+    run_test "Autofs public mount negotiated sec=krb5p" \
+        ssh_client "grep -E ' /data/public nfs4 (.*,)?sec=krb5p[, ]' /proc/mounts"
     run_test "Write and read file via autofs-mounted public share" \
         ssh_client "echo 'autofs test content' > /data/public/autofs_test.txt && cat /data/public/autofs_test.txt && rm /data/public/autofs_test.txt"
     run_test "kdestroy perm_writer ticket" \
@@ -410,13 +527,76 @@ test_autofs_kerberos() {
         ssh_client "echo 'H0mePass1!2345' | sudo -u homeuser1 kinit homeuser1@SAMBA.TEST"
     run_test "Trigger autofs home mount for homeuser1 and verify NFS" \
         ssh_client "sudo -u homeuser1 ls /home/ad/homeuser1/ && mount | grep 'homeuser1.*nfs4'"
+    run_test "Autofs home mount negotiated sec=krb5p" \
+        ssh_client "grep -E ' /home/ad/homeuser1 nfs4 (.*,)?sec=krb5p[, ]' /proc/mounts"
     run_test "Write and read file via autofs-mounted home directory" \
         ssh_client "sudo -u homeuser1 bash -c 'echo autofs-home-test > /home/ad/homeuser1/autofs_home_test.txt && cat /home/ad/homeuser1/autofs_home_test.txt && rm /home/ad/homeuser1/autofs_home_test.txt'"
     run_test "kdestroy homeuser1 ticket" \
         ssh_client "sudo -u homeuser1 kdestroy"
 
+    # Home privacy over NFS: homes are 0700 under a root_squash krb5p
+    # export, so another authenticated user must be refused.  homeuser2's
+    # own ticket must first open homeuser2's own home (proving the
+    # credential and the auto.home mount path work), so the denial on
+    # homeuser1's home is the permission check and nothing else.
+    run_test "kinit as homeuser2 (own uid) on client" \
+        ssh_client "echo 'H0mePass2!3456' | sudo -u homeuser2 kinit homeuser2@SAMBA.TEST"
+    run_test "homeuser2 can list its own autofs home" \
+        ssh_client "sudo -u homeuser2 ls /home/ad/homeuser2/ && mount | grep 'homeuser2.*nfs4'"
+    run_test_deny "homeuser2 cannot list homeuser1's home" \
+        ssh_client "sudo -u homeuser2 ls /home/ad/homeuser1/"
+    run_test_deny "homeuser2 cannot write into homeuser1's home" \
+        ssh_client "sudo -u homeuser2 touch /home/ad/homeuser1/intruder.txt"
+    run_test "homeuser2's intruder file does not exist on the homes host" \
+        ssh_nfs "sudo test ! -e /home/ad/homeuser1/intruder.txt"
+    run_test "kdestroy homeuser2 ticket" \
+        ssh_client "sudo -u homeuser2 kdestroy"
+
     run_test "Verify pre-provisioned public share is accessible via autofs" \
         ssh_client "echo 'H0mePass1!2345' | kinit homeuser1@SAMBA.TEST && ls /data/public/ && kdestroy"
+}
+
+# Kerberos ticket renewal on domain members (sssd-client role: sssd.conf.j2 +
+# krb5-samba-ad.conf.j2, capped by the DC's kdc:renewal lifetime).  Without
+# it the TGT minted at login expires mid-session and every sec=krb5p access
+# returns "Key has expired" while the mount stays up on the machine
+# credential.  Both sssd.conf options are required because either one alone
+# does nothing.  The end-to-end kinit is the strong check: a plain kinit
+# (no -r) takes its window from the drop-in's renew_lifetime and the KDC
+# caps it at the DC ceiling, so >= 20 days fails on all three regressions --
+# drop-in entry gone (1 day), DC ceiling missing (Samba's 168h = 7 days), or
+# the ceiling written in the wrong unit (e.g. 30 hours).  A bare "renew
+# until" grep would not: the broken states still print one.  Needs
+# perm_writer (created in test_permissions_setup, removed by cleanup).
+test_client_kerberos_renewal() {
+    echo ""
+    echo "--- Client Kerberos Ticket Renewal ---"
+    local -a hosts=(client)
+    [[ "${SMB_TEST_MODE:-colocated}" == "separate" ]] && hosts+=(storage)
+    local h fn
+    for h in "${hosts[@]}"; do
+        fn=ssh_client
+        [[ "$h" == "storage" ]] && fn=ssh_nfs
+        run_test "${h}: sssd.conf requests renewable TGTs (krb5_renewable_lifetime = 30d)" \
+            "$fn" "sudo grep -qE '^krb5_renewable_lifetime = 30d$' /etc/sssd/sssd.conf"
+        run_test "${h}: sssd.conf renews them (krb5_renew_interval = 1h)" \
+            "$fn" "sudo grep -qE '^krb5_renew_interval = 1h$' /etc/sssd/sssd.conf"
+        run_test "${h}: krb5.conf.d drop-in sets renew_lifetime = 30d for manual kinit" \
+            "$fn" "grep -qE '^[[:space:]]*renew_lifetime = 30d$' /etc/krb5.conf.d/samba-ad.conf"
+        # Throwaway ccache so no other suite's default ccache (or the
+        # kernel's per-uid GSS context) is touched.  The kinit and the klist
+        # parse are asserted inside the same command so a failed kinit or an
+        # unparseable klist fails the check instead of reading as a pass.
+        # LC_ALL=C pins klist's date to %m/%d/%y, which `date -d` reads.
+        run_test "${h}: plain kinit is granted a renewable window of >= 20 days" \
+            "$fn" "cc=/tmp/renew-probe.\$\$; rm -f \$cc; export KRB5CCNAME=FILE:\$cc LC_ALL=C; \
+                   echo 'Wr1terPass!234' | kinit perm_writer@SAMBA.TEST >/dev/null || { echo 'kinit perm_writer failed' >&2; rm -f \$cc; exit 1; }; \
+                   ru=\$(klist | sed -n 's/^[[:space:]]*renew until //p' | head -1); kdestroy >/dev/null 2>&1; rm -f \$cc; \
+                   [ -n \"\$ru\" ] || { echo 'ticket is not renewable (no renew until line)' >&2; exit 1; }; \
+                   ts=\$(date -d \"\$ru\" +%s) || { echo \"unparseable renew until: \$ru\" >&2; exit 1; }; \
+                   left=\$(( ts - \$(date +%s) )); \
+                   [ \$left -ge \$((20*86400)) ] || { echo \"renew until \$ru is only \$((left/3600))h away (want >= 480h)\" >&2; exit 1; }"
+    done
 }
 
 test_password_policy() {
@@ -540,6 +720,34 @@ test_sudo_rules() {
     # silently inert no matter how correct the SSSD config is.
     run_test "client sudo implementation can consume SSSD rules (not sudo-rs)" \
         ssh_client "! sudo sudo -V 2>&1 | head -1 | grep -qi 'sudo-rs'"
+    # The client half of AD sudo delivery.  Each of these was removed or
+    # broken once and the suite stayed green: 79cd360 dropped the
+    # ldap_sudo_search_base pin as a "restated default" and SSSD's full
+    # refresh then downloaded 0 rules.  Pure state checks, same rationale as
+    # above.  sssd.conf is 0600, hence `sudo grep`.  The sssd-client role
+    # also runs on nfs_servers, so in separate mode the storage host renders
+    # the same wiring and is checked too (in colocated mode ssh_nfs is the
+    # DC, whose own sssd.conf deliberately carries no sudo provider).
+    local -a sudo_hosts=(client)
+    [[ "${SMB_TEST_MODE:-colocated}" == "separate" ]] && sudo_hosts+=(storage)
+    local sh sfn
+    for sh in "${sudo_hosts[@]}"; do
+        sfn=ssh_client
+        [[ "$sh" == "storage" ]] && sfn=ssh_nfs
+        run_test "${sh} sssd.conf sets sudo_provider = ad" \
+            "$sfn" "sudo grep -qx 'sudo_provider = ad' /etc/sssd/sssd.conf"
+        run_test "${sh} sssd.conf pins ldap_sudo_search_base to OU=SUDOers" \
+            "$sfn" "sudo grep -qx 'ldap_sudo_search_base = OU=SUDOers,DC=samba,DC=test' /etc/sssd/sssd.conf"
+        run_test "${sh} nsswitch routes sudoers through sss" \
+            "$sfn" "grep -qE '^sudoers:[[:space:]]+files[[:space:]]+sss([[:space:]]|\$)' /etc/nsswitch.conf"
+        run_test "${sh} has libsss-sudo installed" \
+            "$sfn" "dpkg-query -W -f='\${Status}' libsss-sudo 2>/dev/null | grep -q 'install ok installed'"
+    done
+    # The DC-side half of the same contract: the rule samba-sudorule.sh wrote
+    # must live under the base the clients are pinned to, so renaming
+    # SUDO_OU / samba_ous on only one side fails here.
+    run_test "sudo rule lives under the clients' pinned search base" \
+        ssh_dc "sudo ldbsearch -H /var/lib/samba/private/sam.ldb -b 'OU=SUDOers,DC=samba,DC=test' -s one '(cn=users-nopasswd)' dn 2>/dev/null | grep -qi '^dn: CN=users-nopasswd,OU=SUDOers,DC=samba,DC=test\$'"
     # Inline delete kept here so the verification "rules deleted" assertion
     # below runs in the same section.  The EXIT-trap cleanup also tries to
     # delete these, so an early failure still leaves the DC clean.
@@ -625,11 +833,20 @@ test_login_access_filter() {
 
     # samba-group.sh refuses to delete login-* groups without --force,
     # because those are SSSD anchor groups whose removal locks the host.
+    # The refusal must be the guard's own exit 4 plus its message -- a bare
+    # `!` also passed on a lookup failure (3) or an ERR-trap crash (1).
+    # The mixed-case attempt pins the case-insensitive match: AD resolves
+    # sAMAccountName case-insensitively, so a case-sensitive `login-*` test
+    # let `delete LOGIN-node01` find and delete a live anchor.  </dev/null
+    # makes a regressed guard fall through to confirm_action, read EOF and
+    # exit 0 (not 4) instead of hanging or deleting the group.
     run_test "Create probe anchor group login-delete-probe" \
         ssh_dc 'sudo samba-group.sh add login-delete-probe --description="anchor delete guard test"'
-    run_test "Delete of login-* without --force is refused" \
-        ssh_dc "! sudo samba-group.sh delete login-delete-probe"
-    run_test "login-delete-probe still exists after refused delete" \
+    run_test "Delete of login-* without --force is refused with exit 4 and the anchor warning" \
+        ssh_dc "out=\$(sudo samba-group.sh delete login-delete-probe </dev/null 2>&1); rc=\$?; test \$rc -eq 4 && printf '%s\\n' \"\$out\" | grep -q 'looks like a per-host SSSD login anchor'"
+    run_test "Mixed-case delete of login-* without --force is refused with exit 4" \
+        ssh_dc "out=\$(sudo samba-group.sh delete LOGIN-Delete-Probe </dev/null 2>&1); rc=\$?; test \$rc -eq 4 && printf '%s\\n' \"\$out\" | grep -q 'looks like a per-host SSSD login anchor'"
+    run_test "login-delete-probe still exists after both refused deletes" \
         ssh_dc 'sudo samba-tool group show login-delete-probe'
     run_test "Delete of login-* with --force succeeds" \
         ssh_dc 'sudo samba-group.sh delete login-delete-probe --force'
@@ -774,6 +991,15 @@ test_user_edge_cases() {
         ssh_dc "sudo samba-user.sh add edgeuser2 --group=NoSuchGroup --password=EdgePass123456 --force >/dev/null 2>&1; test \$? -eq 3 && ! sudo samba-tool user show edgeuser2 >/dev/null 2>&1"
     run_test "Reject too-short password (exit 2, user not created)" \
         ssh_dc "sudo samba-user.sh add shortpwuser --password=Short1 --force >/dev/null 2>&1; test \$? -eq 2 && ! sudo samba-tool user show shortpwuser >/dev/null 2>&1"
+    # LDIF injection guard (validate_ldif_value) at each samba-user.sh call
+    # site.  Every newline-bearing value is built ON the DC with printf --
+    # a local \$'...' would not survive ssh_dc's "\$*" flattening.  Each
+    # payload is a well-formed LDIF continuation, so with the guard removed
+    # it would apply cleanly (exit 0) rather than fail for another reason;
+    # the stderr match pins the rejection to the guard, not to some other
+    # exit-2 path.
+    run_test "add rejects newline in --office before creating the account" \
+        ssh_dc 'v=$(printf "HQ\n-\nreplace: title\ntitle: injected"); out=$(sudo samba-user.sh add injuser --office="$v" --password=EdgePass123456 --force 2>&1); rc=$?; test $rc -eq 2 && printf "%s" "$out" | grep -q "contains newline or carriage return" && ! sudo samba-tool user show injuser >/dev/null 2>&1'
     run_test "Show of nonexistent user exits 3" \
         ssh_dc "sudo samba-user.sh show nosuchuser123 >/dev/null 2>&1; test \$? -eq 3"
     run_test "modify with no attributes exits 2" \
@@ -792,6 +1018,16 @@ test_user_edge_cases() {
         ssh_dc "sudo samba-user.sh modify edgeuser --clear=bogus >/dev/null 2>&1; test \$? -eq 2"
     run_test "set and clear same attribute exits 2" \
         ssh_dc "sudo samba-user.sh modify edgeuser --title=X --clear=title >/dev/null 2>&1; test \$? -eq 2"
+    run_test "modify of nonexistent user exits 3" \
+        ssh_dc "sudo samba-user.sh modify nosuchuser123 --title=x >/dev/null 2>&1; test \$? -eq 3"
+    # title and description were both cleared above, so any value showing up
+    # in either attribute below can only have come from an injected stanza.
+    run_test "modify rejects newline in --title (exit 2, nothing injected)" \
+        ssh_dc 'v=$(printf "x\n-\nreplace: description\ndescription: injected"); out=$(sudo samba-user.sh modify edgeuser --title="$v" 2>&1); rc=$?; test $rc -eq 2 && printf "%s" "$out" | grep -q "contains newline or carriage return" && d=$(sudo ldbsearch -H /var/lib/samba/private/sam.ldb "(sAMAccountName=edgeuser)" title description) && printf "%s" "$d" | grep -q "^dn: " && ! printf "%s" "$d" | grep -qE "^(title|description):"'
+    run_test "modify rejects carriage return in --title (exit 2)" \
+        ssh_dc 'v=$(printf "x\rdescription: injected"); out=$(sudo samba-user.sh modify edgeuser --title="$v" 2>&1); rc=$?; test $rc -eq 2 && printf "%s" "$out" | grep -q "contains newline or carriage return" && d=$(sudo ldbsearch -H /var/lib/samba/private/sam.ldb "(sAMAccountName=edgeuser)" title description) && printf "%s" "$d" | grep -q "^dn: " && ! printf "%s" "$d" | grep -qE "^(title|description):"'
+    run_test "modify rejects leading-colon and leading-< values (exit 2)" \
+        ssh_dc 'for v in ":evil" "<x"; do out=$(sudo samba-user.sh modify edgeuser --title="$v" 2>&1); rc=$?; test $rc -eq 2 || exit 1; printf "%s" "$out" | grep -q "leading space" || exit 1; done; d=$(sudo ldbsearch -H /var/lib/samba/private/sam.ldb "(sAMAccountName=edgeuser)" title) && printf "%s" "$d" | grep -q "^dn: " && ! printf "%s" "$d" | grep -q "^title:"'
     run_test "modify --must-change-pw sets pwdLastSet=0" \
         ssh_dc "sudo samba-user.sh modify edgeuser --must-change-pw && sudo ldbsearch -H /var/lib/samba/private/sam.ldb '(sAMAccountName=edgeuser)' pwdLastSet | grep -q '^pwdLastSet: 0$'"
     run_test "set-expiry --days sets a finite expiry" \
@@ -812,6 +1048,13 @@ test_user_edge_cases() {
         ssh_dc "printf '%s\n' '${TEST_SSH_KEY}' | sudo tee /tmp/edgekey.pub >/dev/null && sudo samba-user.sh add-sshkey edgeuser --key-file=/tmp/edgekey.pub && sudo rm -f /tmp/edgekey.pub"
     run_test "key-file key is listed" \
         ssh_dc "sudo samba-user.sh list-sshkeys edgeuser | grep -Fq '${TEST_SSH_KEY_COMMENT}'"
+    # One key is on edgeuser now; a rejected add/remove must leave the list
+    # exactly as it is.  The snapshot must itself contain that key, so an
+    # empty-vs-empty comparison can't pass by accident.
+    run_test "add-sshkey rejects newline and leading-< keys (key list unchanged)" \
+        ssh_dc "before=\$(sudo samba-user.sh list-sshkeys edgeuser) && printf '%s' \"\$before\" | grep -Fq '${TEST_SSH_KEY_COMMENT}' || exit 1; v=\$(printf 'ssh-ed25519 AAAAinj x\naltSecurityIdentities: injected'); out=\$(sudo samba-user.sh add-sshkey edgeuser --key=\"\$v\" 2>&1); r1=\$?; printf '%s' \"\$out\" | grep -q 'contains newline or carriage return' || exit 1; sudo samba-user.sh add-sshkey edgeuser --key='<x' >/dev/null 2>&1; r2=\$?; test \$r1 -eq 2 && test \$r2 -eq 2 && test \"\$before\" = \"\$(sudo samba-user.sh list-sshkeys edgeuser)\""
+    run_test "remove-sshkey rejects newline in --key (key list unchanged)" \
+        ssh_dc "before=\$(sudo samba-user.sh list-sshkeys edgeuser) && printf '%s' \"\$before\" | grep -Fq '${TEST_SSH_KEY_COMMENT}' || exit 1; v=\$(printf 'ssh-ed25519 AAAAinj x\naltSecurityIdentities: injected'); out=\$(sudo samba-user.sh remove-sshkey edgeuser --key=\"\$v\" 2>&1); rc=\$?; test \$rc -eq 2 && printf '%s' \"\$out\" | grep -q 'contains newline or carriage return' && test \"\$before\" = \"\$(sudo samba-user.sh list-sshkeys edgeuser)\""
     run_test "add-sshkey with missing file exits 2" \
         ssh_dc "sudo samba-user.sh add-sshkey edgeuser --key-file=/tmp/no-such-key.pub >/dev/null 2>&1; test \$? -eq 2"
     run_test "Remove key-file key" \
@@ -862,6 +1105,10 @@ test_group_edge_cases() {
         ssh_dc "sudo ldbsearch -H /var/lib/samba/private/sam.ldb '(sAMAccountName=GidGroup)' gidNumber | grep -q '^gidNumber: 15001'"
     run_test "gidNumber stays paired with msSFU30NisDomain" \
         ssh_dc "sudo ldbsearch -H /var/lib/samba/private/sam.ldb '(sAMAccountName=GidGroup)' msSFU30NisDomain | grep -qi '^msSFU30NisDomain: '"
+    # LDIF injection guard on --description: the payload would replace
+    # gidNumber with 0 (root's group) if the guard were dropped.
+    run_test "group modify rejects newline in --description (gidNumber unchanged)" \
+        ssh_dc 'v=$(printf "d\n-\nreplace: gidNumber\ngidNumber: 0"); out=$(sudo samba-group.sh modify GidGroup --description="$v" 2>&1); rc=$?; test $rc -eq 2 && printf "%s" "$out" | grep -q "contains newline or carriage return" && d=$(sudo ldbsearch -H /var/lib/samba/private/sam.ldb "(sAMAccountName=GidGroup)" gidNumber description) && printf "%s" "$d" | grep -qx "gidNumber: 15001" && printf "%s" "$d" | grep -qx "description: updated gid group"'
     run_test "group modify --gid=0 exits 2" \
         ssh_dc "sudo samba-group.sh modify GidGroup --gid=0 >/dev/null 2>&1; test \$? -eq 2"
     run_test "group modify with no attributes exits 2" \
@@ -913,6 +1160,12 @@ test_sudorule_extended() {
         ssh_dc "sudo samba-sudorule.sh modify edge-rule --order=7"
     run_test "sudoOrder replaced, not appended" \
         ssh_dc "sudo samba-sudorule.sh show edge-rule | grep -q 'sudoOrder: 7' && ! sudo samba-sudorule.sh show edge-rule | grep -q 'sudoOrder: 5'"
+    # LDIF injection guard (_validate_sudo_attrs -> validate_ldif_value).  A
+    # dropped guard would let a newline smuggle "sudoUser: ALL" into the rule.
+    run_test "add rejects newline in --user (exit 2, rule not created)" \
+        ssh_dc 'v=$(printf "edgeuser\nsudoUser: ALL"); out=$(sudo samba-sudorule.sh add inj-rule --user="$v" 2>&1); rc=$?; test $rc -eq 2 && printf "%s" "$out" | grep -q "contains newline or carriage return" && l=$(sudo samba-sudorule.sh list) && printf "%s" "$l" | grep -qx edge-rule && ! printf "%s" "$l" | grep -qx inj-rule'
+    run_test "modify rejects newline in --command (rule unchanged)" \
+        ssh_dc 'v=$(printf "/usr/bin/id\nsudoUser: ALL"); out=$(sudo samba-sudorule.sh modify edge-rule --command="$v" 2>&1); rc=$?; test $rc -eq 2 && printf "%s" "$out" | grep -q "contains newline or carriage return" && r=$(sudo samba-sudorule.sh show edge-rule) && printf "%s" "$r" | grep -q "sudoCommand: /usr/bin/id" && ! printf "%s" "$r" | grep -q "sudoUser: ALL"'
     run_test "Duplicate rule creation fails" \
         ssh_dc "! sudo samba-sudorule.sh add edge-rule --user=edgeuser"
     run_test "Rule without --user exits 2" \
@@ -985,6 +1238,46 @@ test_share_edge_cases() {
         ssh_dc "sudo samba-automount.sh add-share edgeshare"
     run_test "Duplicate add-share fails" \
         ssh_dc "! sudo samba-automount.sh add-share edgeshare"
+
+    # NFS_SYNC_MODE lands verbatim in /etc/exports.d/*.exports, and exportfs -ra
+    # fails on an unknown option for EVERY export on the host -- so add-share and
+    # the auto.shares map-edit export rewrite must reject it (exit 2) before any
+    # side effect.  The bad value has to come from a config FILE: config.sh
+    # exports the file's NFS_SYNC_MODE over any environment value.  The grep in
+    # the staging step guards against a silent sed no-match, which would run
+    # the commands below against the valid config and pass on a regression.
+    local bad_conf=/root/bad-sync.conf
+    run_test "Stage config copy with NFS_SYNC_MODE=bogus" \
+        ssh_dc "sudo sh -c \"sed 's/^NFS_SYNC_MODE=.*/NFS_SYNC_MODE=bogus/' /opt/samba-management/config/samba-mgmt.conf > ${bad_conf} && chmod 0600 ${bad_conf} && grep -qx 'NFS_SYNC_MODE=bogus' ${bad_conf}\""
+    run_test "badsync absent before the rejected add-share (precondition)" \
+        ssh_nfs "! test -e /etc/exports.d/badsync.exports && ! test -e /data/badsync"
+    run_test "add-share rejects invalid NFS_SYNC_MODE (exit 2)" \
+        ssh_dc "out=\$(sudo env CONFIG_FILE=${bad_conf} samba-automount.sh add-share badsync 2>&1); rc=\$?; test \$rc -eq 2 && printf '%s\\n' \"\$out\" | grep -q 'Invalid NFS_SYNC_MODE'"
+    run_test "Invalid NFS_SYNC_MODE left no badsync export or directory" \
+        ssh_nfs "! test -e /etc/exports.d/badsync.exports && ! test -e /data/badsync"
+    run_test "Invalid NFS_SYNC_MODE left no badsync auto.shares entry" \
+        ssh_dc "! sudo samba-automount.sh list auto.shares | grep -qE '^badsync[[:space:]]'"
+
+    # Map-edit path: a sec= change on edgeshare (same host and path, so the
+    # server/path validators pass) reaches _sync_share_export's
+    # validate_sync_mode.  Entry and export are captured first and compared
+    # after, so the rejection is shown to have touched neither.
+    local edge_entry edge_export_sum
+    edge_entry=$(ssh_dc "sudo samba-automount.sh show auto.shares edgeshare" 2>/dev/null \
+        | sed -n 's/^nisMapEntry: //p') || true
+    edge_export_sum=$(ssh_nfs "md5sum < /etc/exports.d/edgeshare.exports" 2>/dev/null) || true
+    run_test "edgeshare entry carries sec=krb5p (precondition)" \
+        test "${edge_entry/sec=krb5p/}" != "$edge_entry"
+    run_test "edgeshare export file is readable (precondition)" \
+        test -n "$edge_export_sum"
+    run_test "modify auto.shares rejects invalid NFS_SYNC_MODE (exit 2)" \
+        ssh_dc "out=\$(sudo env CONFIG_FILE=${bad_conf} samba-automount.sh modify auto.shares edgeshare --value='${edge_entry/sec=krb5p/sec=krb5i}' 2>&1); rc=\$?; test \$rc -eq 2 && printf '%s\\n' \"\$out\" | grep -q 'Invalid NFS_SYNC_MODE'"
+    run_test "Rejected modify left the edgeshare export unchanged" \
+        test "$(ssh_nfs "md5sum < /etc/exports.d/edgeshare.exports" 2>/dev/null || true)" = "$edge_export_sum"
+    run_test "Rejected modify left the edgeshare map entry unchanged" \
+        test "$(ssh_dc "sudo samba-automount.sh show auto.shares edgeshare" 2>/dev/null | sed -n 's/^nisMapEntry: //p' || true)" = "$edge_entry"
+    run_test "Remove staged bad NFS_SYNC_MODE config" \
+        ssh_dc "sudo rm -f ${bad_conf}"
     run_test "Create pathshare with custom --path" \
         ssh_dc "sudo samba-automount.sh add-share pathshare --path=/data/custom_pathshare"
     run_test "pathshare export references the custom path" \
@@ -997,10 +1290,174 @@ test_share_edge_cases() {
         ssh_nfs "! test -f /etc/exports.d/pathshare.exports && test -d /data/custom_pathshare"
     run_test "Remove preserved pathshare data" \
         ssh_nfs "sudo rm -rf /data/custom_pathshare"
+
+    # delete-share --remove-data reads the path back from the AD entry and
+    # rm -rf's it on the serving host.  A non-NFS entry's path never passed
+    # validate_export_path (add-entry/modify skip the export sync for it), so
+    # the guard just before the rm is all that stands between an entry like
+    # '-fstype=cifs host:/' and `rm -rf /`.  The paths below are ones the guard
+    # must reject but that are harmless if it regresses: without it, rm deletes
+    # the canary ('..' is not the LAST component) and the command exits 0, and
+    # the entry is gone -- all three assertions per case fail.  The entries
+    # name the real serving host, so a regressed rm lands where the canary is.
+    local nfs_host
+    nfs_host=$(ssh_dc "sudo samba-automount.sh show auto.shares edgeshare" 2>/dev/null \
+        | sed -n 's|^nisMapEntry: .* \([^ :]*\):/data/edgeshare$|\1|p') || true
+    run_test "edgeshare entry names its serving host (precondition)" \
+        test -n "$nfs_host"
+    run_test "Create /tmp/rmguard/canary on the NFS host" \
+        ssh_nfs "sudo mkdir -p /tmp/rmguard && sudo touch /tmp/rmguard/canary && test -f /tmp/rmguard/canary"
+    run_test "add-entry cifs guarddot with a '..' path" \
+        ssh_dc "sudo samba-automount.sh add-entry auto.shares guarddot --value='-fstype=cifs ${nfs_host}:/tmp/rmguard/../rmguard/canary'"
+    run_test "guarddot entry present (precondition)" \
+        ssh_dc "sudo samba-automount.sh list auto.shares | grep -qE '^guarddot[[:space:]]'"
+    run_test "delete-share --remove-data rejects a '..' path (exit 2)" \
+        ssh_dc "out=\$(sudo samba-automount.sh delete-share guarddot --remove-data --force 2>&1); rc=\$?; test \$rc -eq 2 && printf '%s\\n' \"\$out\" | grep -q 'Invalid --path'"
+    run_test "'..' path guard left the canary in place" \
+        ssh_nfs "test -f /tmp/rmguard/canary"
+    run_test "'..' path guard ran before the entry was deleted" \
+        ssh_dc "sudo samba-automount.sh list auto.shares | grep -qE '^guarddot[[:space:]]'"
+
+    run_test "Create /data/bad@path on the NFS host" \
+        ssh_nfs "sudo mkdir -p '/data/bad@path' && test -d '/data/bad@path'"
+    run_test "add-entry cifs guardat with a bad-charset path" \
+        ssh_dc "sudo samba-automount.sh add-entry auto.shares guardat --value='-fstype=cifs ${nfs_host}:/data/bad@path'"
+    run_test "guardat entry present (precondition)" \
+        ssh_dc "sudo samba-automount.sh list auto.shares | grep -qE '^guardat[[:space:]]'"
+    run_test "delete-share --remove-data rejects a bad-charset path (exit 2)" \
+        ssh_dc "out=\$(sudo samba-automount.sh delete-share guardat --remove-data --force 2>&1); rc=\$?; test \$rc -eq 2 && printf '%s\\n' \"\$out\" | grep -q 'Invalid --path'"
+    run_test "Bad-charset path guard left /data/bad@path in place" \
+        ssh_nfs "test -d '/data/bad@path'"
+    run_test "Bad-charset path guard ran before the entry was deleted" \
+        ssh_dc "sudo samba-automount.sh list auto.shares | grep -qE '^guardat[[:space:]]'"
+
+    # The NFS-side guard: an nfs entry is validated by _sync_share_export
+    # before its export is written, and the export goes before the map entry.
+    run_test "add-entry nfs4 entry targeting host:/ rejected (exit 2)" \
+        ssh_dc "out=\$(sudo samba-automount.sh add-entry auto.shares badroot --value='-fstype=nfs4,sec=krb5p ${nfs_host}:/' 2>&1); rc=\$?; test \$rc -eq 2 && printf '%s\\n' \"\$out\" | grep -q 'Invalid --path'"
+    run_test "Rejected badroot entry was not created" \
+        ssh_dc "! sudo samba-automount.sh list auto.shares | grep -qE '^badroot[[:space:]]'"
+    run_test "Rejected badroot wrote no export" \
+        ssh_nfs "! test -e /etc/exports.d/badroot.exports"
+
+    run_test "Remove guard test entries (cifs: no export, no ssh)" \
+        ssh_dc "sudo samba-automount.sh delete-entry auto.shares guarddot --force && sudo samba-automount.sh delete-entry auto.shares guardat --force"
+    run_test "Remove guard test data" \
+        ssh_nfs "sudo rm -rf /tmp/rmguard '/data/bad@path'"
+
     run_test "Delete edgeshare with --remove-data" \
         ssh_dc "sudo samba-automount.sh delete-share edgeshare --remove-data --force"
     run_test "delete-share of nonexistent share exits 3" \
         ssh_dc "sudo samba-automount.sh delete-share nosuchshare --force >/dev/null 2>&1; test \$? -eq 3"
+}
+
+# auto.shares map edits must carry the NFS export with them.  add-share writes
+# the same host/path/sec into the AD entry and /etc/exports.d/<name>.exports,
+# so add-entry / modify / delete-entry on an auto.shares NFS entry rewrite or
+# withdraw that export (_sync_share_export / _remove_share_export).  Every
+# check reads the export file or `exportfs -v` on the serving host, so a
+# map-only edit, a dropped fsid=, a sync export flipped to async, an orphaned
+# export, or an ssh to a host named by a non-NFS / target-less entry all fail.
+test_share_map_export_sync() {
+    echo ""
+    echo "--- auto.shares Map Edits Carry the NFS Export ---"
+    local f=/etc/exports.d/syncshare.exports
+
+    run_test "Create syncshare via add-share --fsid=150" \
+        ssh_dc "sudo samba-automount.sh add-share syncshare --fsid=150"
+    # The host exactly as add-share recorded it (NFS_SERVER: the DC's FQDN
+    # colocated, the short 'storage01' in separate mode).  Reusing it keeps the
+    # modify below a same-host edit rather than a host move.
+    local nfs_host
+    nfs_host=$(ssh_dc "sudo samba-automount.sh show auto.shares syncshare" 2>/dev/null \
+        | sed -n 's|^nisMapEntry: .* \([^ :]*\):/data/syncshare$|\1|p') || true
+    run_test "syncshare entry names its serving host (precondition)" \
+        test -n "$nfs_host"
+
+    # Hand-set the export to sync: a rewrite must keep the operator's choice
+    # instead of reverting to the async default.
+    run_test "Hand-edit syncshare export to sync and re-export" \
+        ssh_nfs "sudo sed -i -E 's/(^|[(,])async([,)])/\1sync\2/' ${f} && sudo exportfs -ra"
+    run_test "syncshare export is sync with fsid=150 (precondition)" \
+        ssh_nfs "grep -qE '[(,]sync[,)]' ${f} && ! grep -qE '[(,]async[,)]' ${f} && grep -q 'fsid=150' ${f}"
+    run_test "Kernel exports /data/syncshare (precondition)" \
+        ssh_nfs "sudo exportfs -v | grep -qE '^/data/syncshare([[:space:]]|\$)'"
+    # exportfs never exports a path that does not exist, so the new target is
+    # created up front; modify itself only re-exports.
+    run_test "Create /data/syncshare_v2 on the NFS host" \
+        ssh_nfs "sudo mkdir -p /data/syncshare_v2"
+
+    run_test "modify auto.shares syncshare (new path + sec=krb5i)" \
+        ssh_dc "sudo samba-automount.sh modify auto.shares syncshare --value='-fstype=nfs4,sec=krb5i ${nfs_host}:/data/syncshare_v2'"
+    run_test "AD entry now names /data/syncshare_v2 with sec=krb5i" \
+        ssh_dc "sudo samba-automount.sh show auto.shares syncshare | grep -q 'nisMapEntry:.*sec=krb5i .*:/data/syncshare_v2\$'"
+    run_test "Export file rewritten to /data/syncshare_v2" \
+        ssh_nfs "grep -q '^/data/syncshare_v2 ' ${f}"
+    run_test "Rewritten export carries sec=krb5i" \
+        ssh_nfs "grep -q 'sec=krb5i' ${f} && ! grep -q 'sec=krb5p' ${f}"
+    run_test "Rewritten export kept the pinned fsid=150" \
+        ssh_nfs "grep -q 'fsid=150' ${f}"
+    run_test "Rewritten export kept the hand-set sync (not async)" \
+        ssh_nfs "grep -qE '[(,]sync[,)]' ${f} && ! grep -qE '[(,]async[,)]' ${f}"
+    run_test "Kernel exports /data/syncshare_v2" \
+        ssh_nfs "sudo exportfs -v | grep -qE '^/data/syncshare_v2([[:space:]]|\$)'"
+    run_test "Kernel no longer exports the old /data/syncshare" \
+        ssh_nfs "! sudo exportfs -v | grep -qE '^/data/syncshare([[:space:]]|\$)'"
+
+    run_test "delete-entry auto.shares syncshare" \
+        ssh_dc "sudo samba-automount.sh delete-entry auto.shares syncshare --force"
+    run_test "syncshare entry gone from auto.shares" \
+        ssh_dc "! sudo samba-automount.sh list auto.shares | grep -q '^syncshare'"
+    run_test "delete-entry withdrew the syncshare export file" \
+        ssh_nfs "! test -e ${f}"
+    run_test "Kernel no longer exports /data/syncshare_v2" \
+        ssh_nfs "! sudo exportfs -v | grep -qE '^/data/syncshare_v2([[:space:]]|\$)'"
+    run_test "delete-entry preserved the share data directories" \
+        ssh_nfs "test -d /data/syncshare && test -d /data/syncshare_v2"
+
+    # add-entry on a fresh NFS entry deploys an export with add-share's
+    # defaults (async) since no export file exists yet.
+    run_test "newentry export absent before add-entry (precondition)" \
+        ssh_nfs "! test -e /etc/exports.d/newentry.exports"
+    run_test "Create /data/newentry on the NFS host" \
+        ssh_nfs "sudo mkdir -p /data/newentry"
+    run_test "add-entry auto.shares newentry (NFS)" \
+        ssh_dc "sudo samba-automount.sh add-entry auto.shares newentry --value='-fstype=nfs4,sec=krb5p ${nfs_host}:/data/newentry'"
+    run_test "newentry entry present in auto.shares" \
+        ssh_dc "sudo samba-automount.sh list auto.shares | grep -q '^newentry'"
+    run_test "add-entry deployed newentry export (path, sec=krb5p, async default)" \
+        ssh_nfs "grep -q '^/data/newentry ' /etc/exports.d/newentry.exports && grep -q 'sec=krb5p' /etc/exports.d/newentry.exports && grep -qE '[(,]async[,)]' /etc/exports.d/newentry.exports"
+    run_test "Kernel exports /data/newentry" \
+        ssh_nfs "sudo exportfs -v | grep -qE '^/data/newentry([[:space:]]|\$)'"
+    run_test "delete-entry auto.shares newentry" \
+        ssh_dc "sudo samba-automount.sh delete-entry auto.shares newentry --force"
+    run_test "delete-entry withdrew the newentry export" \
+        ssh_nfs "! test -e /etc/exports.d/newentry.exports && ! sudo exportfs -v | grep -qE '^/data/newentry([[:space:]]|\$)'"
+
+    # A non-NFS entry has no export and must not ssh to the host it names: an
+    # attempt at the unresolvable .invalid host would exit non-zero.
+    run_test "add-entry auto.shares cifs entry exits 0 (no ssh to its host)" \
+        ssh_dc "timeout 60 sudo samba-automount.sh add-entry auto.shares cifsentry --value='-fstype=cifs nosuchhost.invalid:/x'"
+    run_test "cifsentry entry present in auto.shares" \
+        ssh_dc "sudo samba-automount.sh list auto.shares | grep -q '^cifsentry'"
+    run_test "cifs entry wrote no export" \
+        ssh_nfs "! test -e /etc/exports.d/cifsentry.exports"
+    run_test "delete-entry of the cifs entry exits 0 (no ssh to its host)" \
+        ssh_dc "timeout 60 sudo samba-automount.sh delete-entry auto.shares cifsentry --force"
+
+    # An NFS entry with no host:/path target warns and touches nothing; the
+    # old IFS-read parser shifted sec= into the server slot and ssh'd 'krb5p'.
+    run_test "add-entry with no host:/path target exits 0 and warns" \
+        ssh_dc "out=\$(timeout 60 sudo samba-automount.sh add-entry auto.shares notarget --value='-fstype=nfs4,sec=krb5p' 2>&1) && printf '%s\n' \"\$out\" | grep -q 'no host:/path target'"
+    run_test "notarget entry present in auto.shares" \
+        ssh_dc "sudo samba-automount.sh list auto.shares | grep -q '^notarget'"
+    run_test "Target-less entry wrote no export" \
+        ssh_nfs "! test -e /etc/exports.d/notarget.exports"
+    run_test "delete-entry of the target-less entry exits 0" \
+        ssh_dc "timeout 60 sudo samba-automount.sh delete-entry auto.shares notarget --force"
+
+    run_test "Remove syncshare/newentry test data" \
+        ssh_nfs "sudo rm -rf /data/syncshare /data/syncshare_v2 /data/newentry"
 }
 
 # --dry-run must preview without side effects and must never prompt.
@@ -1047,11 +1504,177 @@ _run_client_healthcheck() {
         < "${SCRIPT_DIR}/../client/linux/healthcheck.sh"
 }
 
+# The run above pins REALM and DC_HOST, so detect_realm (realm list / sssd.conf)
+# and detect_dc (the _ldap._tcp SRV parse) return immediately and never run --
+# yet unset is how the deployed /usr/local/sbin/domain-healthcheck.sh is
+# normally invoked.  Run it as root (sssd.conf is 0600, the fallback source)
+# with neither set.  rc 0 alone is not enough: an empty DC_HOST makes the
+# script SKIP the DC A-record and DC port checks rather than fail them, so the
+# detected values are asserted from the Configuration block, and the DC
+# A-record check must have actually run and passed.
+_run_client_healthcheck_autodetect() {
+    local nfs_host="dc01.samba.test"
+    [[ "${SMB_TEST_MODE:-colocated}" == "separate" ]] && nfs_host="storage01.samba.test"
+    local out rc bad=0
+    out=$(ssh_client "sudo env NFS_HOST=${nfs_host} HEALTHCHECK_TEST_USER=Administrator bash -s" \
+        < "${SCRIPT_DIR}/../client/linux/healthcheck.sh" 2>&1) && rc=0 || rc=$?
+    [[ $rc -eq 0 ]] || { echo "healthcheck.sh exited rc=${rc}"; bad=1; }
+    grep -qiE '^ *Realm: +samba\.test *$' <<<"$out" \
+        || { echo "realm not auto-detected as SAMBA.TEST"; bad=1; }
+    grep -qE '^ *DC Host: +dc01\.samba\.test *$' <<<"$out" \
+        || { echo "DC not auto-detected from SRV as dc01.samba.test (no trailing dot)"; bad=1; }
+    grep -qE 'PASS.* DNS A record for DC' <<<"$out" \
+        || { echo "DC A-record check did not run/pass"; bad=1; }
+    if [[ $bad -ne 0 ]]; then
+        grep -E 'Realm:|DC Host:|NFS Host:|FAIL|Results' <<<"$out" | head -12
+        return 1
+    fi
+}
+
 test_client_healthcheck() {
     echo ""
     echo "--- Client Healthcheck Script ---"
     run_test "healthcheck.sh passes on the client (all hard checks)" \
         _run_client_healthcheck
+    run_test "healthcheck.sh auto-detects realm and DC (SRV) when REALM/DC_HOST unset" \
+        _run_client_healthcheck_autodetect
+}
+
+# --- samba-healthcheck role (healthcheck.yml) --------------------------------
+# provision.sh runs healthcheck.yml once with the pinned group_vars names, so it
+# only ever sees the PASS path.  Nothing exercised the role's failure
+# machinery: the final assert, the wait_for probes' ignore_errors (reverting to
+# failed_when: false makes every port render OPEN and never trips the assert),
+# and the healthcheck_fail_on_error / healthcheck_require_nfs gates.  These
+# runs drive each of them from the control node with extra-vars, which beat
+# setup.sh's group_vars.  The bogus names are under the AD zone, so the DC
+# answers NXDOMAIN immediately and each probe fails within its 5s timeout.
+#
+# JSON result format: the test ansible.cfg uses YAML, whose serializer wraps
+# long strings near 80 columns and would split the assert message mid-phrase.
+_healthcheck_role() {
+    ANSIBLE_CONFIG="${SCRIPT_DIR}/ansible.cfg" ANSIBLE_CALLBACK_RESULT_FORMAT=json \
+        ansible-playbook -i "${SCRIPT_DIR}/inventory.yml" "$@" \
+        "${SCRIPT_DIR}/../ansible/playbooks/healthcheck.yml" < /dev/null 2>&1
+}
+
+# _hc_expect <ok|fail> <grep -E patterns that must match...> [-- <patterns that
+# must NOT match...>] ::: <ansible-playbook args...>
+# Checks the exit status AND the output, so a run that fails (or passes) for
+# a reason other than the one under test does not count.
+_hc_expect() {
+    local want="$1"; shift
+    local -a must=() mustnot=()
+    local mode=must
+    while [[ $# -gt 0 && "$1" != ":::" ]]; do
+        if [[ "$1" == "--" ]]; then mode=mustnot; shift; continue; fi
+        if [[ "$mode" == must ]]; then must+=("$1"); else mustnot+=("$1"); fi
+        shift
+    done
+    shift  # :::
+    local out rc p bad=0
+    out=$(_healthcheck_role "$@") && rc=0 || rc=$?
+    if [[ "$want" == ok && $rc -ne 0 ]]; then
+        echo "expected healthcheck.yml rc 0, got rc=${rc}"; bad=1
+    elif [[ "$want" == fail && $rc -eq 0 ]]; then
+        echo "expected healthcheck.yml to fail, got rc 0"; bad=1
+    fi
+    for p in "${must[@]}"; do
+        grep -qE -- "$p" <<<"$out" || { echo "missing from output: ${p}"; bad=1; }
+    done
+    for p in "${mustnot[@]}"; do
+        ! grep -qE -- "$p" <<<"$out" || { echo "unexpected in output: ${p}"; bad=1; }
+    done
+    if [[ $bad -ne 0 ]]; then
+        grep -E 'Healthcheck FAILED|port 2049|port 88|DNS A record|PLAY RECAP|failed=' <<<"$out" | head -8
+        return 1
+    fi
+}
+
+test_healthcheck_role() {
+    echo ""
+    echo "--- Healthcheck Role (healthcheck.yml) ---"
+    local realm="${SMB_TEST_REALM,,}"
+    local client="${SMB_TEST_CLIENT_IP}"
+    local realm_re="${realm//./\\.}"
+
+    # Auto-discovery (empty healthcheck_dc_hostname -> DC from the _ldap._tcp
+    # SRV answer) on every host.  A fallback to the host's own hostname would
+    # make the client and storage host probe themselves and fail here.  The
+    # role's last-resort literal is also dc01.<realm>, so `[dc01...]` in the
+    # summary alone can't prove the SRV parse worked: -v prints the set_fact
+    # result, and the SRV-derived fact itself must carry the DC's name.
+    run_test "healthcheck.yml passes on all hosts with the DC auto-discovered from SRV" \
+        _hc_expect ok "\"_healthcheck_srv_dc\": \" *dc01\\.${realm_re}\"" "\\[dc01\\.${realm_re}\\]" \
+            -- "Healthcheck FAILED" \
+        ::: -v -e '{"healthcheck_dc_hostname": ""}'
+
+    # Unreachable DC: the assert must fire and must name the closed port --
+    # that string is what disappears if the probes regress to failed_when: false
+    # (rc alone would stay non-zero from the failed A-record lookup).
+    run_test "healthcheck.yml fails on the client when the DC is unreachable" \
+        _hc_expect fail "Healthcheck FAILED on ${client//./\\.}" "DC port 88 \\(Kerberos\\) closed" \
+            "DC port 53 \\(DNS\\) closed" \
+        ::: --limit "$client" -e healthcheck_dc_hostname=nosuchdc
+
+    # Same broken target with healthcheck_fail_on_error=false: still reports
+    # CLOSED (the probe really failed) but the play exits 0.
+    run_test "healthcheck_fail_on_error=false reports CLOSED but exits 0" \
+        _hc_expect ok "DC port 88 \\(Kerberos\\): CLOSED" -- "Healthcheck FAILED" \
+        ::: --limit "$client" -e healthcheck_dc_hostname=nosuchdc -e healthcheck_fail_on_error=false
+
+    # Unreachable NFS host with a good DC: 2049 is the ONLY hard failure, which
+    # is what makes the require_nfs=false run below a test of that gate alone.
+    run_test "healthcheck.yml fails on the client when NFS port 2049 is unreachable" \
+        _hc_expect fail "NFS port 2049 closed on nosuchnfs\\.${realm_re}" \
+            -- "DC port 88 \\(Kerberos\\) closed" "DC port 53 \\(DNS\\) closed" "DNS A record for" \
+        ::: --limit "$client" -e healthcheck_nfs_server=nosuchnfs
+
+    run_test "healthcheck_require_nfs=false demotes a closed 2049 to informational" \
+        _hc_expect ok "NFS port 2049: +CLOSED +\\[nosuchnfs\\.${realm_re}\\]" -- "Healthcheck FAILED" \
+        ::: --limit "$client" -e healthcheck_nfs_server=nosuchnfs -e healthcheck_require_nfs=false
+
+    # The production case 9328e98 fixed: a member with sssd_dc_hostname unset
+    # and healthcheck_dc_hostname left to its role default (setup.sh no longer
+    # pins either healthcheck_* identity var).  The first run in this suite
+    # overrides healthcheck_dc_hostname itself, so a self-hostname fallback put back into
+    # its DEFAULT (e.g. `sssd_dc_hostname | default(ansible_facts['hostname'],
+    # true)`) would sail through it; this run leaves the default in force.
+    # healthcheck_realm is also unpinned, so the SRV fact naming the DC proves
+    # the realm derivation too (a broken one falls to example.internal, whose
+    # SRV lookup returns nothing).  Every host's summary must name dc01 -- the
+    # count is checked so one host printing it can't stand in for all of them.
+    run_test "healthcheck.yml with sssd_dc_hostname unset: every host probes dc01, none itself" \
+        _hc_dc_on_every_host
+}
+
+# Runs healthcheck.yml with sssd_dc_hostname blanked (JSON form, so the value is
+# "" rather than the string '""') and checks rc, the derived realm, the SRV
+# fact, and that the DC A-record line names dc01 once per inventory host.
+_hc_dc_on_every_host() {
+    local realm_re="${SMB_TEST_REALM,,}"; realm_re="${realm_re//./\\.}"
+    local want_hosts=2 out rc n bad=0
+    [[ "${SMB_TEST_MODE:-colocated}" == "separate" ]] && want_hosts=3
+    out=$(_healthcheck_role -v -e '{"sssd_dc_hostname": ""}') && rc=0 || rc=$?
+    [[ $rc -eq 0 ]] || { echo "expected healthcheck.yml rc 0, got rc=${rc}"; bad=1; }
+    grep -qE "_ldap\\._tcp\\.${realm_re}" <<<"$out" \
+        || { echo "SRV lookup did not use the derived realm ${SMB_TEST_REALM,,}"; bad=1; }
+    ! grep -qiE 'example\.internal' <<<"$out" \
+        || { echo "realm derivation fell through to EXAMPLE.INTERNAL"; bad=1; }
+    grep -qE "\"_healthcheck_srv_dc\": \" *dc01\\.${realm_re}\"" <<<"$out" \
+        || { echo "SRV-derived DC fact is not dc01.${SMB_TEST_REALM,,}"; bad=1; }
+    n=$(grep -oE "DNS A record \(DC\): +PASS +\[dc01\\.${realm_re}\]" <<<"$out" | wc -l)
+    [[ "$n" -eq "$want_hosts" ]] \
+        || { echo "DNS A record (DC) PASS [dc01] on ${n} host(s), expected ${want_hosts}"; bad=1; }
+    # Every host's DC line, whatever it names, must be one of those: a member
+    # that probed itself prints [client01...]/[storage01...] here instead.
+    n=$(grep -oE 'DNS A record \(DC\):' <<<"$out" | wc -l)
+    [[ "$n" -eq "$want_hosts" ]] \
+        || { echo "expected ${want_hosts} DNS A record (DC) summary lines, got ${n}"; bad=1; }
+    if [[ $bad -ne 0 ]]; then
+        grep -E 'Healthcheck FAILED|DNS A record|_healthcheck_srv_dc|PLAY RECAP|failed=' <<<"$out" | head -10
+        return 1
+    fi
 }
 
 # Verifies the socket-activation responder model.  Core invariant: sssd.conf
@@ -1311,6 +1934,7 @@ main() {
     test_permissions_setup
     test_permissions
     test_autofs_kerberos
+    test_client_kerberos_renewal
     test_password_policy
     test_client_verification
     # Ansible-provisioned state (roles/samba-dc): these assert what the
@@ -1330,9 +1954,11 @@ main() {
     test_sudorule_extended
     test_automount_map_lifecycle
     test_share_edge_cases
+    test_share_map_export_sync
     test_dry_run
     test_password_policy_set
     test_client_healthcheck
+    test_healthcheck_role
     test_login_access_filter
     test_client_dns_registration
     # Keep DNS persistence last because it reboots the client; tests

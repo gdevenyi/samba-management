@@ -370,6 +370,13 @@ EOF
 
     # DC group_vars.  In separate mode we point autofs maps and healthcheck
     # at storage01; in colocated mode both default to the DC itself.
+    #
+    # healthcheck_realm / healthcheck_dc_hostname are deliberately NOT set in
+    # either file: real sites don't set them, so the samba-healthcheck role's
+    # derivations (realm from samba_realm on the DC / sssd_realm on members;
+    # DC from sssd_dc_hostname on members, from the _ldap._tcp SRV answer on
+    # the DC) must be what provision.sh's fatal healthcheck run exercises.
+    # Pinning them here meant a broken derivation could never fail the harness.
     local dc_extra=""
     local members_extra=""
     if [[ "$TEST_MODE" == "separate" ]]; then
@@ -384,8 +391,6 @@ samba_admin_password: "${SMB_TEST_ADMIN_PASSWORD}"
 samba_dns_forwarders:
   - "${DNS_FORWARDER}"
 samba_tls_enabled: false
-healthcheck_realm: "${TEST_REALM}"
-healthcheck_dc_hostname: "dc01"
 ${dc_extra}
 samba_nfs_homes_fsid: 100
 EOF
@@ -397,8 +402,6 @@ sssd_domain: "${TEST_DOMAIN}"
 sssd_domain_short: "SAMBA"
 sssd_admin_password: "${SMB_TEST_ADMIN_PASSWORD}"
 sssd_dc_hostname: "dc01"
-healthcheck_realm: "${TEST_REALM}"
-healthcheck_dc_hostname: "dc01"
 ${members_extra}
 EOF
 

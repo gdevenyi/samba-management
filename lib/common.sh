@@ -139,13 +139,44 @@ flush_winbind_cache() {
 # Returns true when the given host (arg 1) refers to this machine, or is
 # empty.  Empty means "not configured" -> treat as local.  Used by the
 # remote_* helpers to decide local-vs-SSH for cross-host storage operations.
+# Host names are case-insensitive, so the comparison is too.
 is_local_host() {
     local target="${1:-}"
     [[ -z "$target" ]] && return 0
     local self_fqdn self_short
     self_fqdn="$(hostname -f 2>/dev/null || hostname)"
     self_short="$(hostname -s 2>/dev/null || hostname)"
-    [[ "$target" == "$self_fqdn" || "$target" == "$self_short" ]]
+    target="${target,,}"
+    [[ "$target" == "${self_fqdn,,}" || "$target" == "${self_short,,}" ]]
+}
+
+# Decides whether two host names (args 1, 2) refer to the same machine.
+# Returns 0 = same, 1 = different, 2 = unknown.  A plain string compare is wrong
+# here: the short name, the FQDN and any other alias of one storage host all
+# differ as strings, and a caller that reads that as "two hosts" will clean up
+# the "old" one -- which is the new one.  So names that differ are resolved to
+# identities: /etc/machine-id on each (falling back to `hostname -f` when it is
+# missing or empty), read locally or over the same root SSH the remote_*
+# helpers use.  When either probe fails or comes back empty the answer is
+# "unknown", never "different": a probe can fail transiently while the delete
+# that follows succeeds, so callers must treat 2 as "do not touch".  The one
+# remaining wrong answer, "same" for two distinct hosts (a clone that kept its
+# machine-id), only skips a cleanup.
+#   same_host <a> <b> || rel=$?    # call it in a conditional context (set -e)
+same_host() {
+    local a="${1:-}" b="${2:-}"
+    [[ "${a,,}" == "${b,,}" ]] && return 0
+    if is_local_host "$a" && is_local_host "$b"; then
+        return 0
+    fi
+    local id_a="" id_b=""
+    # shellcheck disable=SC2016  # expanded by the remote sh, not here
+    local probe='id=$(cat /etc/machine-id 2>/dev/null); if [ -n "$id" ]; then echo "$id"; else hostname -f; fi'
+    id_a=$(remote_op "$a" sh -c "$probe" 2>/dev/null) || return 2
+    id_b=$(remote_op "$b" sh -c "$probe" 2>/dev/null) || return 2
+    [[ -z "$id_a" || -z "$id_b" ]] && return 2
+    [[ "$id_a" == "$id_b" ]] && return 0
+    return 1
 }
 
 # Run a command either locally (storage colocated on this host) or via SSH

@@ -21,7 +21,9 @@
     # ansible.windows.win_domain_membership (removed in ansible.windows
     # v3.0).  reboot: true tells the module to handle the post-join reboot
     # itself, which Windows requires for the join to take effect; no
-    # separate win_reboot task needed.
+    # separate win_reboot task needed.  no_log per the repo convention:
+    # the module marks domain_admin_password no_log itself today, but the
+    # task must not depend on that (test/lint.sh enforces it).
     - name: Join the domain
       microsoft.ad.membership:
         dns_domain_name: "{{ windows_domain }}"
@@ -29,3 +31,4 @@
         domain_admin_password: "{{ windows_admin_password }}"
         state: domain
         reboot: true
+      no_log: true

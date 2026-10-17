@@ -335,17 +335,14 @@ all:
     dc:
       hosts:
         ${DC_IP}:
-          ansible_hostname: dc01
     domain_members:
       children:
         nfs_servers:
           hosts:
             ${STORAGE_IP}:
-              ansible_hostname: storage01
         linux_clients:
           hosts:
             ${CLIENT_IP}:
-              ansible_hostname: client01
 EOF
     else
         cat > "${SCRIPT_DIR}/inventory.yml" <<EOF
@@ -354,7 +351,6 @@ all:
     dc:
       hosts:
         ${DC_IP}:
-          ansible_hostname: dc01
     domain_members:
       children:
         nfs_servers:
@@ -362,7 +358,6 @@ all:
         linux_clients:
           hosts:
             ${CLIENT_IP}:
-              ansible_hostname: client01
 EOF
     fi
 

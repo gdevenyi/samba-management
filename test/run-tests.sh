@@ -247,6 +247,17 @@ test_export_fsid() {
         ssh_nfs "sudo exportfs -v | grep -q 'fsid=101'"
     run_test "kernel accepted homes export with fsid=100" \
         ssh_nfs "sudo exportfs -v | grep -q 'fsid=100'"
+    # samba_nfs_sync_mode / NFS_SYNC_MODE default: async on both the
+    # role-owned homes export and an add-share export.  Matched on the
+    # fsid-bearing options group so each assertion is about one export.
+    run_test "public share export file is async" \
+        ssh_nfs "grep -qE '[(,]async[,)]' /etc/exports.d/public.exports"
+    run_test "homes export file is async" \
+        ssh_nfs "grep -qE '[(,]async[,)]' /etc/exports.d/homes.exports"
+    run_test "kernel exports public share async" \
+        ssh_nfs "sudo exportfs -v | grep 'fsid=101' | grep -qE '[(,]async[,)]'"
+    run_test "kernel exports homes async" \
+        ssh_nfs "sudo exportfs -v | grep 'fsid=100' | grep -qE '[(,]async[,)]'"
 }
 
 # Stand up users, groups, share directories, and NFS exports for the

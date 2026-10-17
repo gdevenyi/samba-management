@@ -26,6 +26,15 @@
       - samba_admin_password is defined and samba_admin_password | length > 0
     fail_msg: "samba_realm, samba_domain, and samba_admin_password are required"
 
+# The value lands verbatim in /etc/exports.d/homes.exports, and exportfs
+# rejects an unknown option -- which fails every export on the host, not
+# just this one.
+- name: Assert samba_nfs_sync_mode is sync or async
+  ansible.builtin.assert:
+    that:
+      - samba_nfs_sync_mode in ['sync', 'async']
+    fail_msg: "samba_nfs_sync_mode must be 'sync' or 'async', got '{{ samba_nfs_sync_mode }}'"
+
 # The DC's FQDN -> LAN address binding is checked in hosts-file.yml, which
 # repairs /etc/hosts first and then asserts the answer matches the host's
 # CURRENT address.  The check used to live here and only rejected 127.0.0.1,

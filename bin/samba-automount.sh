@@ -25,6 +25,10 @@ set -- "${GLOBAL_REMAINING_ARGS[@]}"
 
 AUTOMOUNT_OU="OU=automount"
 DEFAULT_NFS_SEC="${NFS_SEC:-krb5p}"
+# Server write mode for new share exports (samba_nfs_sync_mode in the role).
+# async acknowledges writes before they reach disk, so a server crash can
+# lose data a client was told was committed; sync trades throughput for that.
+DEFAULT_NFS_SYNC_MODE="${NFS_SYNC_MODE:-async}"
 # NFS_SERVER is set by the samba-dc role's config template -- it equals
 # samba_nfs_server when a dedicated storage host is configured, otherwise
 # the DC's FQDN.  Falls back to this host's FQDN if the config is missing.
@@ -459,6 +463,23 @@ _share_entry_value() {
         | ldif_unfold | sed -n 's/^nisMapEntry: //p'
 }
 
+# The option string for an export this script writes from scratch.  Single
+# definition, so add-share and the map-edit fallback cannot drift apart.
+_default_export_opts() {
+    printf 'rw,sec=%s,%s,no_subtree_check' "$1" "$DEFAULT_NFS_SYNC_MODE"
+}
+
+# The mode lands verbatim in /etc/exports.d/*.exports, and exportfs -ra fails
+# on an unknown option for every export on the host -- so it is checked before
+# any side effect.
+validate_sync_mode() {
+    case "$DEFAULT_NFS_SYNC_MODE" in
+        sync|async) return 0 ;;
+        *) log_error "Invalid NFS_SYNC_MODE '${DEFAULT_NFS_SYNC_MODE}' in ${CONFIG_FILE}; expected sync or async"
+           return 1 ;;
+    esac
+}
+
 # Split an auto.shares nisMapEntry ('-fstype=nfs4,sec=krb5p host:/path') into
 # its server, export path, and Kerberos flavour.  Single definition of how a
 # share entry is read, shared by delete-share and the export helpers below.
@@ -562,10 +583,11 @@ _sync_share_export() {
     # validated before any side effect, as in add-share.
     validate_server_name "$new_server" || exit 2
     validate_export_path "$new_path" || exit 2
+    validate_sync_mode || exit 2
 
     local opts
     opts=$(_share_export_opts "${old_server:-$new_server}" "$name")
-    [[ -z "$opts" ]] && opts="rw,sec=${new_sec:-$DEFAULT_NFS_SEC},sync,no_subtree_check"
+    [[ -z "$opts" ]] && opts=$(_default_export_opts "${new_sec:-$DEFAULT_NFS_SEC}")
     if [[ -n "$new_sec" ]]; then
         if [[ "$opts" == *sec=* ]]; then
             opts=$(printf '%s' "$opts" | sed -E "s/(^|,)sec=[A-Za-z0-9]+/\\1sec=${new_sec}/")
@@ -622,6 +644,7 @@ cmd_add_share() {
 
     validate_server_name "$server" || exit 2
     validate_export_path "$path" || exit 2
+    validate_sync_mode || exit 2
     case "$sec" in
         krb5|krb5i|krb5p) ;;
         *) log_error "Invalid --sec '${sec}'; expected krb5, krb5i, or krb5p"; exit 2 ;;
@@ -642,7 +665,8 @@ cmd_add_share() {
     fi
 
     local value="-fstype=nfs4,sec=${sec} ${server}:${path}"
-    local exopts="rw,sec=${sec},sync,no_subtree_check"
+    local exopts
+    exopts=$(_default_export_opts "$sec")
     [[ -n "$fsid" ]] && exopts="${exopts},fsid=${fsid}"
 
     if dry_run "Would create share '${name}': directory + NFS export at ${server}:${path} (${exopts}) and auto.shares entry '${value}'"; then

@@ -72,6 +72,17 @@ samba_ous:
 # --- NFS server configuration ---
 # Kerberos security flavour: krb5 (auth), krb5i (auth+integrity), krb5p (auth+integrity+privacy)
 samba_nfs_sec: "krb5p"
+# Server write mode for every NFS export this stack writes: "async" (default)
+# or "sync".  With async the server acknowledges a write -- including an NFS
+# COMMIT -- once it is in the server's page cache, not on stable storage, so
+# a server crash or power loss silently loses writes the client was told were
+# safe (the client does not resend them).  sync waits for the disk on every
+# write, which on NFSv4 with sec=krb5p costs most of the write throughput,
+# especially for small-file workloads like home directories.  Applies to the
+# homes export (re-rendered on every run) and to new add-share exports (via
+# NFS_SYNC_MODE in samba-mgmt.conf); existing per-share export files keep
+# whatever they were written with.
+samba_nfs_sync_mode: "async"
 # Whether to export samba_home_base (default /home/ad) via NFS for home directory mounts.
 samba_nfs_export_homes: true
 # Stable NFS filesystem id for the /home/ad export.  Empty (default) lets the

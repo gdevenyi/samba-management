@@ -1404,6 +1404,33 @@ test_share_map_export_sync() {
     run_test "Kernel no longer exports the old /data/syncshare" \
         ssh_nfs "! sudo exportfs -v | grep -qE '^/data/syncshare([[:space:]]|\$)'"
 
+    # Re-pointing the entry at the SAME host under its other name (short <->
+    # FQDN) is not a move.  Comparing names as strings used to treat it as
+    # one: the export was rewritten on the "new" host and then the "stale"
+    # one removed from the "old" host -- the same file on the same machine --
+    # leaving the share unexported while its map entry looked correct.
+    local alt_host
+    if [[ "$nfs_host" == *.* ]]; then
+        alt_host="${nfs_host%%.*}"
+    else
+        alt_host="${nfs_host}.${SMB_TEST_DOMAIN}"
+    fi
+    run_test "${alt_host} resolves on the DC (precondition)" \
+        ssh_dc "getent hosts ${alt_host}"
+    local alias_out="" alias_rc=0
+    alias_out=$(ssh_dc "sudo samba-automount.sh modify auto.shares syncshare --value='-fstype=nfs4,sec=krb5i ${alt_host}:/data/syncshare_v2' 2>&1") \
+        && alias_rc=0 || alias_rc=$?
+    run_test "modify syncshare to the same host as ${alt_host} exits 0" \
+        test "${alias_rc}" -eq 0
+    run_test "AD entry now names ${alt_host}" \
+        ssh_dc "sudo samba-automount.sh show auto.shares syncshare | grep -q 'nisMapEntry:.* ${alt_host}:/data/syncshare_v2\$'"
+    run_test "Same-host rename was not treated as a host move" \
+        bash -c '! grep -q "moved" <<<"$1"' _ "$alias_out"
+    run_test "Export file survived the same-host rename" \
+        ssh_nfs "grep -q '^/data/syncshare_v2 ' ${f} && grep -q 'fsid=150' ${f}"
+    run_test "Kernel still exports /data/syncshare_v2 after the rename" \
+        ssh_nfs "sudo exportfs -v | grep -qE '^/data/syncshare_v2([[:space:]]|\$)'"
+
     run_test "delete-entry auto.shares syncshare" \
         ssh_dc "sudo samba-automount.sh delete-entry auto.shares syncshare --force"
     run_test "syncshare entry gone from auto.shares" \

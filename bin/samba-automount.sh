@@ -611,8 +611,15 @@ _sync_share_export() {
     # A path change reuses the same file name, so writing it above already
     # retired the old path.  Only a move between hosts leaves a stale export
     # behind.  Best-effort: the old host may be gone, and failing here after the
-    # new export is live would be worse than a warning.
-    if [[ -n "$old_server" && "$old_server" != "$new_server" ]]; then
+    # new export is live would be worse than a warning.  The hosts are compared
+    # by identity, not by name: re-pointing an entry from 'storage01' to
+    # 'storage01.<domain>' names the same machine, and "cleaning up" there
+    # deletes the export file just written above.
+    # Only a positive "different" deletes anything; "unknown" leaves both
+    # hosts alone, since one of them holds the export just written.
+    local rel=0
+    [[ -n "$old_server" ]] && { same_host "$old_server" "$new_server" || rel=$?; }
+    if [[ -n "$old_server" && "$rel" -eq 1 ]]; then
         log_warn "Share '${name}' moved ${old_server} -> ${new_server}; removing the stale export on ${old_server}"
         if remote_op "$old_server" rm -f "/etc/exports.d/${name}.exports" \
            && remote_op "$old_server" exportfs -ra; then
@@ -620,6 +627,8 @@ _sync_share_export() {
         else
             log_warn "Could not clean up ${old_server}: remove /etc/exports.d/${name}.exports and run 'exportfs -ra' there by hand"
         fi
+    elif [[ "$rel" -eq 2 ]]; then
+        log_warn "Could not tell whether ${old_server} and ${new_server} are the same host; if they differ, remove /etc/exports.d/${name}.exports on ${old_server} and run 'exportfs -ra' there by hand"
     fi
 }
 
